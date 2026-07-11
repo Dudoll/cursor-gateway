@@ -186,6 +186,73 @@ export const reportQuestionSchema = z
   .strict();
 export type ReportQuestionRequest = z.infer<typeof reportQuestionSchema>;
 
+export const interviewPlanSchema = z.enum(["starter", "pro", "coaching"]);
+export type InterviewPlan = z.infer<typeof interviewPlanSchema>;
+
+export const interviewEntitlementProvisionSchema = z
+  .object({
+    email: z.string().trim().email(),
+    plan: interviewPlanSchema.default("starter"),
+    paymentProvider: z.string().trim().min(1).max(80),
+    paymentReference: z.string().trim().min(1).max(200),
+    expiresAt: z.string().datetime().nullable().default(null),
+    activationTtlHours: z.number().int().min(1).max(168).default(48)
+  })
+  .strict();
+export type InterviewEntitlementProvisionRequest = z.infer<
+  typeof interviewEntitlementProvisionSchema
+>;
+
+export const interviewActivationSchema = z
+  .object({ token: z.string().trim().min(32).max(512) })
+  .strict();
+export type InterviewActivationRequest = z.infer<typeof interviewActivationSchema>;
+
+export const interviewProfileUpdateSchema = z
+  .object({
+    targetRole: z.string().trim().min(1).max(160),
+    sourceStack: z.string().trim().min(1).max(160),
+    targetCompanies: z.array(z.string().trim().min(1).max(80)).max(20),
+    currentLevel: z.enum(["starting", "building", "interviewing"]),
+    weeklyHours: z.number().int().min(1).max(80),
+    targetDate: z.string().date().nullable(),
+    goals: z.string().trim().max(2_000)
+  })
+  .strict();
+export type InterviewProfileUpdate = z.infer<typeof interviewProfileUpdateSchema>;
+
+export const interviewProfileSchema = interviewProfileUpdateSchema.extend({
+  updatedAt: z.string()
+});
+export type InterviewProfile = z.infer<typeof interviewProfileSchema>;
+
+export const interviewProgressUpdateSchema = z
+  .object({
+    reportId: reportIdSchema,
+    questionKey: z.string().trim().min(1).max(200),
+    status: z.enum(["new", "practicing", "mastered"]),
+    confidence: z.number().int().min(1).max(5),
+    notes: z.string().trim().max(2_000),
+    nextReviewAt: z.string().datetime().nullable()
+  })
+  .strict();
+export type InterviewProgressUpdate = z.infer<typeof interviewProgressUpdateSchema>;
+
+export const interviewProgressSchema = interviewProgressUpdateSchema.extend({
+  updatedAt: z.string()
+});
+export type InterviewProgress = z.infer<typeof interviewProgressSchema>;
+
+export const personalizedInterviewQuestionSchema = z
+  .object({
+    question: z.string().trim().min(1).max(8_000),
+    requestId: z.string().uuid()
+  })
+  .strict();
+export type PersonalizedInterviewQuestionRequest = z.infer<
+  typeof personalizedInterviewQuestionSchema
+>;
+
 export const memoryFactSchema = z.object({
   id: z.string().uuid(),
   scope: z.enum(["user", "workspace"]),
