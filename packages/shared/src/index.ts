@@ -163,7 +163,8 @@ export const reportIdSchema = z.enum([
   "news",
   "ai-infra-tips",
   "ai-infra-interview",
-  "ai-infra-mianshi"
+  "ai-infra-mianshi",
+  "ai-agent-mianshi"
 ]);
 export type ReportId = z.infer<typeof reportIdSchema>;
 

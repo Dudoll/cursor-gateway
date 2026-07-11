@@ -137,7 +137,8 @@ const REPORT_IDS = new Set<ReportId>([
   "news",
   "ai-infra-tips",
   "ai-infra-interview",
-  "ai-infra-mianshi"
+  "ai-infra-mianshi",
+  "ai-agent-mianshi"
 ]);
 
 function useAutosizeTextarea(value: string, maxHeight = 220) {

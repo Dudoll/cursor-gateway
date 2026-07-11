@@ -41,6 +41,15 @@ export const REPORTS: readonly ReportDefinition[] = [
       "从牛客、掘金、知乎、小红书、Boss 直聘、一亩三分地等主流面经平台整理大厂 AI Infra 面经；每日 1 道笔试 + 5 道面试题（附答案），并基于历史做行业趋势总结。",
     schedule: "每天 08:20（UTC+8）",
     threadKey: "daily-ai-infra-mianshi"
+  },
+  {
+    id: "ai-agent-mianshi",
+    name: "大厂 AI Agent 开发面经",
+    shortName: "Agent 面经",
+    description:
+      "整理可核验的大厂 AI Agent 开发面经；优选 Java 转型案例，每日 1 道笔试 + 5 道面试题（附答案），并结合 AI 日报与历史面经总结趋势。",
+    schedule: "每天 08:25（UTC+8）",
+    threadKey: "daily-ai-agent-mianshi"
   }
 ] as const;
 
