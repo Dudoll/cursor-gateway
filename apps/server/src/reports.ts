@@ -6,7 +6,7 @@ export const REPORTS: readonly ReportDefinition[] = [
     name: "理财每日一课",
     shortName: "理财",
     description: "面向零基础的个人理财微课程，强调现金流、风险与可执行的小行动。",
-    schedule: "每天 07:30（America/Los_Angeles）",
+    schedule: "每天 08:00（UTC+8）",
     threadKey: "daily-finance-tips"
   },
   {
@@ -14,7 +14,7 @@ export const REPORTS: readonly ReportDefinition[] = [
     name: "AI Infra & LLM 日报",
     shortName: "AI 日报",
     description: "汇总 AI 基础设施、LLM、GPU serving 与 Linux 生态的重要动态。",
-    schedule: "每天 09:00（America/Los_Angeles）",
+    schedule: "每天 08:05（UTC+8）",
     threadKey: "daily-news-vocechat"
   },
   {
@@ -22,7 +22,7 @@ export const REPORTS: readonly ReportDefinition[] = [
     name: "推理优化每日一课",
     shortName: "推理课程",
     description: "循序渐进学习推理优化概念、Linux 抓手与轻量练习。",
-    schedule: "每天 12:00（America/Los_Angeles）",
+    schedule: "每天 08:10（UTC+8）",
     threadKey: "daily-ai-infra-tips"
   },
   {
@@ -30,8 +30,26 @@ export const REPORTS: readonly ReportDefinition[] = [
     name: "推理优化面经",
     shortName: "面试练习",
     description: "与每日课程同步的概念题、场景题、追问和 Linux 加分项。",
-    schedule: "每天 20:00（America/Los_Angeles）",
+    schedule: "每天 08:15（UTC+8）",
     threadKey: "daily-ai-infra-interview"
+  },
+  {
+    id: "ai-infra-mianshi",
+    name: "大厂 AI Infra 面经",
+    shortName: "Infra 面经",
+    description:
+      "整理可核验的大厂 AI Infra 面经；每日 1 道笔试 + 5 道面试题（附答案），并结合 AI 日报与历史面经总结趋势。",
+    schedule: "每天 08:20（UTC+8）",
+    threadKey: "daily-ai-infra-mianshi"
+  },
+  {
+    id: "ai-agent-mianshi",
+    name: "大厂 AI Agent 开发面经",
+    shortName: "Agent 面经",
+    description:
+      "整理可核验的大厂 AI Agent 开发面经；优选 Java 转型案例，每日 1 道笔试 + 5 道面试题（附答案），并结合 AI 日报与历史面经总结趋势。",
+    schedule: "每天 08:25（UTC+8）",
+    threadKey: "daily-ai-agent-mianshi"
   }
 ] as const;
 

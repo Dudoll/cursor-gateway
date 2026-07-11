@@ -84,7 +84,9 @@ const REPORT_IDS = new Set<ReportId>([
   "finance",
   "news",
   "ai-infra-tips",
-  "ai-infra-interview"
+  "ai-infra-interview",
+  "ai-infra-mianshi",
+  "ai-agent-mianshi"
 ]);
 
 function useAutosizeTextarea(value: string, maxHeight = 220) {
@@ -122,6 +124,16 @@ function isQuestionRun(run: RunRecord) {
   return run.idempotencyKey?.startsWith("qa:") ?? false;
 }
 
+/** Report calendar / display timezone; independent from the server OS timezone. */
+const REPORT_DISPLAY_TIMEZONE = "Asia/Shanghai";
+
+function formatInReportTz(iso: string) {
+  return new Date(iso).toLocaleString("zh-CN", {
+    timeZone: REPORT_DISPLAY_TIMEZONE,
+    hour12: false
+  });
+}
+
 function runDayKey(run: RunRecord) {
   if (!isQuestionRun(run) && run.idempotencyKey) {
     const last = run.idempotencyKey.split(":").at(-1) ?? "";
@@ -129,7 +141,7 @@ function runDayKey(run: RunRecord) {
     if (match?.[1]) return match[1];
   }
   return new Intl.DateTimeFormat("en-CA", {
-    timeZone: "America/Los_Angeles",
+    timeZone: REPORT_DISPLAY_TIMEZONE,
     year: "numeric",
     month: "2-digit",
     day: "2-digit"
@@ -139,7 +151,7 @@ function runDayKey(run: RunRecord) {
 function formatDayLabel(day: string) {
   const [year, month, date] = day.split("-").map((part) => Number(part));
   if (!year || !month || !date) return day;
-  return `${year}/${month}/${date}`;
+  return `${year}/${month}/${date}（UTC+8）`;
 }
 
 function isRunInFlight(run: RunRecord) {
@@ -982,7 +994,7 @@ function ReportsPage({ initialReportId }: { initialReportId?: ReportId }) {
                       <div className="message-main">
                         <div className="message-meta">
                           <strong>Report AI</strong>
-                          <time>{new Date(run.createdAt).toLocaleString()}</time>
+                          <time>{formatInReportTz(run.createdAt)}</time>
                         </div>
                         {run.response ? <Markdown>{run.response}</Markdown> : null}
                         {run.error ? <pre className="error-pre">{run.error}</pre> : null}
