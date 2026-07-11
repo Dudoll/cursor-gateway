@@ -1,0 +1,39 @@
+node_modules/
+dist/
+dist-types/
+.turbo/
+.vite/
+coverage/
+*.tsbuildinfo
+
+# TypeScript output emitted beside Vite configuration sources
+apps/*/vite.config.js
+apps/*/vite.config.js.map
+apps/*/vite.config.d.ts
+apps/*/vite.config.d.ts.map
+
+.env
+.env.*
+!.env.example
+!.env.*.example
+
+# Private keys, certificates, local databases, and runtime state
+*.pem
+*.key
+*.p12
+*.pfx
+*.sqlite
+*.sqlite3
+*.db
+
+data/
+logs/
+*.log
+artifacts/
+*.bak
+*.bak.*
+*.vps.ts
+
+# Local editor / OS junk
+.DS_Store
+Thumbs.db

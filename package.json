@@ -1,0 +1,23 @@
+{
+  "name": "cursor-gateway",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Controlled gateway for running local Cursor agents on a Windows machine.",
+  "type": "module",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "npm run build -w @cursor-gateway/shared && npm run build -w @cursor-gateway/server && npm run build -w @cursor-gateway/web && npm run build -w @cursor-gateway/windows-runner",
+    "dev:server": "npm run dev -w @cursor-gateway/server",
+    "dev:web": "npm run dev -w @cursor-gateway/web",
+    "dev:runner": "npm run dev -w @cursor-gateway/windows-runner",
+    "lint": "npm run lint --workspaces --if-present",
+    "typecheck": "npm run typecheck -w @cursor-gateway/shared && npm run typecheck -w @cursor-gateway/server && npm run typecheck -w @cursor-gateway/web && npm run typecheck -w @cursor-gateway/windows-runner"
+  },
+  "engines": {
+    "node": ">=22.0.0",
+    "npm": ">=10.0.0"
+  }
+}
