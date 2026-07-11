@@ -1,7 +1,7 @@
 {
   "name": "cursor-gateway",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Controlled gateway for running local Cursor agents on a Windows machine.",
   "type": "module",
   "workspaces": [

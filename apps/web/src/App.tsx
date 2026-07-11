@@ -540,7 +540,7 @@ function GatewayDashboard() {
               <div className="home-welcome">
                 <div className="welcome-mark"><Sparkles aria-hidden="true" size={21} strokeWidth={1.75} /></div>
                 <h2>Ask the runner</h2>
-                <p>
+                <p className="welcome-copy">
                   Hermes answers on the VPS host. Switch to a Windows Cursor model when you need
                   workspace-aware reads or writes.
                 </p>
@@ -628,7 +628,7 @@ function GatewayDashboard() {
                   />
                   Allow writes
                 </label>
-                <span>
+                <span className="composer-hint">
                   {selectedHermesModel
                     ? "Hermes is Q&A-only"
                     : selectedConversation
@@ -1013,9 +1013,8 @@ function ReportsPage({ initialReportId }: { initialReportId?: ReportId }) {
                 {asking ? <SendBusy /> : <ArrowUp aria-hidden="true" size={18} strokeWidth={2} />}
               </button>
             </form>
-            <small>
+            <small className="composer-hint">
               Enter to send · swipe or ← → to change day
-              {selectedDay ? ` · asking about ${selectedDay}` : ""}
             </small>
           </div>
         </section>

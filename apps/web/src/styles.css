@@ -1705,13 +1705,13 @@ a {
   accent-color: var(--accent-strong);
 }
 
-.composer-options > span:last-child {
+.composer-options > .composer-hint {
   margin-left: auto;
   font-family: var(--mono);
   font-size: 0.68rem;
 }
 
-.report-composer-shell > small {
+.report-composer-shell > .composer-hint {
   display: block;
   margin-top: 0.45rem;
   color: var(--text-muted);
@@ -1826,6 +1826,10 @@ a {
 /* ——— Responsive ——— */
 
 @media (max-width: 860px) {
+  :root {
+    --topbar-h: 46px;
+  }
+
   .hero,
   .grid,
   .report-grid {
@@ -1858,9 +1862,20 @@ a {
 
   .reports-topbar {
     grid-template-columns: auto 1fr auto;
-    margin: 0.4rem 0.45rem 0;
-    padding: 0 0.7rem;
-    border-radius: 18px;
+    height: var(--topbar-h);
+    margin: 0.28rem 0.35rem 0;
+    padding: 0 0.55rem;
+    border-radius: 14px;
+  }
+
+  .reports-brand {
+    gap: 0.4rem;
+  }
+
+  .reports-brand strong {
+    width: 26px;
+    height: 26px;
+    border-radius: 7px;
   }
 
   .reports-brand span {
@@ -1875,44 +1890,60 @@ a {
   .reports-layout {
     grid-template-columns: 1fr;
     grid-template-rows: auto minmax(0, 1fr);
-    height: calc(100dvh - var(--topbar-h) - 0.75rem);
-    margin: 0.4rem 0.45rem 0.45rem;
-    border-radius: 14px;
+    height: calc(100dvh - var(--topbar-h) - 0.5rem);
+    margin: 0.28rem 0.35rem 0.35rem;
+    border-radius: 12px;
   }
 
   .home-sidebar,
   .reports-sidebar {
     border-right: 0;
     border-bottom: 1px solid var(--border);
-    min-height: 52px;
+    min-height: 0;
+    max-height: 44px;
     overflow-x: auto;
     overflow-y: hidden;
-    padding: 0.55rem;
+    padding: 0.35rem 0.4rem;
   }
 
   .home-sidebar {
     flex-direction: row;
-    gap: 0.5rem;
+    gap: 0.35rem;
+    align-items: center;
   }
 
   .new-chat-button {
     flex: 0 0 auto;
     width: auto;
+    min-height: 34px;
+    padding: 0.35rem 0.55rem;
+    border-radius: 8px;
+  }
+
+  .new-chat-button span {
+    font-size: 0.76rem;
   }
 
   .conversation-list,
   .report-thread-list {
     display: flex;
     min-width: max-content;
+    gap: 2px;
   }
 
   .conversation-list button {
     grid-template-columns: auto;
+    padding: 0.4rem 0.55rem;
+  }
+
+  .conversation-list strong,
+  .report-thread-list strong {
+    font-size: 0.78rem;
   }
 
   .report-thread-list a {
-    grid-template-columns: 28px auto;
-    padding: 0.55rem 0.7rem;
+    grid-template-columns: 24px auto;
+    padding: 0.35rem 0.55rem;
   }
 
   .conversation-list small,
@@ -1925,12 +1956,12 @@ a {
   }
 
   .thread-icon {
-    width: 28px;
-    height: 28px;
+    width: 24px;
+    height: 24px;
   }
 
   .day-pager {
-    padding: 0.5rem 0.75rem;
+    padding: 0.3rem 0.55rem;
   }
 
   .day-pager-meta {
@@ -1938,40 +1969,116 @@ a {
   }
 
   .day-pager-date {
-    min-width: 6.75rem;
-    padding: 0.35rem 0.65rem;
+    min-width: 6.25rem;
+    padding: 0.28rem 0.55rem;
+    font-size: 0.72rem;
+  }
+
+  .day-pager-nav {
+    width: 30px;
+    height: 30px;
   }
 
   .home-chat-header,
   .report-chat-header {
-    min-height: 58px;
-    padding: 0.65rem 0.85rem;
+    min-height: 0;
+    gap: 0.5rem;
+    padding: 0.4rem 0.7rem;
   }
 
-  .report-chat-header p {
+  .home-chat-header h1,
+  .report-chat-header h1 {
+    font-size: 0.84rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: min(52vw, 220px);
+  }
+
+  .home-chat-header p,
+  .report-chat-header p,
+  .status-ready,
+  .status-pending {
     display: none;
+  }
+
+  .model-switcher {
+    font-size: 0.74rem;
+    padding: 0.28rem 0.55rem;
+  }
+
+  .icon-danger-button {
+    width: 30px;
+    height: 30px;
+  }
+
+  .chat-error {
+    top: 48px;
+    width: calc(100% - 1rem);
   }
 
   .home-messages,
   .report-messages {
-    padding: 1.15rem 0.85rem 1.5rem;
+    padding: 0.75rem 0.65rem 1rem;
+  }
+
+  .home-welcome,
+  .report-welcome {
+    min-height: 36vh;
+  }
+
+  .home-welcome h2,
+  .report-welcome h2 {
+    font-size: 1.1rem;
+  }
+
+  .home-welcome p,
+  .report-welcome p {
+    font-size: 0.82rem;
+    max-width: 28rem;
+  }
+
+  .chat-turn {
+    gap: 0.75rem;
+    margin-bottom: 1.1rem;
   }
 
   .home-composer-shell,
   .report-composer-shell {
-    padding: 0.65rem 0.65rem max(0.55rem, env(safe-area-inset-bottom));
+    padding: 0.45rem 0.5rem max(0.35rem, env(safe-area-inset-bottom));
+  }
+
+  .composer-input,
+  .report-composer {
+    padding: 0.35rem 0.35rem 0.35rem 0.75rem;
+    border-radius: 12px;
   }
 
   .user-message {
     max-width: 88%;
+    padding: 0.55rem 0.7rem;
   }
 
-  .composer-options > span:last-child {
+  /* Hide bottom helper / annotation text on phones */
+  .composer-hint,
+  .composer-options > span:last-child,
+  .report-composer-shell > small,
+  .welcome-copy {
     display: none;
+  }
+
+  .composer-options {
+    gap: 0.45rem;
+    padding: 0 0.15rem;
+    font-size: 0.7rem;
   }
 }
 
 @media (max-width: 620px) {
+  :root {
+    --topbar-h: 42px;
+  }
+
   .shell,
   .report-shell {
     padding: 1rem;
@@ -1984,8 +2091,24 @@ a {
     display: none;
   }
 
+  /* Edge-to-edge chat: drop outer chrome so messages fill the screen */
   .reports-topbar {
-    padding: 0 0.55rem;
+    margin: 0;
+    padding: 0 0.45rem;
+    border-radius: 0;
+    border-left: 0;
+    border-right: 0;
+    border-top: 0;
+  }
+
+  .home-layout,
+  .reports-layout {
+    height: calc(100dvh - var(--topbar-h));
+    margin: 0;
+    border-radius: 0;
+    border-left: 0;
+    border-right: 0;
+    border-bottom: 0;
   }
 
   .reports-topbar .topbar-link span,
@@ -1994,29 +2117,90 @@ a {
   }
 
   .top-tabs a {
-    min-height: 30px;
-    padding: 0.35rem 0.55rem;
+    min-height: 28px;
+    padding: 0.28rem 0.45rem;
+  }
+
+  .home-sidebar,
+  .reports-sidebar {
+    max-height: 40px;
+    padding: 0.28rem 0.35rem;
+  }
+
+  .home-chat-header,
+  .report-chat-header {
+    padding: 0.32rem 0.55rem;
+  }
+
+  .home-chat-header h1,
+  .report-chat-header h1 {
+    font-size: 0.78rem;
+    max-width: min(46vw, 180px);
+  }
+
+  .home-messages,
+  .report-messages {
+    padding: 0.55rem 0.55rem 0.75rem;
+  }
+
+  .home-composer-shell,
+  .report-composer-shell {
+    padding: 0.35rem 0.4rem max(0.28rem, env(safe-area-inset-bottom));
+  }
+
+  .composer-options {
+    gap: 0.35rem 0.5rem;
   }
 
   .user-message {
-    max-width: 90%;
+    max-width: 92%;
   }
 
-  .message-meta span {
+  .message-meta {
+    gap: 0.4rem;
+    margin-bottom: 0.35rem;
+  }
+
+  .message-meta span,
+  .message-meta time {
     display: none;
   }
 
+  .message-meta .message-delete {
+    opacity: 1;
+  }
+
+  .assistant-message {
+    grid-template-columns: 26px minmax(0, 1fr);
+    gap: 0.55rem;
+  }
+
+  .message-avatar {
+    width: 26px;
+    height: 26px;
+    font-size: 0.55rem;
+  }
+
   .model-switcher {
-    max-width: 42vw;
+    max-width: 38vw;
   }
 
   .composer-options select {
-    max-width: 42vw;
+    max-width: 38vw;
+  }
+
+  .report-hero {
+    margin-bottom: 1rem;
+    padding-bottom: 0.85rem;
   }
 
   .report-hero h1,
   .hero h1 {
-    font-size: 2rem;
+    font-size: 1.55rem;
+  }
+
+  .report-hero p:not(.eyebrow) {
+    display: none;
   }
 }
 
