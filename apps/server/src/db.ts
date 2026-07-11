@@ -2,6 +2,11 @@ import { Pool, type PoolClient, type QueryResultRow } from "pg";
 import type {
   Conversation,
   ConversationTurn,
+  InterviewPlan,
+  InterviewProfile,
+  InterviewProfileUpdate,
+  InterviewProgress,
+  InterviewProgressUpdate,
   MemoryFact,
   Origin,
   Role,
@@ -150,6 +155,52 @@ export async function migrate() {
       updated_at timestamptz not null default now()
     );
 
+    create table if not exists interview_entitlements (
+      email text primary key,
+      plan text not null,
+      status text not null default 'pending',
+      payment_provider text not null,
+      payment_reference text not null,
+      activation_token_hash text,
+      activation_expires_at timestamptz,
+      activated_user_id uuid references app_users(id) on delete set null,
+      paid_at timestamptz not null default now(),
+      expires_at timestamptz,
+      created_at timestamptz not null default now(),
+      updated_at timestamptz not null default now(),
+      check (status in ('pending', 'active', 'revoked'))
+    );
+
+    create table if not exists interview_profiles (
+      user_id uuid primary key references app_users(id) on delete cascade,
+      target_role text not null,
+      source_stack text not null,
+      target_companies text[] not null default '{}',
+      current_level text not null,
+      weekly_hours integer not null,
+      target_date date,
+      goals text not null default '',
+      created_at timestamptz not null default now(),
+      updated_at timestamptz not null default now(),
+      check (current_level in ('starting', 'building', 'interviewing')),
+      check (weekly_hours between 1 and 80)
+    );
+
+    create table if not exists interview_question_progress (
+      user_id uuid not null references app_users(id) on delete cascade,
+      report_id text not null,
+      question_key text not null,
+      status text not null,
+      confidence integer not null,
+      notes text not null default '',
+      next_review_at timestamptz,
+      created_at timestamptz not null default now(),
+      updated_at timestamptz not null default now(),
+      primary key (user_id, report_id, question_key),
+      check (status in ('new', 'practicing', 'mastered')),
+      check (confidence between 1 and 5)
+    );
+
     create index if not exists runs_status_created_idx on runs(status, created_at);
     drop index if exists runs_user_idempotency_unique;
     create unique index if not exists runs_user_idempotency_active_unique
@@ -174,6 +225,13 @@ export async function migrate() {
       where deleted_at is null;
     create index if not exists memory_user_workspace_idx on memory_facts(user_id, workspace_id);
     create index if not exists audit_created_idx on audit_logs(created_at desc);
+    create unique index if not exists interview_entitlements_payment_unique
+      on interview_entitlements(payment_provider, payment_reference);
+    create unique index if not exists interview_entitlements_token_unique
+      on interview_entitlements(activation_token_hash)
+      where activation_token_hash is not null;
+    create index if not exists interview_progress_user_review_idx
+      on interview_question_progress(user_id, next_review_at, updated_at desc);
   `);
 }
 
@@ -1193,6 +1251,254 @@ export async function addMemoryFact(input: {
     createdAt: row.created_at.toISOString(),
     updatedAt: row.updated_at.toISOString()
   } satisfies MemoryFact;
+}
+
+export type InterviewEntitlementRecord = {
+  email: string;
+  plan: InterviewPlan;
+  status: "pending" | "active" | "revoked";
+  paymentProvider: string;
+  paymentReference: string;
+  activationExpiresAt: string | null;
+  activatedUserId: string | null;
+  paidAt: string;
+  expiresAt: string | null;
+};
+
+function mapInterviewEntitlement(row: QueryResultRow): InterviewEntitlementRecord {
+  return {
+    email: row.email,
+    plan: row.plan as InterviewPlan,
+    status: row.status,
+    paymentProvider: row.payment_provider,
+    paymentReference: row.payment_reference,
+    activationExpiresAt: row.activation_expires_at?.toISOString() ?? null,
+    activatedUserId: row.activated_user_id ?? null,
+    paidAt: row.paid_at.toISOString(),
+    expiresAt: row.expires_at?.toISOString() ?? null
+  };
+}
+
+export async function interviewEmailCanAuthenticate(email: string) {
+  const result = await pool.query(
+    `
+      select 1
+      from interview_entitlements
+      where email = $1
+        and status in ('pending', 'active')
+        and (expires_at is null or expires_at > now())
+        and (
+          status = 'active'
+          or activation_expires_at is null
+          or activation_expires_at > now()
+        )
+    `,
+    [email.toLowerCase()]
+  );
+  return Boolean(result.rows[0]);
+}
+
+export async function provisionInterviewEntitlement(input: {
+  email: string;
+  plan: InterviewPlan;
+  paymentProvider: string;
+  paymentReference: string;
+  activationTokenHash: string;
+  activationExpiresAt: Date;
+  expiresAt: Date | null;
+}) {
+  const result = await pool.query(
+    `
+      insert into interview_entitlements (
+        email,
+        plan,
+        status,
+        payment_provider,
+        payment_reference,
+        activation_token_hash,
+        activation_expires_at,
+        activated_user_id,
+        paid_at,
+        expires_at
+      )
+      values ($1, $2, 'pending', $3, $4, $5, $6, null, now(), $7)
+      on conflict (email)
+      do update set
+        plan = excluded.plan,
+        status = 'pending',
+        payment_provider = excluded.payment_provider,
+        payment_reference = excluded.payment_reference,
+        activation_token_hash = excluded.activation_token_hash,
+        activation_expires_at = excluded.activation_expires_at,
+        activated_user_id = null,
+        paid_at = now(),
+        expires_at = excluded.expires_at,
+        updated_at = now()
+      returning *
+    `,
+    [
+      input.email.toLowerCase(),
+      input.plan,
+      input.paymentProvider,
+      input.paymentReference,
+      input.activationTokenHash,
+      input.activationExpiresAt,
+      input.expiresAt
+    ]
+  );
+  return mapInterviewEntitlement(result.rows[0]);
+}
+
+export async function activateInterviewEntitlement(input: {
+  email: string;
+  userId: string;
+  activationTokenHash: string;
+}) {
+  const result = await pool.query(
+    `
+      update interview_entitlements
+      set
+        status = 'active',
+        activated_user_id = $2,
+        activation_token_hash = null,
+        activation_expires_at = null,
+        updated_at = now()
+      where email = $1
+        and status = 'pending'
+        and activation_token_hash = $3
+        and activation_expires_at > now()
+        and (expires_at is null or expires_at > now())
+      returning *
+    `,
+    [input.email.toLowerCase(), input.userId, input.activationTokenHash]
+  );
+  return result.rows[0] ? mapInterviewEntitlement(result.rows[0]) : undefined;
+}
+
+export async function getInterviewEntitlementForUser(userId: string, email: string) {
+  const result = await pool.query(
+    `
+      select *
+      from interview_entitlements
+      where email = $1
+        and status in ('pending', 'active')
+        and (expires_at is null or expires_at > now())
+        and (activated_user_id is null or activated_user_id = $2)
+    `,
+    [email.toLowerCase(), userId]
+  );
+  return result.rows[0] ? mapInterviewEntitlement(result.rows[0]) : undefined;
+}
+
+function mapInterviewProfile(row: QueryResultRow): InterviewProfile {
+  return {
+    targetRole: row.target_role,
+    sourceStack: row.source_stack,
+    targetCompanies: row.target_companies ?? [],
+    currentLevel: row.current_level,
+    weeklyHours: row.weekly_hours,
+    targetDate: row.target_date
+      ? row.target_date instanceof Date
+        ? row.target_date.toISOString().slice(0, 10)
+        : String(row.target_date).slice(0, 10)
+      : null,
+    goals: row.goals,
+    updatedAt: row.updated_at.toISOString()
+  };
+}
+
+export async function getInterviewProfile(userId: string) {
+  const result = await pool.query("select * from interview_profiles where user_id = $1", [userId]);
+  return result.rows[0] ? mapInterviewProfile(result.rows[0]) : undefined;
+}
+
+export async function upsertInterviewProfile(userId: string, input: InterviewProfileUpdate) {
+  const result = await pool.query(
+    `
+      insert into interview_profiles (
+        user_id, target_role, source_stack, target_companies,
+        current_level, weekly_hours, target_date, goals
+      )
+      values ($1, $2, $3, $4, $5, $6, $7, $8)
+      on conflict (user_id)
+      do update set
+        target_role = excluded.target_role,
+        source_stack = excluded.source_stack,
+        target_companies = excluded.target_companies,
+        current_level = excluded.current_level,
+        weekly_hours = excluded.weekly_hours,
+        target_date = excluded.target_date,
+        goals = excluded.goals,
+        updated_at = now()
+      returning *
+    `,
+    [
+      userId,
+      input.targetRole,
+      input.sourceStack,
+      input.targetCompanies,
+      input.currentLevel,
+      input.weeklyHours,
+      input.targetDate,
+      input.goals
+    ]
+  );
+  return mapInterviewProfile(result.rows[0]);
+}
+
+function mapInterviewProgress(row: QueryResultRow): InterviewProgress {
+  return {
+    reportId: row.report_id,
+    questionKey: row.question_key,
+    status: row.status,
+    confidence: row.confidence,
+    notes: row.notes,
+    nextReviewAt: row.next_review_at?.toISOString() ?? null,
+    updatedAt: row.updated_at.toISOString()
+  };
+}
+
+export async function listInterviewProgress(userId: string) {
+  const result = await pool.query(
+    `
+      select *
+      from interview_question_progress
+      where user_id = $1
+      order by next_review_at asc nulls last, updated_at desc
+      limit 200
+    `,
+    [userId]
+  );
+  return result.rows.map(mapInterviewProgress);
+}
+
+export async function upsertInterviewProgress(userId: string, input: InterviewProgressUpdate) {
+  const result = await pool.query(
+    `
+      insert into interview_question_progress (
+        user_id, report_id, question_key, status, confidence, notes, next_review_at
+      )
+      values ($1, $2, $3, $4, $5, $6, $7)
+      on conflict (user_id, report_id, question_key)
+      do update set
+        status = excluded.status,
+        confidence = excluded.confidence,
+        notes = excluded.notes,
+        next_review_at = excluded.next_review_at,
+        updated_at = now()
+      returning *
+    `,
+    [
+      userId,
+      input.reportId,
+      input.questionKey,
+      input.status,
+      input.confidence,
+      input.notes,
+      input.nextReviewAt
+    ]
+  );
+  return mapInterviewProgress(result.rows[0]);
 }
 
 export async function appendAudit(input: {

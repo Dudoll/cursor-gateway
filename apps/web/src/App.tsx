@@ -3,19 +3,26 @@ import {
   ArchiveRestore,
   ArrowLeft,
   ArrowUp,
+  Bot,
   CalendarDays,
+  CheckCircle2,
   ChevronLeft,
   ChevronRight,
   Database,
   FileText,
   Home,
+  LockKeyhole,
   MessageSquare,
   Plus,
   Sparkles,
+  Target,
   Trash2
 } from "lucide-react";
 import type {
   Conversation,
+  InterviewProfile,
+  InterviewProfileUpdate,
+  InterviewProgress,
   MemoryFact,
   ModelInfo,
   Principal,
@@ -64,6 +71,22 @@ type ApiState = {
   conversations: Conversation[];
   conversationRuns: RunRecord[];
   memory: MemoryFact[];
+};
+
+type InterviewAccess = {
+  entitled: boolean;
+  activationRequired: boolean;
+  plan: "starter" | "pro" | "coaching" | null;
+  expiresAt: string | null;
+  email: string | null;
+};
+
+type InterviewDashboardState = {
+  profile: InterviewProfile | null;
+  progress: InterviewProgress[];
+  recommendations: Array<{ id: string; title: string; detail: string; href: string }>;
+  coachRuns: RunRecord[];
+  latestReports: Array<{ reportId: ReportId; run: RunRecord | null }>;
 };
 
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
@@ -196,11 +219,13 @@ export function App() {
   const reportId = reportIdFromPath();
   if (reportId) return <ReportsPage initialReportId={reportId} />;
   if (window.location.pathname === "/reports") return <ReportsPage />;
+  if (window.location.pathname === "/interview/activate") return <InterviewPortal activate />;
+  if (window.location.pathname === "/interview") return <InterviewPortal />;
   if (window.location.pathname === "/trash") return <TrashPage />;
   return <GatewayDashboard />;
 }
 
-function TopTabs({ active }: { active: "home" | "reports" }) {
+function TopTabs({ active }: { active: "home" | "reports" | "interview" }) {
   return (
     <nav className="top-tabs" aria-label="Primary navigation">
       <a className={active === "home" ? "active" : ""} href="/">
@@ -210,6 +235,10 @@ function TopTabs({ active }: { active: "home" | "reports" }) {
       <a className={active === "reports" ? "active" : ""} href="/reports">
         <FileText aria-hidden="true" size={15} strokeWidth={1.75} />
         <span>Reports</span>
+      </a>
+      <a className={active === "interview" ? "active" : ""} href="/interview">
+        <Target aria-hidden="true" size={15} strokeWidth={1.75} />
+        <span>Interview</span>
       </a>
     </nav>
   );
@@ -1030,6 +1059,335 @@ function ReportsPage({ initialReportId }: { initialReportId?: ReportId }) {
             </small>
           </div>
         </section>
+      </div>
+    </main>
+  );
+}
+
+const EMPTY_INTERVIEW_PROFILE: InterviewProfileUpdate = {
+  targetRole: "AI Agent 开发工程师",
+  sourceStack: "Java / Spring Boot",
+  targetCompanies: [],
+  currentLevel: "starting",
+  weeklyHours: 7,
+  targetDate: null,
+  goals: ""
+};
+
+function InterviewPortal({ activate = false }: { activate?: boolean }) {
+  const [access, setAccess] = useState<InterviewAccess | null>(null);
+  const [dashboard, setDashboard] = useState<InterviewDashboardState | null>(null);
+  const [profile, setProfile] = useState<InterviewProfileUpdate>(EMPTY_INTERVIEW_PROFILE);
+  const [companies, setCompanies] = useState("");
+  const [question, setQuestion] = useState("");
+  const [progressKey, setProgressKey] = useState("");
+  const [progressReport, setProgressReport] = useState<ReportId>("ai-agent-mianshi");
+  const [progressStatus, setProgressStatus] = useState<"new" | "practicing" | "mastered">(
+    "practicing"
+  );
+  const [progressConfidence, setProgressConfidence] = useState(3);
+  const [busy, setBusy] = useState(false);
+  const [activationState, setActivationState] = useState<"idle" | "working" | "done">("idle");
+  const [error, setError] = useState("");
+  const questionRef = useAutosizeTextarea(question, 180);
+
+  async function loadAccess() {
+    const next = await api<InterviewAccess>("/api/interview/access");
+    setAccess(next);
+    return next;
+  }
+
+  async function loadDashboard() {
+    const next = await api<InterviewDashboardState>("/api/interview/dashboard");
+    setDashboard(next);
+    if (next.profile) {
+      const { updatedAt: _updatedAt, ...editable } = next.profile;
+      setProfile(editable);
+      setCompanies(next.profile.targetCompanies.join("、"));
+    }
+    return next;
+  }
+
+  useEffect(() => {
+    let cancelled = false;
+    async function bootstrap() {
+      try {
+        setError("");
+        const current = await loadAccess();
+        if (!cancelled && current.entitled) await loadDashboard();
+      } catch (err) {
+        if (!cancelled) setError(err instanceof Error ? err.message : String(err));
+      }
+    }
+    bootstrap();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!activate || activationState !== "idle") return;
+    const token = new URLSearchParams(window.location.search).get("token");
+    if (!token) {
+      setError("激活链接缺少 token。请使用付款后邮件中的完整链接。");
+      return;
+    }
+    setActivationState("working");
+    api<{ activated: boolean }>("/api/interview/activate", {
+      method: "POST",
+      body: JSON.stringify({ token })
+    })
+      .then(async () => {
+        window.history.replaceState({}, "", "/interview");
+        setActivationState("done");
+        await loadAccess();
+        await loadDashboard();
+      })
+      .catch((err) => {
+        setActivationState("idle");
+        setError(err instanceof Error ? err.message : String(err));
+      });
+  }, [activate, activationState]);
+
+  useEffect(() => {
+    const inFlight = dashboard?.coachRuns.some(isRunInFlight) ?? false;
+    if (!inFlight) return;
+    const timer = window.setTimeout(() => {
+      loadDashboard().catch((err) => setError(err instanceof Error ? err.message : String(err)));
+    }, 1_800);
+    return () => window.clearTimeout(timer);
+  }, [dashboard?.coachRuns]);
+
+  async function saveProfile(event: FormEvent) {
+    event.preventDefault();
+    setBusy(true);
+    setError("");
+    try {
+      const payload: InterviewProfileUpdate = {
+        ...profile,
+        targetCompanies: companies
+          .split(/[、,，]/)
+          .map((item) => item.trim())
+          .filter(Boolean)
+      };
+      await api("/api/interview/profile", {
+        method: "PUT",
+        body: JSON.stringify(payload)
+      });
+      await loadDashboard();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function saveProgress(event: FormEvent) {
+    event.preventDefault();
+    if (!progressKey.trim()) return;
+    setBusy(true);
+    setError("");
+    try {
+      await api("/api/interview/progress", {
+        method: "POST",
+        body: JSON.stringify({
+          reportId: progressReport,
+          questionKey: progressKey.trim(),
+          status: progressStatus,
+          confidence: progressConfidence,
+          notes: "",
+          nextReviewAt: null
+        })
+      });
+      setProgressKey("");
+      await loadDashboard();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function askCoach(event: FormEvent) {
+    event.preventDefault();
+    const trimmed = question.trim();
+    if (!trimmed) return;
+    setBusy(true);
+    setError("");
+    try {
+      await api("/api/interview/questions", {
+        method: "POST",
+        body: JSON.stringify({ question: trimmed, requestId: crypto.randomUUID() })
+      });
+      setQuestion("");
+      await loadDashboard();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const coachRuns = [...(dashboard?.coachRuns ?? [])].reverse();
+
+  return (
+    <main className="interview-app" id="main">
+      <header className="reports-topbar">
+        <BrandMark />
+        <TopTabs active="interview" />
+        <span className={access?.entitled ? "status-ready" : "status-pending"}>
+          {access?.entitled ? `${access.plan ?? "paid"} plan` : "locked"}
+        </span>
+      </header>
+
+      <div className="interview-shell">
+        {error ? <div className="error interview-error">{error}</div> : null}
+
+        {!access ? (
+          <section className="interview-loading" aria-live="polite">
+            <SendBusy />
+            <p>正在验证你的训练空间…</p>
+          </section>
+        ) : !access.entitled ? (
+          <section className="interview-gate">
+            <div className="gate-mark"><LockKeyhole size={24} aria-hidden="true" /></div>
+            <p className="eyebrow">Paid interview workspace</p>
+            <h1>付款邮箱，是这间训练室唯一的钥匙。</h1>
+            <p>
+              付款成功后，系统会把一次性激活链接发送到 <strong>{access.email}</strong>。
+              Cloudflare 登录邮箱与付款邮箱一致后，才能激活并查看个人资料、进度和 AI 对话。
+            </p>
+            <div className="gate-proof">
+              <span><CheckCircle2 size={15} /> 每个账号独立数据</span>
+              <span><CheckCircle2 size={15} /> 激活 token 仅存哈希</span>
+              <span><CheckCircle2 size={15} /> 付款记录可审计</span>
+            </div>
+            <small>
+              {access.activationRequired
+                ? "你的付款记录已创建，请打开邮件里的完整激活链接。"
+                : "尚未发现有效付款记录。付款渠道接入后会自动生成邮件链接。"}
+            </small>
+          </section>
+        ) : (
+          <div className="interview-dashboard">
+            <section className="interview-hero">
+              <div>
+                <p className="eyebrow">Personal interview OS</p>
+                <h1>把每日面经，变成你的训练节奏。</h1>
+                <p>
+                  真实面经负责提供信号；个人目标、复习进度和 AI 教练负责把信号变成下一步。
+                </p>
+              </div>
+              <div className="hero-metric">
+                <strong>{dashboard?.progress.length ?? 0}</strong>
+                <span>tracked questions</span>
+              </div>
+            </section>
+
+            <section className="interview-grid report-preview-grid" aria-label="最新真实面经">
+              {(dashboard?.latestReports ?? []).map(({ reportId, run }) => (
+                <a className="interview-card report-preview" href={`/reports/${reportId}`} key={reportId}>
+                  <span className="card-icon"><FileText size={16} /></span>
+                  <small>{reportId === "ai-infra-mianshi" ? "AI INFRA" : "AI AGENT"}</small>
+                  <h2>{run?.idempotencyKey?.split(":").at(-1) ?? "等待首篇日报"}</h2>
+                  <p>{run?.response?.replace(/[#*`]/g, "").slice(0, 150) ?? "内容生成后会出现在这里。"}</p>
+                  <span>打开完整面经 →</span>
+                </a>
+              ))}
+            </section>
+
+            <section className="interview-grid">
+              <article className="interview-card recommendations-card">
+                <div className="card-heading">
+                  <Target size={17} />
+                  <div><small>NEXT BEST ACTION</small><h2>今日推荐</h2></div>
+                </div>
+                <div className="recommendation-list">
+                  {(dashboard?.recommendations ?? []).map((item, index) => (
+                    <a href={item.href} key={item.id}>
+                      <span>{String(index + 1).padStart(2, "0")}</span>
+                      <div><strong>{item.title}</strong><p>{item.detail}</p></div>
+                    </a>
+                  ))}
+                </div>
+              </article>
+
+              <form className="interview-card profile-card" onSubmit={saveProfile}>
+                <div className="card-heading">
+                  <Sparkles size={17} />
+                  <div><small>YOUR CONTEXT</small><h2>训练规划</h2></div>
+                </div>
+                <label>目标岗位<input value={profile.targetRole} onChange={(e) => setProfile({ ...profile, targetRole: e.target.value })} /></label>
+                <label>当前技术栈<input value={profile.sourceStack} onChange={(e) => setProfile({ ...profile, sourceStack: e.target.value })} /></label>
+                <label>目标公司<input value={companies} onChange={(e) => setCompanies(e.target.value)} placeholder="字节、阿里、OpenAI" /></label>
+                <div className="profile-row">
+                  <label>阶段<select value={profile.currentLevel} onChange={(e) => setProfile({ ...profile, currentLevel: e.target.value as InterviewProfileUpdate["currentLevel"] })}><option value="starting">刚开始</option><option value="building">项目实战</option><option value="interviewing">面试中</option></select></label>
+                  <label>每周小时<input type="number" min="1" max="80" value={profile.weeklyHours} onChange={(e) => setProfile({ ...profile, weeklyHours: Number(e.target.value) })} /></label>
+                </div>
+                <label>目标日期<input type="date" value={profile.targetDate ?? ""} onChange={(e) => setProfile({ ...profile, targetDate: e.target.value || null })} /></label>
+                <label>补充目标<textarea value={profile.goals} onChange={(e) => setProfile({ ...profile, goals: e.target.value })} rows={3} /></label>
+                <button className="primary-action" disabled={busy}>保存规划</button>
+              </form>
+            </section>
+
+            <section className="interview-grid" id="progress">
+              <form className="interview-card progress-card" onSubmit={saveProgress}>
+                <div className="card-heading">
+                  <CheckCircle2 size={17} />
+                  <div><small>SPACED PRACTICE</small><h2>记录一道题</h2></div>
+                </div>
+                <label>题目标识<input value={progressKey} onChange={(e) => setProgressKey(e.target.value)} placeholder="例如：2026-07-12 / Q2" /></label>
+                <div className="profile-row">
+                  <label>栏目<select value={progressReport} onChange={(e) => setProgressReport(e.target.value as ReportId)}><option value="ai-agent-mianshi">AI Agent</option><option value="ai-infra-mianshi">AI Infra</option></select></label>
+                  <label>状态<select value={progressStatus} onChange={(e) => setProgressStatus(e.target.value as typeof progressStatus)}><option value="new">新题</option><option value="practicing">练习中</option><option value="mastered">已掌握</option></select></label>
+                </div>
+                <label>信心 {progressConfidence}/5<input type="range" min="1" max="5" value={progressConfidence} onChange={(e) => setProgressConfidence(Number(e.target.value))} /></label>
+                <button className="secondary-action" disabled={busy || !progressKey.trim()}>保存进度</button>
+              </form>
+
+              <article className="interview-card progress-list-card">
+                <div className="card-heading">
+                  <Target size={17} />
+                  <div><small>PROGRESS</small><h2>最近练习</h2></div>
+                </div>
+                {(dashboard?.progress.length ?? 0) === 0 ? <p className="empty-copy">还没有记录。先从今天的 Q1 开始。</p> : null}
+                <div className="progress-list">
+                  {(dashboard?.progress ?? []).slice(0, 8).map((item) => (
+                    <div key={`${item.reportId}:${item.questionKey}`}>
+                      <span data-status={item.status}>{item.status}</span>
+                      <div><strong>{item.questionKey}</strong><small>{item.reportId} · confidence {item.confidence}/5</small></div>
+                    </div>
+                  ))}
+                </div>
+              </article>
+            </section>
+
+            <section className="interview-card coach-card" id="coach">
+              <div className="card-heading">
+                <Bot size={17} />
+                <div><small>PRIVATE AI THREAD</small><h2>定制化面经问答</h2></div>
+              </div>
+              <div className="coach-messages">
+                {coachRuns.length === 0 ? (
+                  <div className="coach-empty"><Bot size={22} /><p>告诉我你的目标、薄弱点，或让我基于今天的真实面经做一轮模拟面试。</p></div>
+                ) : coachRuns.map((run) => (
+                  <div className="coach-turn" key={run.id}>
+                    <div className="coach-user">{questionFromPrompt(run.prompt)}</div>
+                    <div className="coach-answer">
+                      {run.response ? <Markdown>{run.response}</Markdown> : null}
+                      {run.error ? <pre className="error-pre">{run.error}</pre> : null}
+                      <RunProgressPanel run={run} />
+                    </div>
+                  </div>
+                ))}
+              </div>
+              <form className="coach-composer" onSubmit={askCoach}>
+                <textarea ref={questionRef} value={question} onChange={(e) => setQuestion(e.target.value)} placeholder="例如：我是 Java 后端，基于今天 Agent 面经给我安排 30 分钟模拟面试" rows={1} />
+                <button disabled={busy || !question.trim()} aria-label="发送给 AI 教练">{busy ? <SendBusy /> : <ArrowUp size={18} />}</button>
+              </form>
+            </section>
+          </div>
+        )}
       </div>
     </main>
   );

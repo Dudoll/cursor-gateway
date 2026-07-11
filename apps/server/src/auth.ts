@@ -1,7 +1,13 @@
 import type { FastifyReply, FastifyRequest } from "fastify";
 import type { Principal, Role } from "@cursor-gateway/shared";
 import { config } from "./config.js";
-import { appendAudit, findUserByTelegramId, upsertServicePrincipal, upsertUser } from "./db.js";
+import {
+  appendAudit,
+  findUserByTelegramId,
+  interviewEmailCanAuthenticate,
+  upsertServicePrincipal,
+  upsertUser
+} from "./db.js";
 
 declare module "fastify" {
   interface FastifyRequest {
@@ -32,8 +38,14 @@ function cloudflareAudiences(request: FastifyRequest) {
 export async function requireCloudflareUser(request: FastifyRequest, reply: FastifyReply) {
   const email = headerValue(request, "cf-access-authenticated-user-email")?.toLowerCase();
   const audiences = cloudflareAudiences(request);
+  const staticallyAllowed = Boolean(
+    email && (config.allowedEmails.size === 0 || config.allowedEmails.has(email))
+  );
+  const paidAccess = email && !staticallyAllowed
+    ? await interviewEmailCanAuthenticate(email)
+    : false;
 
-  if (!email || (config.allowedEmails.size > 0 && !config.allowedEmails.has(email))) {
+  if (!email || (!staticallyAllowed && !paidAccess)) {
     await appendAudit({
       eventType: "auth.web.denied",
       details: { email: email ?? null, path: request.url }
@@ -52,7 +64,7 @@ export async function requireCloudflareUser(request: FastifyRequest, reply: Fast
     return reply.code(403).send({ error: "cloudflare_audience_not_allowed" });
   }
 
-  const user = await upsertUser({ email, role: "admin" });
+  const user = await upsertUser({ email, role: staticallyAllowed ? "admin" : "viewer" });
   request.principal = {
     id: user.id,
     email,

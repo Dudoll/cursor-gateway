@@ -1,8 +1,14 @@
 import { z } from "zod";
 import type { FastifyInstance } from "fastify";
+import { createHash, randomBytes } from "node:crypto";
 import {
   automationCreateRunSchema,
   createRunSchema,
+  interviewActivationSchema,
+  interviewEntitlementProvisionSchema,
+  interviewProfileUpdateSchema,
+  interviewProgressUpdateSchema,
+  personalizedInterviewQuestionSchema,
   reportIdSchema,
   reportQuestionSchema,
   runnerJobResultSchema,
@@ -22,6 +28,7 @@ import {
   AutomationThreadWorkspaceMismatchError,
   type RunExecutor,
   addMemoryFact,
+  activateInterviewEntitlement,
   appendAudit,
   approveRun,
   claimNextRun,
@@ -32,6 +39,8 @@ import {
   updateRunProgress,
   getConversation,
   getAutomationThreadRun,
+  getInterviewEntitlementForUser,
+  getInterviewProfile,
   getRunByIdempotencyKey,
   getRunForUser,
   getRunWithConversation,
@@ -40,20 +49,25 @@ import {
   listAutomationThreadRuns,
   listConversationRuns,
   listConversations,
+  listInterviewProgress,
   listMemoryFacts,
   listRuns,
   listTrash,
   listWorkspaces,
   requeueStaleRuns,
+  provisionInterviewEntitlement,
   restoreConversation,
   restoreRun,
   softDeleteConversation,
   softDeleteRun,
   updateConversationAgent,
+  upsertInterviewProfile,
+  upsertInterviewProgress,
   upsertServicePrincipal
 } from "./db.js";
 import { truncateConversationHistory } from "./history.js";
 import {
+  buildPersonalizedInterviewPrompt,
   buildReportQuestionPrompt,
   getReport,
   reportQuestionThreadKey,
@@ -78,6 +92,48 @@ const memoryCreateSchema = z.object({
   scope: z.enum(["user", "workspace"]).default("user"),
   workspaceId: z.string().min(1).optional()
 });
+
+const INTERVIEW_COACH_THREAD = "personalized-interview-coach";
+
+function hashActivationToken(token: string) {
+  return createHash("sha256").update(token, "utf8").digest("hex");
+}
+
+function buildInterviewRecommendations(
+  profile: Awaited<ReturnType<typeof getInterviewProfile>>,
+  progress: Awaited<ReturnType<typeof listInterviewProgress>>
+) {
+  const sourceStack = profile?.sourceStack.toLowerCase() ?? "";
+  const javaTransition = sourceStack.includes("java") || sourceStack.includes("spring");
+  const practicing = progress.filter((item) => item.status === "practicing").length;
+  const mastered = progress.filter((item) => item.status === "mastered").length;
+  const due = progress.filter(
+    (item) => item.nextReviewAt && Date.parse(item.nextReviewAt) <= Date.now()
+  ).length;
+
+  return [
+    {
+      id: "daily-focus",
+      title: javaTransition ? "先练 AI Agent 的 Java 工程化迁移" : "先补齐目标岗位的系统设计主线",
+      detail: javaTransition
+        ? "优先完成工具调用、SSE、并发隔离和可观测性题，再进入 Agent 编排与评测。"
+        : "从最新真实面经中选 2 道系统设计题，按需求、架构、失败模式、指标和取舍作答。",
+      href: javaTransition ? "/reports/ai-agent-mianshi" : "/reports/ai-infra-mianshi"
+    },
+    {
+      id: "review-load",
+      title: due > 0 ? `今天有 ${due} 道题到期复习` : "建立第一组间隔复习题",
+      detail: `当前练习中 ${practicing} 道，已掌握 ${mastered} 道；建议每天新增不超过 3 道。`,
+      href: "/interview#progress"
+    },
+    {
+      id: "weekly-plan",
+      title: `按每周 ${profile?.weeklyHours ?? 5} 小时安排训练`,
+      detail: "建议 40% 真题口述、30% 项目化编码、20% 复盘、10% 行业趋势。",
+      href: "/interview#coach"
+    }
+  ];
+}
 
 // A resumed local agent that no longer exists on the runner. Distinct from
 // region/model/auth errors, which must NOT clear the stored agent id.
@@ -210,7 +266,7 @@ export async function registerRoutes(app: FastifyInstance) {
           threadKey: report.threadKey
         }),
         listAutomationThreadRuns({
-          userId: service.id,
+          userId: request.principal!.id,
           threadKey: reportQuestionThreadKey(report)
         })
       ]);
@@ -238,7 +294,7 @@ export async function registerRoutes(app: FastifyInstance) {
       const run =
         edition ??
         (await getAutomationThreadRun({
-          userId: service.id,
+          userId: request.principal!.id,
           threadKey: reportQuestionThreadKey(report),
           runId: params.runId
         }));
@@ -278,7 +334,7 @@ export async function registerRoutes(app: FastifyInstance) {
           content: run.response!
         }));
       const result = await createAutomationThreadRun({
-        userId: service.id,
+        userId: request.principal!.id,
         threadKey: reportQuestionThreadKey(report),
         title: `${report.name} · AI 问答`,
         status: "queued",
@@ -303,6 +359,196 @@ export async function registerRoutes(app: FastifyInstance) {
         .code(result.created ? 202 : 200)
         .send({ run: result.run, idempotent: !result.created });
     });
+
+    api.get("/interview/access", async (request) => {
+      const principal = request.principal!;
+      const entitlement = principal.email
+        ? await getInterviewEntitlementForUser(principal.id, principal.email)
+        : undefined;
+      const adminAccess = principal.role === "admin";
+      return {
+        entitled:
+          adminAccess ||
+          Boolean(
+            entitlement?.status === "active" && entitlement.activatedUserId === principal.id
+          ),
+        activationRequired: entitlement?.status === "pending",
+        plan: entitlement?.plan ?? (adminAccess ? "coaching" : null),
+        expiresAt: entitlement?.expiresAt ?? null,
+        email: principal.email ?? null
+      };
+    });
+
+    api.post("/interview/activate", async (request, reply) => {
+      const principal = request.principal!;
+      if (!principal.email) return reply.code(400).send({ error: "email_required" });
+      const body = interviewActivationSchema.parse(request.body);
+      const entitlement = await activateInterviewEntitlement({
+        email: principal.email,
+        userId: principal.id,
+        activationTokenHash: hashActivationToken(body.token)
+      });
+      if (!entitlement) {
+        await appendAudit({
+          actorUserId: principal.id,
+          eventType: "interview.entitlement.activation_denied",
+          details: { email: principal.email }
+        });
+        return reply.code(400).send({ error: "activation_link_invalid_or_expired" });
+      }
+      await appendAudit({
+        actorUserId: principal.id,
+        eventType: "interview.entitlement.activated",
+        details: { plan: entitlement.plan }
+      });
+      return { activated: true, plan: entitlement.plan, expiresAt: entitlement.expiresAt };
+    });
+
+    api.register(async (interview) => {
+      interview.addHook("preHandler", async (request, reply) => {
+        const principal = request.principal!;
+        if (principal.role === "admin") return;
+        const entitlement = principal.email
+          ? await getInterviewEntitlementForUser(principal.id, principal.email)
+          : undefined;
+        if (
+          entitlement?.status !== "active" ||
+          entitlement.activatedUserId !== principal.id
+        ) {
+          return reply.code(402).send({ error: "paid_interview_access_required" });
+        }
+      });
+
+      interview.get("/dashboard", async (request) => {
+        const principal = request.principal!;
+        const service = await upsertServicePrincipal("automation", "operator");
+        const [profile, progress, coachRuns, infraRuns, agentRuns] = await Promise.all([
+          getInterviewProfile(principal.id),
+          listInterviewProgress(principal.id),
+          listAutomationThreadRuns({
+            userId: principal.id,
+            threadKey: INTERVIEW_COACH_THREAD,
+            limit: 30
+          }),
+          listAutomationThreadRuns({
+            userId: service.id,
+            threadKey: "daily-ai-infra-mianshi",
+            limit: 1
+          }),
+          listAutomationThreadRuns({
+            userId: service.id,
+            threadKey: "daily-ai-agent-mianshi",
+            limit: 1
+          })
+        ]);
+        return {
+          profile: profile ?? null,
+          progress,
+          recommendations: buildInterviewRecommendations(profile, progress),
+          coachRuns,
+          latestReports: [
+            { reportId: "ai-infra-mianshi", run: infraRuns[0] ?? null },
+            { reportId: "ai-agent-mianshi", run: agentRuns[0] ?? null }
+          ]
+        };
+      });
+
+      interview.get("/profile", async (request) => ({
+        profile: (await getInterviewProfile(request.principal!.id)) ?? null
+      }));
+
+      interview.put("/profile", async (request) => {
+        const body = interviewProfileUpdateSchema.parse(request.body);
+        const profile = await upsertInterviewProfile(request.principal!.id, body);
+        await appendAudit({
+          actorUserId: request.principal!.id,
+          eventType: "interview.profile.updated",
+          details: { targetRole: profile.targetRole, currentLevel: profile.currentLevel }
+        });
+        return { profile };
+      });
+
+      interview.post("/progress", async (request) => {
+        const body = interviewProgressUpdateSchema.parse(request.body);
+        const progress = await upsertInterviewProgress(request.principal!.id, body);
+        await appendAudit({
+          actorUserId: request.principal!.id,
+          eventType: "interview.progress.updated",
+          details: {
+            reportId: progress.reportId,
+            questionKey: progress.questionKey,
+            status: progress.status
+          }
+        });
+        return { progress };
+      });
+
+      interview.get("/questions", async (request) => ({
+        runs: await listAutomationThreadRuns({
+          userId: request.principal!.id,
+          threadKey: INTERVIEW_COACH_THREAD,
+          limit: 50
+        })
+      }));
+
+      interview.post("/questions", async (request, reply) => {
+        const body = personalizedInterviewQuestionSchema.parse(request.body);
+        if (!config.reportModelId || !config.reportWorkspaceId) {
+          return reply.code(503).send({ error: "interview_ai_not_configured" });
+        }
+        if (!modelIsKnown(config.reportModelId)) {
+          return reply.code(503).send({ error: "report_model_not_available" });
+        }
+        const workspace = await getWorkspace(config.reportWorkspaceId);
+        if (!workspace) return reply.code(503).send({ error: "report_workspace_not_available" });
+
+        const principal = request.principal!;
+        const service = await upsertServicePrincipal("automation", "operator");
+        const [profile, progress, infraRuns, agentRuns] = await Promise.all([
+          getInterviewProfile(principal.id),
+          listInterviewProgress(principal.id),
+          listAutomationThreadRuns({
+            userId: service.id,
+            threadKey: "daily-ai-infra-mianshi",
+            limit: 2
+          }),
+          listAutomationThreadRuns({
+            userId: service.id,
+            threadKey: "daily-ai-agent-mianshi",
+            limit: 2
+          })
+        ]);
+        const archive = [
+          ...infraRuns.map((run) => ({ name: "AI Infra 面经", run })),
+          ...agentRuns.map((run) => ({ name: "AI Agent 面经", run }))
+        ]
+          .filter((entry) => entry.run.status === "finished" && Boolean(entry.run.response))
+          .map((entry) => ({
+            name: entry.name,
+            date: entry.run.idempotencyKey?.split(":").at(-1) ?? entry.run.createdAt.slice(0, 10),
+            content: entry.run.response!
+          }));
+        const result = await createAutomationThreadRun({
+          userId: principal.id,
+          threadKey: INTERVIEW_COACH_THREAD,
+          title: "定制化面经 AI 教练",
+          status: "queued",
+          model: config.reportModelId,
+          workspaceId: workspace.id,
+          prompt: buildPersonalizedInterviewPrompt({
+            question: body.question,
+            profile,
+            progress,
+            reportArchive: archive
+          }),
+          idempotencyKey: `coach:${body.requestId}`,
+          allowWrites: false
+        });
+        return reply
+          .code(result.created ? 202 : 200)
+          .send({ run: result.run, idempotent: !result.created });
+      });
+    }, { prefix: "/interview" });
 
     api.get("/conversations", async (request) => ({
       conversations: await listConversations(request.principal!.id)
@@ -486,6 +732,37 @@ export async function registerRoutes(app: FastifyInstance) {
     automation.get("/workspaces", async () => ({
       workspaces: await listWorkspaces()
     }));
+
+    automation.post("/interview-entitlements", async (request, reply) => {
+      const body = interviewEntitlementProvisionSchema.parse(request.body);
+      const token = randomBytes(32).toString("base64url");
+      const activationExpiresAt = new Date(
+        Date.now() + body.activationTtlHours * 60 * 60 * 1_000
+      );
+      const entitlement = await provisionInterviewEntitlement({
+        email: body.email,
+        plan: body.plan,
+        paymentProvider: body.paymentProvider,
+        paymentReference: body.paymentReference,
+        activationTokenHash: hashActivationToken(token),
+        activationExpiresAt,
+        expiresAt: body.expiresAt ? new Date(body.expiresAt) : null
+      });
+      await appendAudit({
+        actorUserId: request.principal!.id,
+        eventType: "interview.entitlement.provisioned",
+        details: {
+          email: entitlement.email,
+          plan: entitlement.plan,
+          paymentProvider: entitlement.paymentProvider,
+          paymentReference: entitlement.paymentReference
+        }
+      });
+      return reply.code(201).send({
+        entitlement,
+        activationUrl: `${config.publicOrigin}/interview/activate?token=${encodeURIComponent(token)}`
+      });
+    });
 
     automation.get("/runs/:runId", async (request, reply) => {
       const params = z.object({ runId: z.string().uuid() }).parse(request.params);
