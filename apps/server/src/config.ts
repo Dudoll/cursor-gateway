@@ -56,6 +56,7 @@ const envSchema = z.object({
   WEB_DEFAULT_MODEL: z.string().default("auto"),
   REPORT_MODEL_ID: z.string().default(""),
   REPORT_WORKSPACE_ID: z.string().default(""),
+  PUBLIC_REPORTS: booleanEnv(false),
   // --- csapi (compatibility API facade, 方案 B). Plaintext-visible: NOT E2EE. ---
   // Mount the Anthropic/OpenAI compatible facade under /v1/*. Auth is a
   // csapi-specific API key, fully separate from Cloudflare Access.
@@ -153,6 +154,7 @@ export const config = {
   webDefaultModel: parsed.WEB_DEFAULT_MODEL,
   reportModelId: parsed.REPORT_MODEL_ID,
   reportWorkspaceId: parsed.REPORT_WORKSPACE_ID,
+  publicReports: parsed.PUBLIC_REPORTS,
   csapi: {
     enabled: parsed.CSAPI_ENABLED,
     apiKeys: new Set(splitCsv(parsed.CSAPI_API_KEYS)),

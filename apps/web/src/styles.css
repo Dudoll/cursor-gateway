@@ -2053,6 +2053,43 @@ a {
   padding: 0.85rem max(1rem, calc((100% - var(--chat-max)) / 2)) 0.85rem;
 }
 
+.report-release-cta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  border-top: 1px solid rgba(196, 214, 204, 0.06);
+  background: linear-gradient(180deg, transparent, rgba(11, 13, 12, 0.72) 30%);
+  padding: 0.9rem max(1rem, calc((100% - var(--chat-max)) / 2));
+}
+
+.report-release-cta > div {
+  display: grid;
+  gap: 0.24rem;
+}
+
+.report-release-cta strong {
+  color: var(--text);
+  font-size: 0.86rem;
+}
+
+.report-release-cta span {
+  color: var(--text-muted);
+  font-size: 0.73rem;
+  line-height: 1.45;
+}
+
+.report-release-cta a {
+  flex: 0 0 auto;
+  border-radius: 999px;
+  background: var(--accent-strong);
+  color: var(--accent-ink);
+  font-size: 0.76rem;
+  font-weight: 700;
+  padding: 0.66rem 0.9rem;
+  text-decoration: none;
+}
+
 .home-composer,
 .report-composer {
   display: grid;
@@ -2583,6 +2620,16 @@ a {
   .home-composer-shell,
   .report-composer-shell {
     padding: 0.45rem 0.5rem max(0.35rem, env(safe-area-inset-bottom));
+  }
+
+  .report-release-cta {
+    align-items: stretch;
+    flex-direction: column;
+    padding: 0.7rem 0.65rem max(0.65rem, env(safe-area-inset-bottom));
+  }
+
+  .report-release-cta a {
+    text-align: center;
   }
 
   .composer-input,

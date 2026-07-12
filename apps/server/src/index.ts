@@ -15,6 +15,21 @@ import { loadCgSecureConfig, registerCsapiSecure } from "./csapi/secure.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
+function requestPath(url: string | undefined) {
+  return new URL(url ?? "/", "http://gateway.local").pathname;
+}
+
+function isPublicReleaseAsset(url: string | undefined) {
+  if (!config.publicReports) return false;
+  const path = requestPath(url);
+  return (
+    path === "/reports" ||
+    path.startsWith("/reports/") ||
+    path.startsWith("/assets/") ||
+    path === "/favicon.ico"
+  );
+}
+
 async function main() {
   const app = Fastify({
     bodyLimit: 3 * 1024 * 1024,
@@ -88,7 +103,7 @@ async function main() {
         return;
       }
       // csapi routes authenticate with their own API key, not Cloudflare Access.
-      if (isCsapiPath(request.raw.url)) {
+      if (isCsapiPath(request.raw.url) || isPublicReleaseAsset(request.raw.url)) {
         return;
       }
       return requireCloudflareUser(request, reply);
@@ -107,6 +122,9 @@ async function main() {
       }
       if (isCsapiPath(request.raw.url)) {
         return reply.code(404).send({ error: "not_found" });
+      }
+      if (isPublicReleaseAsset(request.raw.url)) {
+        return reply.sendFile("index.html");
       }
       const authResult = await requireCloudflareUser(request, reply);
       if (reply.sent) return authResult;

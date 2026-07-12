@@ -145,7 +145,8 @@ import {
   updateSocialPublicationResult,
   upsertInterviewProfile,
   upsertInterviewProgress,
-  upsertServicePrincipal
+  upsertServicePrincipal,
+  upsertWorkspace
 } from "./db.js";
 import {
   E2eeConflictError,
@@ -277,6 +278,22 @@ const scrubLegacySchema = z
   .strict();
 
 const INTERVIEW_COACH_THREAD = "personalized-interview-coach";
+const RELEASE_REPORT_WORKSPACE_ID = "release-content";
+
+const reportEditionImportSchema = z
+  .object({
+    reportId: reportIdSchema,
+    date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+    content: z.string().trim().min(1).max(500_000),
+    sourceRunId: z.string().uuid().optional()
+  })
+  .strict();
+
+function isPublicReportRead(method: string, url: string) {
+  if (!config.publicReports || method !== "GET") return false;
+  const path = new URL(url, "http://gateway.local").pathname;
+  return path === "/api/reports" || path.startsWith("/api/reports/");
+}
 
 function hashActivationToken(token: string) {
   return createHash("sha256").update(token, "utf8").digest("hex");
@@ -414,7 +431,10 @@ export async function registerRoutes(app: FastifyInstance) {
   app.get("/healthz", async () => ({ ok: true }));
 
   app.register(async (api) => {
-    api.addHook("preHandler", requireCloudflareUser);
+    api.addHook("preHandler", async (request, reply) => {
+      if (isPublicReportRead(request.method, request.raw.url ?? request.url)) return;
+      return requireCloudflareUser(request, reply);
+    });
 
     api.get("/me", async (request) => ({ principal: request.principal }));
 
@@ -594,17 +614,20 @@ export async function registerRoutes(app: FastifyInstance) {
           userId: service.id,
           threadKey: report.threadKey
         }),
-        listAutomationThreadRuns({
-          userId: request.principal!.id,
-          threadKey: reportQuestionThreadKey(report)
-        })
+        request.principal
+          ? listAutomationThreadRuns({
+              userId: request.principal.id,
+              threadKey: reportQuestionThreadKey(report)
+            })
+          : Promise.resolve([])
       ]);
       return {
         report,
         runs: [...editions, ...questions].sort(
           (a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt)
         ),
-        configured: Boolean(config.reportModelId && config.reportWorkspaceId)
+        configured: Boolean(config.reportModelId && config.reportWorkspaceId),
+        canAskQuestions: Boolean(request.principal)
       };
     });
 
@@ -620,13 +643,13 @@ export async function registerRoutes(app: FastifyInstance) {
         threadKey: report.threadKey,
         runId: params.runId
       });
-      const run =
-        edition ??
-        (await getAutomationThreadRun({
-          userId: request.principal!.id,
-          threadKey: reportQuestionThreadKey(report),
-          runId: params.runId
-        }));
+      const run = edition ?? (request.principal
+        ? await getAutomationThreadRun({
+            userId: request.principal.id,
+            threadKey: reportQuestionThreadKey(report),
+            runId: params.runId
+          })
+        : undefined);
       if (!run) return reply.code(404).send({ error: "run_not_found" });
       return { run };
     });
@@ -1943,6 +1966,77 @@ export async function registerRoutes(app: FastifyInstance) {
       const run = await getRunForUser(params.runId, request.principal!.id);
       if (!run) return reply.code(404).send({ error: "run_not_found" });
       return { run };
+    });
+
+    automation.get("/reports/:reportId/editions", async (request, reply) => {
+      const params = z.object({ reportId: reportIdSchema }).parse(request.params);
+      const query = z
+        .object({ limit: z.coerce.number().int().min(1).max(30).default(7) })
+        .parse(request.query);
+      const report = getReport(params.reportId);
+      if (!report) return reply.code(404).send({ error: "report_not_found" });
+      const service = await upsertServicePrincipal("automation", "operator");
+      const runs = await listAutomationThreadRuns({
+        userId: service.id,
+        threadKey: report.threadKey,
+        limit: query.limit
+      });
+      return {
+        editions: runs
+          .filter((run) => run.status === "finished" && Boolean(run.response))
+          .map((run) => ({
+            reportId: report.id,
+            date: run.idempotencyKey?.split(":").at(-1) ?? run.createdAt.slice(0, 10),
+            content: run.response!,
+            sourceRunId: run.id,
+            createdAt: run.createdAt
+          }))
+      };
+    });
+
+    automation.post("/reports/import", async (request, reply) => {
+      const body = reportEditionImportSchema.parse(request.body);
+      const report = getReport(body.reportId);
+      if (!report) return reply.code(404).send({ error: "report_not_found" });
+      const service = await upsertServicePrincipal("automation", "operator");
+      await upsertWorkspace({
+        id: RELEASE_REPORT_WORKSPACE_ID,
+        label: "Release report content",
+        path: "/release-content",
+        writable: false
+      });
+      const result = await createAutomationThreadRun({
+        userId: service.id,
+        threadKey: report.threadKey,
+        title: report.name,
+        status: "finished",
+        model: "release-import",
+        workspaceId: RELEASE_REPORT_WORKSPACE_ID,
+        prompt: `Imported release edition ${body.sourceRunId ?? body.date}`,
+        idempotencyKey: `${report.threadKey}:${body.date}`,
+        allowWrites: false
+      });
+      const run = await finishRun({
+        runId: result.run.id,
+        status: "finished",
+        response: body.content,
+        error: null
+      });
+      await appendAudit({
+        actorUserId: request.principal!.id,
+        eventType: "report.release_imported",
+        details: {
+          reportId: report.id,
+          runId: result.run.id,
+          sourceRunId: body.sourceRunId ?? null,
+          date: body.date,
+          created: result.created
+        }
+      });
+      return reply.code(result.created ? 201 : 200).send({
+        run,
+        idempotent: !result.created
+      });
     });
 
     automation.post("/runs", async (request, reply) => {
