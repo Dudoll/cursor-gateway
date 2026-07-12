@@ -12,3 +12,7 @@ This stack is deliberately separate from `cs.joelzt.org`:
 The Cloudflare Access application audience must replace the temporary
 `ALLOWED_CLOUDFLARE_AUD` value in the release `.env` before private login is
 enabled.
+
+`bootstrap-release.sh` generates fresh release-only secrets and copies only the
+static administrator email allowlist from the internal environment. It never
+copies the internal database, payment records, or user state.
