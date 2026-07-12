@@ -233,6 +233,31 @@ export type PersonalizedInterviewQuestionRequest = z.infer<
   typeof personalizedInterviewQuestionSchema
 >;
 
+export const socialInterviewReportIdSchema = z.enum([
+  "ai-infra-mianshi",
+  "ai-agent-mianshi"
+]);
+export type SocialInterviewReportId = z.infer<typeof socialInterviewReportIdSchema>;
+
+export const socialPublicationStatusSchema = z.enum([
+  "draft",
+  "approved",
+  "publishing",
+  "exported",
+  "published",
+  "failed"
+]);
+export type SocialPublicationStatus = z.infer<typeof socialPublicationStatusSchema>;
+
+export const socialPublicationResultSchema = z
+  .object({
+    status: z.enum(["exported", "published", "failed"]),
+    externalPostId: z.string().trim().min(1).max(300).nullable().default(null),
+    error: z.string().trim().max(2_000).nullable().default(null)
+  })
+  .strict();
+export type SocialPublicationResult = z.infer<typeof socialPublicationResultSchema>;
+
 export const memoryFactSchema = z.object({
   id: z.string().uuid(),
   scope: z.enum(["user", "workspace"]),

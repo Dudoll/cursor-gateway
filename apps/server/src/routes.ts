@@ -11,6 +11,8 @@ import {
   personalizedInterviewQuestionSchema,
   reportIdSchema,
   reportQuestionSchema,
+  socialPublicationResultSchema,
+  socialPublicationStatusSchema,
   runnerJobResultSchema,
   runnerJobProgressSchema,
   workspaceSchema,
@@ -29,9 +31,11 @@ import {
   type RunExecutor,
   addMemoryFact,
   activateInterviewEntitlement,
+  approveSocialPublication,
   appendAudit,
   approveRun,
   claimNextRun,
+  claimApprovedSocialPublication,
   createAutomationThreadRun,
   createConversation,
   createRun,
@@ -52,15 +56,18 @@ import {
   listInterviewProgress,
   listMemoryFacts,
   listRuns,
+  listSocialPublications,
   listTrash,
   listWorkspaces,
   requeueStaleRuns,
   provisionInterviewEntitlement,
+  prepareSocialPublication,
   restoreConversation,
   restoreRun,
   softDeleteConversation,
   softDeleteRun,
   updateConversationAgent,
+  updateSocialPublicationResult,
   upsertInterviewProfile,
   upsertInterviewProgress,
   upsertServicePrincipal
@@ -80,6 +87,7 @@ import {
   modelIsKnown,
   registerRunner
 } from "./runnerRegistry.js";
+import { buildXiaohongshuDraft } from "./social.js";
 
 const heartbeatSchema = z.object({
   runnerId: z.string().min(1),
@@ -133,6 +141,40 @@ function buildInterviewRecommendations(
       href: "/interview#coach"
     }
   ];
+}
+
+async function prepareLatestXiaohongshuDrafts() {
+  const service = await upsertServicePrincipal("automation", "operator");
+  const reportIds = ["ai-infra-mianshi", "ai-agent-mianshi"] as const;
+  const drafts = [];
+  for (const reportId of reportIds) {
+    const report = getReport(reportId);
+    if (!report) continue;
+    const runs = await listAutomationThreadRuns({
+      userId: service.id,
+      threadKey: report.threadKey,
+      limit: 10
+    });
+    const run = runs.find((candidate) => candidate.status === "finished" && candidate.response);
+    if (!run) continue;
+    const draft = buildXiaohongshuDraft({
+      reportId,
+      reportName: report.name,
+      run,
+      publicOrigin: config.publicOrigin
+    });
+    drafts.push(
+      await prepareSocialPublication({
+        reportId,
+        runId: run.id,
+        title: draft.title,
+        body: draft.body,
+        landingUrl: draft.landingUrl,
+        assets: draft.cards
+      })
+    );
+  }
+  return drafts;
 }
 
 // A resumed local agent that no longer exists on the runner. Distinct from
@@ -550,6 +592,48 @@ export async function registerRoutes(app: FastifyInstance) {
       });
     }, { prefix: "/interview" });
 
+    api.get("/social/publications", async (request, reply) => {
+      if (!request.principal || !requireRole(request.principal, ["admin", "operator"])) {
+        return reply.code(403).send({ error: "not_allowed" });
+      }
+      const query = z
+        .object({ status: socialPublicationStatusSchema.optional() })
+        .parse(request.query);
+      return {
+        publications: await listSocialPublications(
+          query.status ? { status: query.status, limit: 100 } : { limit: 100 }
+        )
+      };
+    });
+
+    api.post("/social/xiaohongshu/prepare-latest", async (request, reply) => {
+      if (!request.principal || !requireRole(request.principal, ["admin", "operator"])) {
+        return reply.code(403).send({ error: "not_allowed" });
+      }
+      const publications = await prepareLatestXiaohongshuDrafts();
+      await appendAudit({
+        actorUserId: request.principal.id,
+        eventType: "social.xiaohongshu.prepared",
+        details: { publicationIds: publications.map((item) => item.id) }
+      });
+      return { publications };
+    });
+
+    api.post("/social/publications/:publicationId/approve", async (request, reply) => {
+      if (!request.principal || !requireRole(request.principal, ["admin", "operator"])) {
+        return reply.code(403).send({ error: "not_allowed" });
+      }
+      const params = z.object({ publicationId: z.string().uuid() }).parse(request.params);
+      const publication = await approveSocialPublication(params.publicationId);
+      if (!publication) return reply.code(409).send({ error: "publication_not_approvable" });
+      await appendAudit({
+        actorUserId: request.principal.id,
+        eventType: "social.xiaohongshu.approved",
+        details: { publicationId: publication.id, reportId: publication.reportId }
+      });
+      return { publication };
+    });
+
     api.get("/conversations", async (request) => ({
       conversations: await listConversations(request.principal!.id)
     }));
@@ -762,6 +846,39 @@ export async function registerRoutes(app: FastifyInstance) {
         entitlement,
         activationUrl: `${config.publicOrigin}/interview/activate?token=${encodeURIComponent(token)}`
       });
+    });
+
+    automation.post("/social/xiaohongshu/prepare-latest", async (request) => {
+      const publications = await prepareLatestXiaohongshuDrafts();
+      await appendAudit({
+        actorUserId: request.principal!.id,
+        eventType: "social.xiaohongshu.prepared",
+        details: { publicationIds: publications.map((item) => item.id) }
+      });
+      return { publications };
+    });
+
+    automation.post("/social/xiaohongshu/claim", async (_request, reply) => {
+      const publication = await claimApprovedSocialPublication();
+      return publication ? { publication } : reply.code(204).send();
+    });
+
+    automation.post("/social/xiaohongshu/publications/:publicationId/result", async (request, reply) => {
+      const params = z.object({ publicationId: z.string().uuid() }).parse(request.params);
+      const body = socialPublicationResultSchema.parse(request.body);
+      const publication = await updateSocialPublicationResult({
+        id: params.publicationId,
+        status: body.status,
+        externalPostId: body.externalPostId,
+        error: body.error
+      });
+      if (!publication) return reply.code(409).send({ error: "publication_not_updateable" });
+      await appendAudit({
+        actorUserId: request.principal!.id,
+        eventType: `social.xiaohongshu.${body.status}`,
+        details: { publicationId: publication.id, externalPostId: publication.externalPostId }
+      });
+      return { publication };
     });
 
     automation.get("/runs/:runId", async (request, reply) => {

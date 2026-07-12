@@ -12,6 +12,8 @@ import type {
   Role,
   RunRecord,
   RunStatus,
+  SocialInterviewReportId,
+  SocialPublicationStatus,
   Workspace
 } from "@cursor-gateway/shared";
 import { config } from "./config.js";
@@ -201,6 +203,26 @@ export async function migrate() {
       check (confidence between 1 and 5)
     );
 
+    create table if not exists social_publications (
+      id uuid primary key default gen_random_uuid(),
+      platform text not null,
+      report_id text not null,
+      run_id uuid not null references runs(id) on delete cascade,
+      status text not null default 'draft',
+      title text not null,
+      body text not null,
+      landing_url text not null,
+      assets jsonb not null default '[]'::jsonb,
+      external_post_id text,
+      error text,
+      approved_at timestamptz,
+      published_at timestamptz,
+      created_at timestamptz not null default now(),
+      updated_at timestamptz not null default now(),
+      unique (platform, run_id),
+      check (status in ('draft', 'approved', 'publishing', 'exported', 'published', 'failed'))
+    );
+
     create index if not exists runs_status_created_idx on runs(status, created_at);
     drop index if exists runs_user_idempotency_unique;
     create unique index if not exists runs_user_idempotency_active_unique
@@ -232,6 +254,8 @@ export async function migrate() {
       where activation_token_hash is not null;
     create index if not exists interview_progress_user_review_idx
       on interview_question_progress(user_id, next_review_at, updated_at desc);
+    create index if not exists social_publications_queue_idx
+      on social_publications(platform, status, created_at);
   `);
 }
 
@@ -1499,6 +1523,145 @@ export async function upsertInterviewProgress(userId: string, input: InterviewPr
     ]
   );
   return mapInterviewProgress(result.rows[0]);
+}
+
+export type SocialPublicationRecord = {
+  id: string;
+  platform: "xiaohongshu";
+  reportId: SocialInterviewReportId;
+  runId: string;
+  status: SocialPublicationStatus;
+  title: string;
+  body: string;
+  landingUrl: string;
+  assets: unknown[];
+  externalPostId: string | null;
+  error: string | null;
+  approvedAt: string | null;
+  publishedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+function mapSocialPublication(row: QueryResultRow): SocialPublicationRecord {
+  return {
+    id: row.id,
+    platform: row.platform,
+    reportId: row.report_id,
+    runId: row.run_id,
+    status: row.status,
+    title: row.title,
+    body: row.body,
+    landingUrl: row.landing_url,
+    assets: Array.isArray(row.assets) ? row.assets : [],
+    externalPostId: row.external_post_id ?? null,
+    error: row.error ?? null,
+    approvedAt: row.approved_at?.toISOString() ?? null,
+    publishedAt: row.published_at?.toISOString() ?? null,
+    createdAt: row.created_at.toISOString(),
+    updatedAt: row.updated_at.toISOString()
+  };
+}
+
+export async function prepareSocialPublication(input: {
+  reportId: SocialInterviewReportId;
+  runId: string;
+  title: string;
+  body: string;
+  landingUrl: string;
+  assets: unknown[];
+}) {
+  const result = await pool.query(
+    `
+      insert into social_publications (
+        platform, report_id, run_id, status, title, body, landing_url, assets
+      )
+      values ('xiaohongshu', $1, $2, 'draft', $3, $4, $5, $6::jsonb)
+      on conflict (platform, run_id)
+      do update set
+        title = case when social_publications.status = 'published' then social_publications.title else excluded.title end,
+        body = case when social_publications.status = 'published' then social_publications.body else excluded.body end,
+        landing_url = case when social_publications.status = 'published' then social_publications.landing_url else excluded.landing_url end,
+        assets = case when social_publications.status = 'published' then social_publications.assets else excluded.assets end,
+        updated_at = now()
+      returning *
+    `,
+    [input.reportId, input.runId, input.title, input.body, input.landingUrl, JSON.stringify(input.assets)]
+  );
+  return mapSocialPublication(result.rows[0]);
+}
+
+export async function listSocialPublications(input?: {
+  status?: SocialPublicationStatus;
+  limit?: number;
+}) {
+  const result = await pool.query(
+    `
+      select *
+      from social_publications
+      where platform = 'xiaohongshu'
+        and ($1::text is null or status = $1)
+      order by created_at desc
+      limit $2
+    `,
+    [input?.status ?? null, input?.limit ?? 50]
+  );
+  return result.rows.map(mapSocialPublication);
+}
+
+export async function approveSocialPublication(id: string) {
+  const result = await pool.query(
+    `
+      update social_publications
+      set status = 'approved', approved_at = now(), error = null, updated_at = now()
+      where id = $1 and status in ('draft', 'failed')
+      returning *
+    `,
+    [id]
+  );
+  return result.rows[0] ? mapSocialPublication(result.rows[0]) : undefined;
+}
+
+export async function claimApprovedSocialPublication() {
+  const result = await pool.query(
+    `
+      update social_publications
+      set status = 'publishing', updated_at = now()
+      where id = (
+        select id
+        from social_publications
+        where platform = 'xiaohongshu' and status = 'approved'
+        order by created_at asc
+        for update skip locked
+        limit 1
+      )
+      returning *
+    `
+  );
+  return result.rows[0] ? mapSocialPublication(result.rows[0]) : undefined;
+}
+
+export async function updateSocialPublicationResult(input: {
+  id: string;
+  status: "exported" | "published" | "failed";
+  externalPostId: string | null;
+  error: string | null;
+}) {
+  const result = await pool.query(
+    `
+      update social_publications
+      set
+        status = $2,
+        external_post_id = $3,
+        error = $4,
+        published_at = case when $2 = 'published' then now() else published_at end,
+        updated_at = now()
+      where id = $1 and status in ('approved', 'publishing', 'exported', 'failed')
+      returning *
+    `,
+    [input.id, input.status, input.externalPostId, input.error]
+  );
+  return result.rows[0] ? mapSocialPublication(result.rows[0]) : undefined;
 }
 
 export async function appendAudit(input: {
