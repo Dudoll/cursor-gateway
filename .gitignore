@@ -16,6 +16,7 @@ apps/*/vite.config.d.ts.map
 
 .env
 .env.*
+.runner.env
 !.env.example
 !.env.*.example
 

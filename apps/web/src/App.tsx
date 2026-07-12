@@ -89,7 +89,23 @@ type InterviewDashboardState = {
   latestReports: Array<{ reportId: ReportId; run: RunRecord | null }>;
 };
 
+function cloudflareLoginHref(redirectPath = "/interview") {
+  const redirectUrl = new URL(redirectPath, window.location.origin).toString();
+  return `/cdn-cgi/access/login?redirect_url=${encodeURIComponent(redirectUrl)}`;
+}
+
+function isAuthDeniedError(err: unknown) {
+  const message = err instanceof Error ? err.message : String(err);
+  return (
+    message.startsWith("403:") ||
+    message.startsWith("401:") ||
+    message.includes("email_not_allowed") ||
+    message.includes("cloudflare_audience_not_allowed")
+  );
+}
+
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
+
   const response = await fetch(path, {
     ...init,
     headers: {
@@ -1066,7 +1082,7 @@ function ReportsPage({ initialReportId }: { initialReportId?: ReportId }) {
                 <strong>把今天的面经变成你的训练计划</strong>
                 <span>付款激活后，可使用个人进度、题目推荐和定制化 AI 面试问答。</span>
               </div>
-              <a href="/interview">进入定制训练</a>
+              <a href={cloudflareLoginHref("/interview")}>登录进入定制训练</a>
             </div>
           ) : (
             <div className="report-composer-shell">
@@ -1122,10 +1138,12 @@ function InterviewPortal({ activate = false }: { activate?: boolean }) {
   const [busy, setBusy] = useState(false);
   const [activationState, setActivationState] = useState<"idle" | "working" | "done">("idle");
   const [error, setError] = useState("");
+  const [needsLogin, setNeedsLogin] = useState(false);
   const questionRef = useAutosizeTextarea(question, 180);
 
   async function loadAccess() {
     const next = await api<InterviewAccess>("/api/interview/access");
+    setNeedsLogin(false);
     setAccess(next);
     return next;
   }
@@ -1149,7 +1167,14 @@ function InterviewPortal({ activate = false }: { activate?: boolean }) {
         const current = await loadAccess();
         if (!cancelled && current.entitled) await loadDashboard();
       } catch (err) {
-        if (!cancelled) setError(err instanceof Error ? err.message : String(err));
+        if (!cancelled) {
+          if (isAuthDeniedError(err)) {
+            setNeedsLogin(true);
+            setError("");
+          } else {
+            setError(err instanceof Error ? err.message : String(err));
+          }
+        }
       }
     }
     bootstrap();
@@ -1276,7 +1301,20 @@ function InterviewPortal({ activate = false }: { activate?: boolean }) {
       <div className="interview-shell">
         {error ? <div className="error interview-error">{error}</div> : null}
 
-        {!access ? (
+        {needsLogin ? (
+          <section className="interview-gate">
+            <div className="gate-mark"><LockKeyhole size={24} aria-hidden="true" /></div>
+            <p className="eyebrow">Private interview workspace</p>
+            <h1>先登录，再进入你的训练室。</h1>
+            <p>
+              公开面经无需登录。定制训练、个人进度和 AI 教练需要通过 Cloudflare Access 验证邮箱后使用。
+            </p>
+            <a className="primary-action interview-login-button" href={cloudflareLoginHref("/interview")}>
+              使用 Cloudflare 登录
+            </a>
+            <small>登录邮箱需与付款邮箱一致，才能激活私人训练空间。</small>
+          </section>
+        ) : !access ? (
           <section className="interview-loading" aria-live="polite">
             <SendBusy />
             <p>正在验证你的训练空间…</p>
