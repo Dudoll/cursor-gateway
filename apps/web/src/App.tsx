@@ -332,15 +332,37 @@ function E2eeRunProgressPanel({ run }: { run: DecryptedRun }) {
   );
 }
 
-function reportIdFromPath(): ReportId | undefined {
-  const match = window.location.pathname.match(/^\/reports\/([^/]+)\/?$/);
+function reportIdFromPath(pathname = window.location.pathname): ReportId | undefined {
+  const match = pathname.match(/^\/reports\/([^/]+)\/?$/);
   const candidate = match?.[1] as ReportId | undefined;
   return candidate && REPORT_IDS.has(candidate) ? candidate : undefined;
+}
+
+function isReportDetailPath(pathname = window.location.pathname) {
+  return /^\/reports\/[^/]+\/?$/.test(pathname);
+}
+
+function UnknownReportPage() {
+  return (
+    <main className="reports-app" id="main">
+      <header className="reports-topbar">
+        <BrandMark />
+        <TopTabs active="reports" />
+      </header>
+      <section className="report-welcome route-not-found">
+        <div className="welcome-mark"><FileText aria-hidden="true" size={21} /></div>
+        <h1>Report not found</h1>
+        <p>This report link is no longer available. Choose another daily report.</p>
+        <a className="primary-action" href="/reports">Open daily reports</a>
+      </section>
+    </main>
+  );
 }
 
 export function App() {
   const reportId = reportIdFromPath();
   if (reportId) return <ReportsPage initialReportId={reportId} />;
+  if (isReportDetailPath()) return <UnknownReportPage />;
   if (window.location.pathname === "/reports") return <ReportsPage />;
   if (window.location.pathname === "/interview/activate") return <InterviewPortal activate />;
   if (window.location.pathname === "/interview") return <InterviewPortal />;
