@@ -1,0 +1,28 @@
+[Unit]
+Description=Cursor Gateway release Hermes Q&A worker
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/home/joel/.hermes/hermes-agent/venv/bin/python /home/joel/cursor-gateway-release/apps/hermes-runner/hermes_cursor_runner.py
+WorkingDirectory=/home/joel/.hermes
+EnvironmentFile=/home/joel/cursor-gateway-release/.runner.env
+Environment="PATH=/home/joel/.hermes/hermes-agent/venv/bin:/home/joel/.local/bin:/usr/local/bin:/usr/bin:/bin"
+Environment="VIRTUAL_ENV=/home/joel/.hermes/hermes-agent/venv"
+Environment="HERMES_HOME=/home/joel/.hermes"
+Environment="PYTHONUNBUFFERED=1"
+Restart=always
+RestartSec=10
+KillMode=mixed
+KillSignal=SIGTERM
+TimeoutStopSec=30
+UMask=0077
+MemoryHigh=512M
+MemoryMax=768M
+TasksMax=256
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

@@ -15,7 +15,12 @@ from pathlib import Path
 from typing import Any
 
 HERMES_HOME = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes"))
-PENDING_RESULT = HERMES_HOME / "cursor_runner_pending_result.json"
+PENDING_RESULT = Path(
+    os.environ.get(
+        "CURSOR_GATEWAY_HERMES_PENDING_RESULT",
+        HERMES_HOME / "cursor_runner_pending_result.json",
+    )
+)
 
 
 def load_dotenv() -> None:

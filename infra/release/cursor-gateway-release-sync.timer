@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily release interview report mirror
+
+[Timer]
+OnCalendar=*-*-* 17:40:00 America/Los_Angeles
+Persistent=true
+RandomizedDelaySec=120
+Unit=cursor-gateway-release-sync.service
+
+[Install]
+WantedBy=timers.target
