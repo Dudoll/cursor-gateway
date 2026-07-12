@@ -43,6 +43,13 @@ powershell -ExecutionPolicy Bypass -File apps\windows-runner\scripts\start-wsl-e
 
 Details and troubleshooting: [`docs/runner.md`](docs/runner.md).
 
+Related deployment guides:
+
+- [docs/deploy.md](docs/deploy.md) — VPS / Cloudflare / Telegram
+- [docs/windows-runner.md](docs/windows-runner.md) — Windows Runner 与守护进程
+- [docs/interview-commercialization.md](docs/interview-commercialization.md) — 付费面试空间、多租户隔离与小红书发布框架
+- [infra/reverse-proxy.md](infra/reverse-proxy.md) — 接到已有 Nginx / Caddy
+
 ## Quick start: the server
 
 Host once on a VPS with Docker. **Recommended:** use the foolproof web wizard so you never hand-edit secrets:
