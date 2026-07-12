@@ -16,3 +16,7 @@ enabled.
 `bootstrap-release.sh` generates fresh release-only secrets and copies only the
 static administrator email allowlist from the internal environment. It never
 copies the internal database, payment records, or user state.
+
+After the containers are healthy, `activate-release.sh` installs the Nginx
+virtual host, enables the dedicated Hermes worker and daily content-sync timer,
+then performs one immediate sync.
