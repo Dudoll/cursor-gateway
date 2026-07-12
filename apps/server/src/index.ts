@@ -25,6 +25,8 @@ function isPublicReleaseAsset(url: string | undefined) {
   return (
     path === "/reports" ||
     path.startsWith("/reports/") ||
+    path === "/interview" ||
+    path.startsWith("/interview/") ||
     path.startsWith("/assets/") ||
     path === "/favicon.ico"
   );
