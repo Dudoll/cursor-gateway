@@ -20,7 +20,8 @@ const envSchema = z.object({
   RUNNER_MAX_CONCURRENT_JOBS: z.coerce.number().int().positive().default(3),
   WEB_DEFAULT_MODEL: z.string().default("auto"),
   REPORT_MODEL_ID: z.string().default(""),
-  REPORT_WORKSPACE_ID: z.string().default("")
+  REPORT_WORKSPACE_ID: z.string().default(""),
+  PUBLIC_REPORTS: z.coerce.boolean().default(false)
 });
 
 const splitCsv = (value: string) =>
@@ -51,7 +52,8 @@ export const config = {
   runnerMaxConcurrentJobs: parsed.RUNNER_MAX_CONCURRENT_JOBS,
   webDefaultModel: parsed.WEB_DEFAULT_MODEL,
   reportModelId: parsed.REPORT_MODEL_ID,
-  reportWorkspaceId: parsed.REPORT_WORKSPACE_ID
+  reportWorkspaceId: parsed.REPORT_WORKSPACE_ID,
+  publicReports: parsed.PUBLIC_REPORTS
 };
 
 export const isProduction = config.nodeEnv === "production";

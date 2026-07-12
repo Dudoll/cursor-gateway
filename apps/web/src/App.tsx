@@ -711,6 +711,7 @@ type ReportDetail = {
   report: ReportDefinition;
   runs: RunRecord[];
   configured: boolean;
+  canAskQuestions?: boolean;
 };
 
 function questionFromPrompt(prompt: string) {
@@ -1059,27 +1060,37 @@ function ReportsPage({ initialReportId }: { initialReportId?: ReportId }) {
             )}
           </div>
 
-          <div className="report-composer-shell">
-            <form className="report-composer" onSubmit={askQuestion}>
-              <textarea
-                ref={questionRef}
-                value={question}
-                onChange={(event) => setQuestion(event.target.value)}
-                onKeyDown={submitOnEnter}
-                placeholder={`Message ${detail?.report.shortName ?? "Report AI"}`}
-                rows={1}
-              />
-              <button
-                aria-label="Send question"
-                disabled={asking || !question.trim() || !detail?.configured}
-              >
-                {asking ? <SendBusy /> : <ArrowUp aria-hidden="true" size={18} strokeWidth={2} />}
-              </button>
-            </form>
-            <small className="composer-hint">
-              Enter to send · swipe or ← → to change day
-            </small>
-          </div>
+          {detail?.canAskQuestions === false ? (
+            <div className="report-release-cta">
+              <div>
+                <strong>把今天的面经变成你的训练计划</strong>
+                <span>付款激活后，可使用个人进度、题目推荐和定制化 AI 面试问答。</span>
+              </div>
+              <a href="/interview">进入定制训练</a>
+            </div>
+          ) : (
+            <div className="report-composer-shell">
+              <form className="report-composer" onSubmit={askQuestion}>
+                <textarea
+                  ref={questionRef}
+                  value={question}
+                  onChange={(event) => setQuestion(event.target.value)}
+                  onKeyDown={submitOnEnter}
+                  placeholder={`Message ${detail?.report.shortName ?? "Report AI"}`}
+                  rows={1}
+                />
+                <button
+                  aria-label="Send question"
+                  disabled={asking || !question.trim() || !detail?.configured}
+                >
+                  {asking ? <SendBusy /> : <ArrowUp aria-hidden="true" size={18} strokeWidth={2} />}
+                </button>
+              </form>
+              <small className="composer-hint">
+                Enter to send · swipe or ← → to change day
+              </small>
+            </div>
+          )}
         </section>
       </div>
     </main>
