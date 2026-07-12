@@ -140,8 +140,8 @@ type InterviewDashboardState = {
 };
 
 function cloudflareLoginHref(redirectPath = "/interview") {
-  const redirectUrl = new URL(redirectPath, window.location.origin).toString();
-  return `/cdn-cgi/access/login?redirect_url=${encodeURIComponent(redirectUrl)}`;
+  const query = new URLSearchParams({ redirect: redirectPath });
+  return `/auth/interview?${query.toString()}`;
 }
 
 function isAuthDeniedError(err: unknown) {
