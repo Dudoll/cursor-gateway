@@ -8,11 +8,6 @@ The default Compose deployment does not bind public ports 80 or 443. It exposes 
 
 Point your public reverse proxy for `gateway.example.com` to that local address.
 
-Keep the `X-Content-Type-Options`, `Referrer-Policy`, `X-Frame-Options`,
-`Strict-Transport-Security`, `Permissions-Policy`, and `Content-Security-Policy`
-headers from the checked-in Nginx/Caddy examples. E2EE API responses also carry
-`Cache-Control: no-store` from the application.
-
 ## Nginx
 
 ```nginx

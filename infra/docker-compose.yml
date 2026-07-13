@@ -4,10 +4,6 @@ services:
       context: ..
       dockerfile: Dockerfile
     restart: unless-stopped
-    # Cap the gateway node process at ~30% of system RAM (1963 MiB total).
-    # memswap_limit == mem_limit disables extra swap beyond the RAM cap.
-    mem_limit: 589m
-    memswap_limit: 589m
     ports:
       - "127.0.0.1:18080:8080"
     env_file:
