@@ -1,46 +1,107 @@
 # Cursor Gateway
 
-受控网关：在 VPS 上提供 Web / Telegram 入口，在 Windows 本机通过 Runner 执行 Cursor 本地 Agent。
+Run Cursor agents against files on your own machine, controlled through a small
+web/Telegram gateway. Two pieces:
 
-> 仓库内**不含**真实 token、密码、Cookie、邮箱白名单。所有密钥只放在本地 `.env`（已被 `.gitignore` 忽略）。
+- **Server** — a small API + web dashboard you host once (Docker). It queues
+  requests and shows results. It never touches your files.
+- **Runner** — runs on the machine that holds your code. It pulls jobs from the
+  server and executes Cursor agents locally. Runs on Linux and WSL.
 
-## 组件
+```
+You (web / Telegram)  ->  Server (VPS, Docker)  ->  Runner (your machine)  ->  your files
+```
 
-- `apps/server`：VPS API、Cloudflare Access 鉴权、Telegram、Runner 队列、审计、Memory
-- `apps/web`：受保护的 React 控制台
-- `apps/browser-extension`：签名的可信 E2EE Web 客户端
-- `apps/windows-runner`：仅出站的 Windows Worker，在白名单工作区跑 Cursor SDK
-- `packages/shared`：共享类型与 schema
-- `packages/e2ee`：浏览器与 Runner 共用的 `cg-e2ee/1` 密码协议
-- `infra`：Docker Compose 与反代示例
+## Quick start: the runner (foolproof)
 
-## 最快上手
+On the machine that has your code (Linux or WSL). You need your gateway URL, the
+server's shared secret, and a Cursor API key.
 
-请直接看：**[docs/快速开始.md](docs/快速开始.md)**（中文、按步骤填空即可）。
+```bash
+git clone https://github.com/Dudoll/cursor-gateway.git
+cd cursor-gateway
 
-进阶说明：
+# 1) First run: installs Node 22 locally and creates the config file.
+./apps/windows-runner/scripts/setup-runner.sh
 
-- [docs/deploy.md](docs/deploy.md) — VPS / Cloudflare / Telegram
-- [docs/windows-runner.md](docs/windows-runner.md) — Windows Runner 与守护进程
-- [docs/e2ee.md](docs/e2ee.md) — 强 E2EE、离线配对、密钥与迁移
-- [infra/reverse-proxy.md](infra/reverse-proxy.md) — 接到已有 Nginx / Caddy
+# 2) Fill in your values (URL, secret, workspaces, API key).
+nano apps/windows-runner/.env
 
-## 本地开发命令
+# 3) Run it again: installs dependencies and builds.
+./apps/windows-runner/scripts/setup-runner.sh
+```
+
+That's it. To keep it running in the background:
+
+```bash
+# Linux with systemd:
+./apps/windows-runner/scripts/install-runner-service.sh
+
+# WSL on Windows (run in an elevated PowerShell):
+powershell -ExecutionPolicy Bypass -File apps\windows-runner\scripts\install-wsl-runner-daemon.ps1
+```
+
+Details and troubleshooting: [`docs/windows-runner.md`](docs/windows-runner.md).
+
+## Quick start: the server
+
+Host once on a VPS with Docker:
+
+```bash
+git clone https://github.com/Dudoll/cursor-gateway.git
+cd cursor-gateway
+cp .env.example .env
+nano .env                       # set secrets, domain, allowed users
+cd infra && docker compose up -d --build
+```
+
+Full deployment (DNS, Cloudflare Access, Telegram, backups):
+[`docs/deploy.md`](docs/deploy.md).
+
+## End-to-end encryption (optional)
+
+For a Gateway-blind path where the VPS, Cloudflare, Postgres, and backups only
+relay ciphertext, use the signed **Cursor Gateway Secure** browser extension
+(`apps/browser-extension`) with an E2EE-capable runner. Prompts, history,
+Memory, progress, and results are encrypted on the endpoints; the runner
+decrypts locally before calling the Cursor SDK.
+
+Setup order, server/runner environment variables (`E2EE_REQUIRED_FOR_WEB`,
+`E2EE_EXTENSION_ORIGINS`, `RUNNER_E2EE_ENABLED`, …), offline pairing, key
+rotation/revocation, the extension build + `SHA256SUMS` check, and the security
+boundary are documented in [`docs/e2ee.md`](docs/e2ee.md). Telegram, Reports,
+Automation, and Hermes are **not** E2EE.
+
+## Repository layout
+
+- `apps/server` — API, auth, Telegram webhook, job queue, audit log, memory,
+  and the `cg-e2ee/1` ciphertext relay routes.
+- `apps/web` — React dashboard (model/workspace selection, history, approvals).
+- `apps/browser-extension` — signed, trusted MV3 E2EE web client.
+- `apps/windows-runner` — the runner (Linux/WSL/Windows) that executes agents.
+- `packages/shared` — shared schemas and TypeScript types.
+- `packages/e2ee` — the `cg-e2ee/1` crypto protocol shared by the extension and runner.
+- `infra` — Docker Compose and reverse-proxy config for the server.
+
+## Local development
 
 ```bash
 npm install
 npm run build
-npm run dev:server
-npm run dev:web
-npm run dev:extension
-npm run dev:runner
+npm run dev:server      # API
+npm run dev:web         # dashboard
+npm run dev:extension   # browser extension (E2EE client)
+npm run dev:runner      # runner
 ```
 
-## 安全提醒
+## Security notes
 
-1. 复制 `.env.example` → `.env`，再填真实值；**永远不要提交 `.env`**。
-2. Windows Runner 的 `apps/windows-runner/.env` 同样不要提交。
-3. `RUNNER_SHARED_SECRET` 必须在 VPS 与 Windows 上一致，且足够长（≥32）。
-4. 用 Cloudflare Access（或等价身份层）保护 Web UI；Runner 接口用共享密钥鉴权。
-5. 生产 Web→Windows 聊天应设置 `E2EE_REQUIRED_FOR_WEB=true`，并只在签名扩展中输入敏感内容。
-6. Runner 本地解密后仍会把明文交给 Cursor 模型服务；E2EE 保护的是 Gateway/VPS 中继。
+1. Copy `.env.example` → `.env`, then fill real values; **never commit `.env`**.
+   The runner's `apps/windows-runner/.env` must not be committed either.
+2. `RUNNER_SHARED_SECRET` must match on the server and runner and be long (≥32).
+3. Protect the web UI with Cloudflare Access (or an equivalent identity layer);
+   the runner endpoints authenticate with the shared secret.
+4. For production Web→Runner chat, set `E2EE_REQUIRED_FOR_WEB=true` and enter
+   sensitive content only in the signed extension. The runner still hands
+   plaintext to the Cursor model service after local decryption; E2EE protects
+   the Gateway/VPS relay, not the model provider.

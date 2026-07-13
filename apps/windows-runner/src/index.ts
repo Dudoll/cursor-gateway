@@ -19,6 +19,7 @@ import { config } from "./config.js";
 import { listCursorModels, runCursorJob } from "./cursorAgent.js";
 import { E2eeJobProcessor } from "./e2eeProcessor.js";
 import { RunnerE2eeState } from "./e2eeState.js";
+import { toLocalPath } from "./pathTranslation.js";
 import { writeHealthSnapshot } from "./health.js";
 
 const GATEWAY_REQUEST_TIMEOUT_MS = 30_000;
@@ -38,8 +39,11 @@ function workspaceId(path: string) {
 function configuredWorkspaces(): Workspace[] {
   return config.workspaces
     .filter((path) => {
-      const exists = existsSync(path);
-      if (!exists) console.warn("A configured workspace path does not exist and will be skipped");
+      // Check the runtime-local path (WSL maps "D:\..." to "/mnt/d/...") but
+      // keep the original path for the registered id/label so a WSL runner
+      // shares the exact workspace the Windows runner registered.
+      const exists = existsSync(toLocalPath(path));
+      if (!exists) console.warn(`Workspace path does not exist and will be skipped: ${path}`);
       return exists;
     })
     .map((path) => ({

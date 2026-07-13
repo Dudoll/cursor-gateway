@@ -7,6 +7,7 @@ import type {
   RunnerJobResult
 } from "@cursor-gateway/shared";
 import { config } from "./config.js";
+import { toLocalPath } from "./pathTranslation.js";
 
 export type ProgressReporter = (progress: {
   kind: RunProgressKind;
@@ -128,7 +129,7 @@ export async function runCursorJob(
     const agentOptions = {
       apiKey: config.cursorApiKey,
       model: { id: job.model },
-      local: { cwd: job.workspace.path }
+      local: { cwd: toLocalPath(job.workspace.path) }
     };
 
     if (job.agentId) {
