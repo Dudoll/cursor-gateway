@@ -1,5 +1,16 @@
 import { z } from "zod";
 
+const booleanEnv = (defaultValue: boolean) =>
+  z.preprocess((value) => {
+    if (value === undefined || value === "") return defaultValue;
+    if (typeof value === "boolean") return value;
+    if (typeof value === "string") {
+      if (["1", "true", "yes", "on"].includes(value.toLowerCase())) return true;
+      if (["0", "false", "no", "off"].includes(value.toLowerCase())) return false;
+    }
+    return value;
+  }, z.boolean());
+
 const envSchema = z.object({
   NODE_ENV: z.string().default("development"),
   PUBLIC_ORIGIN: z.string().url().default("https://gateway.example.com"),
@@ -16,8 +27,10 @@ const envSchema = z.object({
   RUNNER_SHARED_SECRET: z.string().min(32),
   AUTOMATION_SHARED_SECRET: z.string().default(""),
   HERMES_RUNNER_SHARED_SECRET: z.string().default(""),
-  RUNNER_REQUIRE_APPROVAL: z.coerce.boolean().default(false),
+  RUNNER_REQUIRE_APPROVAL: booleanEnv(false),
   RUNNER_MAX_CONCURRENT_JOBS: z.coerce.number().int().positive().default(3),
+  E2EE_REQUIRED_FOR_WEB: booleanEnv(false),
+  E2EE_EXTENSION_ORIGINS: z.string().default(""),
   WEB_DEFAULT_MODEL: z.string().default("auto"),
   REPORT_MODEL_ID: z.string().default(""),
   REPORT_WORKSPACE_ID: z.string().default("")
@@ -49,6 +62,8 @@ export const config = {
   hermesRunnerSharedSecret: parsed.HERMES_RUNNER_SHARED_SECRET,
   runnerRequireApproval: parsed.RUNNER_REQUIRE_APPROVAL,
   runnerMaxConcurrentJobs: parsed.RUNNER_MAX_CONCURRENT_JOBS,
+  e2eeRequiredForWeb: parsed.E2EE_REQUIRED_FOR_WEB,
+  e2eeExtensionOrigins: new Set(splitCsv(parsed.E2EE_EXTENSION_ORIGINS)),
   webDefaultModel: parsed.WEB_DEFAULT_MODEL,
   reportModelId: parsed.REPORT_MODEL_ID,
   reportWorkspaceId: parsed.REPORT_WORKSPACE_ID

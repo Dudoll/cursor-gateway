@@ -9,7 +9,10 @@ import {
   Database,
   FileText,
   Home,
+  LockKeyhole,
   MessageSquare,
+  PanelLeftClose,
+  PanelLeftOpen,
   Plus,
   Sparkles,
   Trash2
@@ -84,7 +87,8 @@ const REPORT_IDS = new Set<ReportId>([
   "finance",
   "news",
   "ai-infra-tips",
-  "ai-infra-interview"
+  "ai-infra-interview",
+  "ai-infra-mianshi"
 ]);
 
 function useAutosizeTextarea(value: string, maxHeight = 220) {
@@ -118,8 +122,30 @@ function formatElapsed(ms: number) {
   return minutes > 0 ? `${minutes}m ${seconds.toString().padStart(2, "0")}s` : `${seconds}s`;
 }
 
+function formatMessageTime(iso: string) {
+  return new Date(iso).toLocaleString("zh-CN", { hour12: false });
+}
+
+function formatLatency(startedAt: string, finishedAt: string) {
+  const milliseconds = Math.max(0, Date.parse(finishedAt) - Date.parse(startedAt));
+  if (milliseconds < 1000) return `${milliseconds} ms`;
+  const seconds = milliseconds / 1000;
+  if (seconds < 60) return `${seconds.toFixed(1)} s`;
+  return `${Math.floor(seconds / 60)}m ${(seconds % 60).toFixed(1)}s`;
+}
+
 function isQuestionRun(run: RunRecord) {
   return run.idempotencyKey?.startsWith("qa:") ?? false;
+}
+
+/** Report calendar / display timezone for the web UI (server OS TZ unchanged). */
+const REPORT_DISPLAY_TIMEZONE = "Asia/Shanghai";
+
+function formatInReportTz(iso: string) {
+  return new Date(iso).toLocaleString("zh-CN", {
+    timeZone: REPORT_DISPLAY_TIMEZONE,
+    hour12: false
+  });
 }
 
 function runDayKey(run: RunRecord) {
@@ -129,7 +155,7 @@ function runDayKey(run: RunRecord) {
     if (match?.[1]) return match[1];
   }
   return new Intl.DateTimeFormat("en-CA", {
-    timeZone: "America/Los_Angeles",
+    timeZone: REPORT_DISPLAY_TIMEZONE,
     year: "numeric",
     month: "2-digit",
     day: "2-digit"
@@ -139,7 +165,7 @@ function runDayKey(run: RunRecord) {
 function formatDayLabel(day: string) {
   const [year, month, date] = day.split("-").map((part) => Number(part));
   if (!year || !month || !date) return day;
-  return `${year}/${month}/${date}`;
+  return `${year}/${month}/${date}（UTC+8）`;
 }
 
 function isRunInFlight(run: RunRecord) {
@@ -214,6 +240,53 @@ function BrandMark() {
   );
 }
 
+const SIDEBAR_COLLAPSED_KEY = "cursor-gateway:sidebar-collapsed";
+
+function useSidebarCollapsed() {
+  const [collapsed, setCollapsed] = useState(() => {
+    try {
+      return window.localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === "1";
+    } catch {
+      return false;
+    }
+  });
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(SIDEBAR_COLLAPSED_KEY, collapsed ? "1" : "0");
+    } catch {
+      /* ignore quota / private mode */
+    }
+  }, [collapsed]);
+
+  return [collapsed, setCollapsed] as const;
+}
+
+function SidebarCollapseToggle({
+  collapsed,
+  onToggle
+}: {
+  collapsed: boolean;
+  onToggle: () => void;
+}) {
+  return (
+    <button
+      aria-expanded={!collapsed}
+      aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+      className="sidebar-collapse-toggle"
+      onClick={onToggle}
+      title={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+      type="button"
+    >
+      {collapsed ? (
+        <PanelLeftOpen aria-hidden="true" size={16} strokeWidth={1.75} />
+      ) : (
+        <PanelLeftClose aria-hidden="true" size={16} strokeWidth={1.75} />
+      )}
+    </button>
+  );
+}
+
 function SendBusy() {
   return <span className="send-loading" aria-hidden="true" />;
 }
@@ -238,13 +311,15 @@ function GatewayDashboard() {
   const [prompt, setPrompt] = useState("");
   const [allowWrites, setAllowWrites] = useState(false);
   const [memoryText, setMemoryText] = useState("");
+  const [e2eeRequired, setE2eeRequired] = useState(false);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useSidebarCollapsed();
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const promptRef = useAutosizeTextarea(prompt);
 
   async function refresh(conversationId = selectedConversationId) {
-    const [me, models, workspaces, runners, conversations, memory, conversationRuns] =
+    const [me, models, workspaces, runners, conversations, memory, policy, conversationRuns] =
       await Promise.all([
       api<{ principal: Principal }>("/api/me"),
       api<{ models: ModelInfo[]; defaultModelId?: string }>("/api/models"),
@@ -252,10 +327,12 @@ function GatewayDashboard() {
       api<{ runners: ApiState["runners"] }>("/api/dashboard-runners"),
       api<{ conversations: Conversation[] }>("/api/conversations"),
       api<{ facts: MemoryFact[] }>("/api/memory"),
+      api<{ requiredForWeb: boolean }>("/api/e2ee-policy"),
       conversationId
         ? api<{ runs: RunRecord[] }>(`/api/conversations/${conversationId}/runs`)
         : Promise.resolve({ runs: [] })
       ]);
+    setE2eeRequired(policy.requiredForWeb);
 
     setState({
       principal: me.principal,
@@ -355,6 +432,10 @@ function GatewayDashboard() {
 
   async function submitRun(event: FormEvent) {
     event.preventDefault();
+    if (e2eeRequired) {
+      setError("Web chat requires the signed Cursor Gateway Secure extension.");
+      return;
+    }
     setLoading(true);
     setError("");
     try {
@@ -382,6 +463,10 @@ function GatewayDashboard() {
 
   async function addMemory(event: FormEvent) {
     event.preventDefault();
+    if (e2eeRequired) {
+      setError("Memory writes require the signed Cursor Gateway Secure extension.");
+      return;
+    }
     setError("");
     if (!memoryText.trim()) return;
     try {
@@ -447,12 +532,23 @@ function GatewayDashboard() {
         </a>
       </header>
 
-      <div className="home-layout">
-        <aside className="home-sidebar">
-          <button className="new-chat-button" type="button" onClick={startNewConversation}>
-            <Plus aria-hidden="true" size={17} strokeWidth={2} />
-            <span>New chat</span>
-          </button>
+      <div className={`home-layout${sidebarCollapsed ? " sidebar-collapsed" : ""}`}>
+        <aside className="home-sidebar" aria-label="Conversations">
+          <div className="sidebar-toolbar">
+            <button
+              className="new-chat-button"
+              type="button"
+              onClick={startNewConversation}
+              title="New chat"
+            >
+              <Plus aria-hidden="true" size={17} strokeWidth={2} />
+              <span>New chat</span>
+            </button>
+            <SidebarCollapseToggle
+              collapsed={sidebarCollapsed}
+              onToggle={() => setSidebarCollapsed((value) => !value)}
+            />
+          </div>
 
           <div className="conversation-list">
             {state.conversations.map((conversation, index) => (
@@ -464,6 +560,7 @@ function GatewayDashboard() {
                   setWorkspaceId(conversation.workspaceId);
                 }}
                 style={{ ["--i" as string]: index } as CSSProperties}
+                title={conversation.title ?? "Untitled conversation"}
                 type="button"
               >
                 <span className="conversation-glyph"><MessageSquare aria-hidden="true" size={15} strokeWidth={1.75} /></span>
@@ -484,10 +581,15 @@ function GatewayDashboard() {
               <textarea
                 value={memoryText}
                 onChange={(event) => setMemoryText(event.target.value)}
-                placeholder="Add a durable preference…"
+                placeholder={
+                  e2eeRequired
+                    ? "Use Cursor Gateway Secure for encrypted Memory"
+                    : "Add a durable preference…"
+                }
                 rows={2}
+                disabled={e2eeRequired}
               />
-              <button disabled={!memoryText.trim()}>Save memory</button>
+              <button disabled={e2eeRequired || !memoryText.trim()}>Save memory</button>
             </form>
             <div>
               {state.memory.slice(0, 6).map((fact) => (
@@ -534,9 +636,21 @@ function GatewayDashboard() {
           </header>
 
           {error ? <div className="error chat-error">{error}</div> : null}
-
           <div className="home-messages">
-            {state.conversationRuns.length === 0 ? (
+            {e2eeRequired ? (
+              <section className="e2ee-required" aria-live="polite">
+                <LockKeyhole aria-hidden="true" size={22} />
+                <div>
+                  <h2>Encrypted chat requires Cursor Gateway Secure</h2>
+                  <p>
+                    Open the signed browser extension, authenticate this Gateway origin, and
+                    verify the Runner fingerprints shown locally on Windows. This VPS-hosted
+                    page never receives E2EE prompt or response plaintext.
+                  </p>
+                </div>
+              </section>
+            ) : null}
+            {state.conversationRuns.length === 0 && !e2eeRequired ? (
               <div className="home-welcome">
                 <div className="welcome-mark"><Sparkles aria-hidden="true" size={21} strokeWidth={1.75} /></div>
                 <h2>Ask the runner</h2>
@@ -551,14 +665,19 @@ function GatewayDashboard() {
               <div className="chat-turn" key={run.id} style={{ ["--i" as string]: index } as CSSProperties}>
                 <div className="chat-message user-message">
                   <div className="message-body">{run.prompt}</div>
+                  <div className="user-message-meta">
+                    <time dateTime={run.createdAt}>Sent {formatMessageTime(run.createdAt)}</time>
+                  </div>
                 </div>
                 <div className="chat-message assistant-message">
                   <div className="message-avatar">{run.model.startsWith("hermes:") ? "H" : "AI"}</div>
                   <div className="message-main">
                     <div className="message-meta">
                       <strong>{run.model.startsWith("hermes:") ? "Hermes" : "Cursor"}</strong>
-                      <span>{run.model}</span>
-                      <time>{new Date(run.createdAt).toLocaleString()}</time>
+                      <span className="message-model">{run.model}</span>
+                      {run.finishedAt ? (
+                        <time dateTime={run.finishedAt}>Answered {formatMessageTime(run.finishedAt)}</time>
+                      ) : null}
                       <button
                         className="message-delete"
                         disabled={run.status === "running"}
@@ -575,6 +694,16 @@ function GatewayDashboard() {
                     {run.response ? <Markdown>{run.response}</Markdown> : null}
                     {run.error ? <pre className="error-pre">{run.error}</pre> : null}
                     <RunProgressPanel run={run} />
+                    {run.finishedAt ? (
+                      <div className="message-metrics">
+                        <span>Latency {formatLatency(run.createdAt, run.finishedAt)}</span>
+                        <span>Input {run.inputTokens?.toLocaleString() ?? "—"} tokens</span>
+                        <span>Output {run.outputTokens?.toLocaleString() ?? "—"} tokens</span>
+                        {run.inputTokens !== null && run.outputTokens !== null ? (
+                          <span>Total {(run.inputTokens + run.outputTokens).toLocaleString()} tokens</span>
+                        ) : null}
+                      </div>
+                    ) : null}
                   </div>
                 </div>
               </div>
@@ -591,15 +720,18 @@ function GatewayDashboard() {
                   onChange={(event) => setPrompt(event.target.value)}
                   onKeyDown={submitOnEnter}
                   placeholder={
-                    selectedHermesModel
+                    e2eeRequired
+                      ? "Open the signed Cursor Gateway Secure extension"
+                      : selectedHermesModel
                       ? "Message Hermes on the VPS"
                       : "Message Cursor about your workspace"
                   }
                   rows={1}
+                  disabled={e2eeRequired}
                 />
                 <button
                   aria-label="Send message"
-                  disabled={loading || !prompt.trim() || !workspaceId}
+                  disabled={e2eeRequired || loading || !prompt.trim() || !workspaceId}
                 >
                   {loading ? <SendBusy /> : <ArrowUp aria-hidden="true" size={18} strokeWidth={2} />}
                 </button>
@@ -623,7 +755,9 @@ function GatewayDashboard() {
                   <input
                     type="checkbox"
                     checked={allowWrites}
-                    disabled={selectedHermesModel || !selectedWorkspace?.writable}
+                    disabled={
+                      e2eeRequired || selectedHermesModel || !selectedWorkspace?.writable
+                    }
                     onChange={(event) => setAllowWrites(event.target.checked)}
                   />
                   Allow writes
@@ -668,6 +802,7 @@ function ReportsPage({ initialReportId }: { initialReportId?: ReportId }) {
   const [asking, setAsking] = useState(false);
   const [selectedDay, setSelectedDay] = useState("");
   const [slideDir, setSlideDir] = useState<"left" | "right" | "none">("none");
+  const [sidebarCollapsed, setSidebarCollapsed] = useSidebarCollapsed();
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
   const touchStartX = useRef<number | null>(null);
@@ -820,11 +955,17 @@ function ReportsPage({ initialReportId }: { initialReportId?: ReportId }) {
         </a>
       </header>
 
-      <div className="reports-layout">
-        <aside className="reports-sidebar">
-          <div className="sidebar-heading">
-            <span>Daily reports</span>
-            <small>{configured ? "AI ready" : "Setup pending"}</small>
+      <div className={`reports-layout${sidebarCollapsed ? " sidebar-collapsed" : ""}`}>
+        <aside className="reports-sidebar" aria-label="Daily reports">
+          <div className="sidebar-toolbar">
+            <div className="sidebar-heading">
+              <span>Daily reports</span>
+              <small>{configured ? "AI ready" : "Setup pending"}</small>
+            </div>
+            <SidebarCollapseToggle
+              collapsed={sidebarCollapsed}
+              onToggle={() => setSidebarCollapsed((value) => !value)}
+            />
           </div>
           <div className="report-thread-list">
             {reports.map((report, index) => (
@@ -833,6 +974,7 @@ function ReportsPage({ initialReportId }: { initialReportId?: ReportId }) {
                 href={`/reports/${report.id}`}
                 key={report.id}
                 style={{ ["--i" as string]: index } as CSSProperties}
+                title={report.shortName}
               >
                 <span className="thread-icon"><FileText aria-hidden="true" size={16} strokeWidth={1.75} /></span>
                 <span>
@@ -982,7 +1124,7 @@ function ReportsPage({ initialReportId }: { initialReportId?: ReportId }) {
                       <div className="message-main">
                         <div className="message-meta">
                           <strong>Report AI</strong>
-                          <time>{new Date(run.createdAt).toLocaleString()}</time>
+                          <time>{formatInReportTz(run.createdAt)}</time>
                         </div>
                         {run.response ? <Markdown>{run.response}</Markdown> : null}
                         {run.error ? <pre className="error-pre">{run.error}</pre> : null}
