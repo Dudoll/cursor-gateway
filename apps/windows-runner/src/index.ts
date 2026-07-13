@@ -5,6 +5,7 @@ import type { RunnerJobProgress, RunnerJobResult, Workspace } from "@cursor-gate
 import { runnerJobSchema } from "@cursor-gateway/shared";
 import { config } from "./config.js";
 import { listCursorModels, runCursorJob } from "./cursorAgent.js";
+import { toLocalPath } from "./pathTranslation.js";
 import { writeHealthSnapshot } from "./health.js";
 
 const GATEWAY_REQUEST_TIMEOUT_MS = 30_000;
@@ -23,7 +24,10 @@ function workspaceId(path: string) {
 function configuredWorkspaces(): Workspace[] {
   return config.workspaces
     .filter((path) => {
-      const exists = existsSync(path);
+      // Check the runtime-local path (WSL maps "D:\..." to "/mnt/d/...") but
+      // keep the original path for the registered id/label so a WSL runner
+      // shares the exact workspace the Windows runner registered.
+      const exists = existsSync(toLocalPath(path));
       if (!exists) console.warn(`Workspace path does not exist and will be skipped: ${path}`);
       return exists;
     })
