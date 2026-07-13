@@ -9,12 +9,14 @@
     "packages/*"
   ],
   "scripts": {
-    "build": "npm run build -w @cursor-gateway/shared && npm run build -w @cursor-gateway/server && npm run build -w @cursor-gateway/web && npm run build -w @cursor-gateway/windows-runner",
+    "build": "npm run build -w @cursor-gateway/shared && npm run build -w @cursor-gateway/e2ee && npm run build -w @cursor-gateway/server && npm run build -w @cursor-gateway/web && npm run build -w @cursor-gateway/browser-extension && npm run build -w @cursor-gateway/windows-runner",
     "dev:server": "npm run dev -w @cursor-gateway/server",
     "dev:web": "npm run dev -w @cursor-gateway/web",
+    "dev:extension": "npm run dev -w @cursor-gateway/browser-extension",
     "dev:runner": "npm run dev -w @cursor-gateway/windows-runner",
     "lint": "npm run lint --workspaces --if-present",
-    "typecheck": "npm run typecheck -w @cursor-gateway/shared && npm run typecheck -w @cursor-gateway/server && npm run typecheck -w @cursor-gateway/web && npm run typecheck -w @cursor-gateway/windows-runner"
+    "test": "npm run test -w @cursor-gateway/e2ee && npm run test -w @cursor-gateway/server && npm run test -w @cursor-gateway/browser-extension && npm run test -w @cursor-gateway/windows-runner",
+    "typecheck": "npm run typecheck -w @cursor-gateway/shared && npm run typecheck -w @cursor-gateway/e2ee && npm run typecheck -w @cursor-gateway/server && npm run typecheck -w @cursor-gateway/web && npm run typecheck -w @cursor-gateway/browser-extension && npm run typecheck -w @cursor-gateway/windows-runner"
   },
   "engines": {
     "node": ">=22.0.0",
