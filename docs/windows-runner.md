@@ -24,6 +24,8 @@ apps\windows-runner\.env
 CURSOR_API_KEY=<你的 Cursor API Key>
 RUNNER_WORKSPACES=C:\Workspaces\project1;D:\Workspaces\project2
 RUNNER_MAX_CONCURRENT_JOBS=3
+RUNNER_E2EE_ENABLED=true
+RUNNER_LEGACY_ENABLED=false
 GATEWAY_URL=https://gateway.example.com
 RUNNER_SHARED_SECRET=<与 VPS 相同>
 ```
@@ -33,6 +35,29 @@ RUNNER_SHARED_SECRET=<与 VPS 相同>
 ```powershell
 .\apps\windows-runner\scripts\start-runner.ps1
 ```
+
+## E2EE 离线配对
+
+Runner 首次启动会在当前 Windows 用户下创建 DPAPI 加密状态。停止 Runner 后输出本地 bundle：
+
+```powershell
+npm run pair:runner -w @cursor-gateway/windows-runner
+```
+
+只把该 bundle 粘贴到受信任的 `Cursor Gateway Secure` 签名扩展，并人工核对 encryption/signing fingerprint。再把扩展显示的 client bundle 导回本机：
+
+```powershell
+npm run pair:client -w @cursor-gateway/windows-runner -- <client-bundle>
+npm run pair:list -w @cursor-gateway/windows-runner
+```
+
+撤销设备：
+
+```powershell
+npm run pair:revoke -w @cursor-gateway/windows-runner -- <client-id>
+```
+
+默认状态文件为 `%USERPROFILE%\.cursor-gateway\runner-e2ee-state.dat`。不要复制到 VPS，不要开启 `RUNNER_E2EE_ALLOW_INSECURE_DEV_STORAGE`。完整说明见 [e2ee.md](e2ee.md)。
 
 ## 保持运行（自恢复）
 

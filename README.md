@@ -8,8 +8,10 @@
 
 - `apps/server`：VPS API、Cloudflare Access 鉴权、Telegram、Runner 队列、审计、Memory
 - `apps/web`：受保护的 React 控制台
+- `apps/browser-extension`：签名的可信 E2EE Web 客户端
 - `apps/windows-runner`：仅出站的 Windows Worker，在白名单工作区跑 Cursor SDK
 - `packages/shared`：共享类型与 schema
+- `packages/e2ee`：浏览器与 Runner 共用的 `cg-e2ee/1` 密码协议
 - `infra`：Docker Compose 与反代示例
 
 ## 最快上手
@@ -20,6 +22,7 @@
 
 - [docs/deploy.md](docs/deploy.md) — VPS / Cloudflare / Telegram
 - [docs/windows-runner.md](docs/windows-runner.md) — Windows Runner 与守护进程
+- [docs/e2ee.md](docs/e2ee.md) — 强 E2EE、离线配对、密钥与迁移
 - [infra/reverse-proxy.md](infra/reverse-proxy.md) — 接到已有 Nginx / Caddy
 
 ## 本地开发命令
@@ -29,6 +32,7 @@ npm install
 npm run build
 npm run dev:server
 npm run dev:web
+npm run dev:extension
 npm run dev:runner
 ```
 
@@ -38,3 +42,5 @@ npm run dev:runner
 2. Windows Runner 的 `apps/windows-runner/.env` 同样不要提交。
 3. `RUNNER_SHARED_SECRET` 必须在 VPS 与 Windows 上一致，且足够长（≥32）。
 4. 用 Cloudflare Access（或等价身份层）保护 Web UI；Runner 接口用共享密钥鉴权。
+5. 生产 Web→Windows 聊天应设置 `E2EE_REQUIRED_FOR_WEB=true`，并只在签名扩展中输入敏感内容。
+6. Runner 本地解密后仍会把明文交给 Cursor 模型服务；E2EE 保护的是 Gateway/VPS 中继。

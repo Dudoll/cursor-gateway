@@ -4,10 +4,20 @@ services:
       context: ..
       dockerfile: Dockerfile
     restart: unless-stopped
+    # Cap the gateway node process at ~30% of system RAM (1963 MiB total).
+    # memswap_limit == mem_limit disables extra swap beyond the RAM cap.
+    mem_limit: 589m
+    memswap_limit: 589m
     ports:
       - "127.0.0.1:18080:8080"
     env_file:
       - ../.env
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://127.0.0.1:8080/healthz',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
     depends_on:
       postgres:
         condition: service_healthy
