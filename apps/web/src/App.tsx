@@ -9,6 +9,7 @@ import {
   Database,
   FileText,
   Home,
+  LockKeyhole,
   MessageSquare,
   PanelLeftClose,
   PanelLeftOpen,
@@ -310,6 +311,7 @@ function GatewayDashboard() {
   const [prompt, setPrompt] = useState("");
   const [allowWrites, setAllowWrites] = useState(false);
   const [memoryText, setMemoryText] = useState("");
+  const [e2eeRequired, setE2eeRequired] = useState(false);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useSidebarCollapsed();
@@ -317,7 +319,7 @@ function GatewayDashboard() {
   const promptRef = useAutosizeTextarea(prompt);
 
   async function refresh(conversationId = selectedConversationId) {
-    const [me, models, workspaces, runners, conversations, memory, conversationRuns] =
+    const [me, models, workspaces, runners, conversations, memory, policy, conversationRuns] =
       await Promise.all([
       api<{ principal: Principal }>("/api/me"),
       api<{ models: ModelInfo[]; defaultModelId?: string }>("/api/models"),
@@ -325,10 +327,12 @@ function GatewayDashboard() {
       api<{ runners: ApiState["runners"] }>("/api/dashboard-runners"),
       api<{ conversations: Conversation[] }>("/api/conversations"),
       api<{ facts: MemoryFact[] }>("/api/memory"),
+      api<{ requiredForWeb: boolean }>("/api/e2ee-policy"),
       conversationId
         ? api<{ runs: RunRecord[] }>(`/api/conversations/${conversationId}/runs`)
         : Promise.resolve({ runs: [] })
       ]);
+    setE2eeRequired(policy.requiredForWeb);
 
     setState({
       principal: me.principal,
@@ -428,6 +432,10 @@ function GatewayDashboard() {
 
   async function submitRun(event: FormEvent) {
     event.preventDefault();
+    if (e2eeRequired) {
+      setError("Web chat requires the signed Cursor Gateway Secure extension.");
+      return;
+    }
     setLoading(true);
     setError("");
     try {
@@ -455,6 +463,10 @@ function GatewayDashboard() {
 
   async function addMemory(event: FormEvent) {
     event.preventDefault();
+    if (e2eeRequired) {
+      setError("Memory writes require the signed Cursor Gateway Secure extension.");
+      return;
+    }
     setError("");
     if (!memoryText.trim()) return;
     try {
@@ -569,10 +581,15 @@ function GatewayDashboard() {
               <textarea
                 value={memoryText}
                 onChange={(event) => setMemoryText(event.target.value)}
-                placeholder="Add a durable preference…"
+                placeholder={
+                  e2eeRequired
+                    ? "Use Cursor Gateway Secure for encrypted Memory"
+                    : "Add a durable preference…"
+                }
                 rows={2}
+                disabled={e2eeRequired}
               />
-              <button disabled={!memoryText.trim()}>Save memory</button>
+              <button disabled={e2eeRequired || !memoryText.trim()}>Save memory</button>
             </form>
             <div>
               {state.memory.slice(0, 6).map((fact) => (
@@ -619,9 +636,21 @@ function GatewayDashboard() {
           </header>
 
           {error ? <div className="error chat-error">{error}</div> : null}
-
           <div className="home-messages">
-            {state.conversationRuns.length === 0 ? (
+            {e2eeRequired ? (
+              <section className="e2ee-required" aria-live="polite">
+                <LockKeyhole aria-hidden="true" size={22} />
+                <div>
+                  <h2>Encrypted chat requires Cursor Gateway Secure</h2>
+                  <p>
+                    Open the signed browser extension, authenticate this Gateway origin, and
+                    verify the Runner fingerprints shown locally on Windows. This VPS-hosted
+                    page never receives E2EE prompt or response plaintext.
+                  </p>
+                </div>
+              </section>
+            ) : null}
+            {state.conversationRuns.length === 0 && !e2eeRequired ? (
               <div className="home-welcome">
                 <div className="welcome-mark"><Sparkles aria-hidden="true" size={21} strokeWidth={1.75} /></div>
                 <h2>Ask the runner</h2>
@@ -691,15 +720,18 @@ function GatewayDashboard() {
                   onChange={(event) => setPrompt(event.target.value)}
                   onKeyDown={submitOnEnter}
                   placeholder={
-                    selectedHermesModel
+                    e2eeRequired
+                      ? "Open the signed Cursor Gateway Secure extension"
+                      : selectedHermesModel
                       ? "Message Hermes on the VPS"
                       : "Message Cursor about your workspace"
                   }
                   rows={1}
+                  disabled={e2eeRequired}
                 />
                 <button
                   aria-label="Send message"
-                  disabled={loading || !prompt.trim() || !workspaceId}
+                  disabled={e2eeRequired || loading || !prompt.trim() || !workspaceId}
                 >
                   {loading ? <SendBusy /> : <ArrowUp aria-hidden="true" size={18} strokeWidth={2} />}
                 </button>
@@ -723,7 +755,9 @@ function GatewayDashboard() {
                   <input
                     type="checkbox"
                     checked={allowWrites}
-                    disabled={selectedHermesModel || !selectedWorkspace?.writable}
+                    disabled={
+                      e2eeRequired || selectedHermesModel || !selectedWorkspace?.writable
+                    }
                     onChange={(event) => setAllowWrites(event.target.checked)}
                   />
                   Allow writes

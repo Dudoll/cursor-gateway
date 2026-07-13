@@ -37,6 +37,11 @@ if ($LASTEXITCODE -ne 0) {
   throw "Shared package build failed with exit code $LASTEXITCODE"
 }
 
+npm run build -w "@cursor-gateway/e2ee"
+if ($LASTEXITCODE -ne 0) {
+  throw "E2EE package build failed with exit code $LASTEXITCODE"
+}
+
 npm run build -w "@cursor-gateway/windows-runner"
 if ($LASTEXITCODE -ne 0) {
   throw "Windows runner build failed with exit code $LASTEXITCODE"

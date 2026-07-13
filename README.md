@@ -58,12 +58,29 @@ cd infra && docker compose up -d --build
 Full deployment (DNS, Cloudflare Access, Telegram, backups):
 [`docs/deploy.md`](docs/deploy.md).
 
+## End-to-end encryption (optional)
+
+For a Gateway-blind path where the VPS, Cloudflare, Postgres, and backups only
+relay ciphertext, use the signed **Cursor Gateway Secure** browser extension
+(`apps/browser-extension`) with an E2EE-capable runner. Prompts, history,
+Memory, progress, and results are encrypted on the endpoints; the runner
+decrypts locally before calling the Cursor SDK.
+
+Setup order, server/runner environment variables (`E2EE_REQUIRED_FOR_WEB`,
+`E2EE_EXTENSION_ORIGINS`, `RUNNER_E2EE_ENABLED`, …), offline pairing, key
+rotation/revocation, the extension build + `SHA256SUMS` check, and the security
+boundary are documented in [`docs/e2ee.md`](docs/e2ee.md). Telegram, Reports,
+Automation, and Hermes are **not** E2EE.
+
 ## Repository layout
 
-- `apps/server` — API, auth, Telegram webhook, job queue, audit log, memory.
+- `apps/server` — API, auth, Telegram webhook, job queue, audit log, memory,
+  and the `cg-e2ee/1` ciphertext relay routes.
 - `apps/web` — React dashboard (model/workspace selection, history, approvals).
+- `apps/browser-extension` — signed, trusted MV3 E2EE web client.
 - `apps/windows-runner` — the runner (Linux/WSL/Windows) that executes agents.
 - `packages/shared` — shared schemas and TypeScript types.
+- `packages/e2ee` — the `cg-e2ee/1` crypto protocol shared by the extension and runner.
 - `infra` — Docker Compose and reverse-proxy config for the server.
 
 ## Local development
@@ -71,7 +88,20 @@ Full deployment (DNS, Cloudflare Access, Telegram, backups):
 ```bash
 npm install
 npm run build
-npm run dev:server   # API
-npm run dev:web      # dashboard
-npm run dev:runner   # runner
+npm run dev:server      # API
+npm run dev:web         # dashboard
+npm run dev:extension   # browser extension (E2EE client)
+npm run dev:runner      # runner
 ```
+
+## Security notes
+
+1. Copy `.env.example` → `.env`, then fill real values; **never commit `.env`**.
+   The runner's `apps/windows-runner/.env` must not be committed either.
+2. `RUNNER_SHARED_SECRET` must match on the server and runner and be long (≥32).
+3. Protect the web UI with Cloudflare Access (or an equivalent identity layer);
+   the runner endpoints authenticate with the shared secret.
+4. For production Web→Runner chat, set `E2EE_REQUIRED_FOR_WEB=true` and enter
+   sensitive content only in the signed extension. The runner still hands
+   plaintext to the Cursor model service after local decryption; E2EE protects
+   the Gateway/VPS relay, not the model provider.

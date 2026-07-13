@@ -14,7 +14,7 @@ export type ProgressReporter = (progress: {
   message: string;
 }) => Promise<void>;
 
-function buildPrompt(job: RunnerJob) {
+function buildPrompt(job: RunnerJob, includeHistory: boolean) {
   const identityBlock = job.userIdentity
     ? `User identity: ${job.userIdentity}\nUse this identity when the user asks who they are.`
     : "";
@@ -26,12 +26,22 @@ function buildPrompt(job: RunnerJob) {
   const writePolicy = job.allowWrites
     ? "You may read and write files only inside the configured workspace."
     : "Do not modify files. You may inspect and explain only.";
+  const historyBlock =
+    includeHistory && job.history.length > 0
+      ? `Previous conversation turns:\n${job.history
+          .map(
+            (turn, index) =>
+              `Turn ${index + 1} user:\n${turn.prompt}\n\nTurn ${index + 1} assistant:\n${turn.response}`
+          )
+          .join("\n\n")}`
+      : "";
 
   return [
     `Workspace: ${job.workspace.path}`,
     `Policy: ${writePolicy}`,
     identityBlock,
     memoryBlock,
+    historyBlock,
     "User request:",
     job.prompt
   ].filter(Boolean).join("\n\n");
@@ -43,7 +53,7 @@ function extractText(result: unknown) {
   if (typeof maybe.result === "string") return maybe.result;
   if (typeof maybe.text === "string") return maybe.text;
   if (typeof maybe.output === "string") return maybe.output;
-  return JSON.stringify(result);
+  return "Cursor returned an unsupported result shape.";
 }
 
 function isAgentNotFoundError(error: unknown) {
@@ -58,7 +68,7 @@ function progressFromMessage(message: SDKMessage): {
   message: string;
 } | undefined {
   if (message.type === "thinking" && message.text.trim()) {
-    return { kind: "thinking", message: message.text };
+    return { kind: "thinking", message: "The model is thinking." };
   }
   if (message.type === "assistant") {
     const text = message.message.content
@@ -102,8 +112,8 @@ export async function listCursorModels(): Promise<ModelInfo[]> {
       models.push(displayName ? { id, displayName } : { id });
     }
     return models;
-  } catch (error) {
-    console.warn("Failed to list Cursor models; falling back to configured default", error);
+  } catch {
+    console.warn("Failed to list Cursor models; falling back to configured default");
     return config.defaultModel === "auto" ? [] : [{ id: config.defaultModel }];
   }
 }
@@ -115,6 +125,7 @@ export async function runCursorJob(
   let agent: Awaited<ReturnType<typeof Agent.create>> | Awaited<ReturnType<typeof Agent.resume>> | undefined;
 
   try {
+    let includeHistory = !job.agentId;
     const agentOptions = {
       apiKey: config.cursorApiKey,
       model: { id: job.model },
@@ -126,14 +137,15 @@ export async function runCursorJob(
         agent = await Agent.resume(job.agentId, agentOptions);
       } catch (error) {
         if (!isAgentNotFoundError(error)) throw error;
-        console.warn(`Cursor agent ${job.agentId} was not found; creating a replacement`);
+        console.warn("Stored Cursor agent was not found; creating a replacement");
         agent = await Agent.create(agentOptions);
+        includeHistory = true;
       }
     } else {
       agent = await Agent.create(agentOptions);
     }
 
-    const run = await agent.send(buildPrompt(job));
+    const run = await agent.send(buildPrompt(job, includeHistory));
     if (reportProgress && run.supports("stream")) {
       for await (const message of run.stream()) {
         const progress = progressFromMessage(message);

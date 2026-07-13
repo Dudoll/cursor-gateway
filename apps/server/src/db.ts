@@ -129,6 +129,111 @@ export async function migrate() {
     alter table runs add column if not exists progress_kind text;
     alter table conversations add column if not exists deleted_at timestamptz;
 
+    alter table workspaces alter column path drop not null;
+    alter table workspaces add column if not exists runner_id text;
+
+    alter table conversations add column if not exists content_mode text not null default 'plaintext';
+    alter table conversations add column if not exists target_runner_id text;
+    alter table conversations add column if not exists runner_key_id text;
+    alter table conversations add column if not exists encrypted_title jsonb;
+
+    alter table runs alter column prompt drop not null;
+    alter table runs add column if not exists content_mode text not null default 'plaintext';
+    alter table runs add column if not exists protocol_version text;
+    alter table runs add column if not exists client_request_id uuid;
+    alter table runs add column if not exists client_id text;
+    alter table runs add column if not exists client_key_id text;
+    alter table runs add column if not exists target_runner_id text;
+    alter table runs add column if not exists runner_key_id text;
+    alter table runs add column if not exists request_envelope jsonb;
+    alter table runs add column if not exists approval_envelope jsonb;
+    alter table runs add column if not exists progress_envelope jsonb;
+    alter table runs add column if not exists result_envelope jsonb;
+    alter table runs add column if not exists progress_sequence bigint;
+    alter table runs add column if not exists claim_lease_id uuid;
+    alter table runs add column if not exists claimed_by text;
+    alter table runs add column if not exists lease_expires_at timestamptz;
+
+    alter table memory_facts alter column content drop not null;
+    alter table memory_facts add column if not exists content_mode text not null default 'plaintext';
+    alter table memory_facts add column if not exists client_id text;
+    alter table memory_facts add column if not exists client_key_id text;
+    alter table memory_facts add column if not exists content_envelope jsonb;
+
+    create table if not exists runner_devices (
+      runner_id text primary key,
+      runner_version text not null,
+      protocols jsonb not null,
+      encryption_key jsonb not null,
+      signing_key jsonb not null,
+      models jsonb not null,
+      workspaces jsonb not null,
+      last_seen_at timestamptz not null default now(),
+      revoked_at timestamptz
+    );
+
+    do $constraints$
+    begin
+      if not exists (
+        select 1 from pg_constraint where conname = 'conversations_e2ee_plaintext_empty'
+      ) then
+        alter table conversations
+          add constraint conversations_e2ee_plaintext_empty
+          check (
+            content_mode <> 'e2ee-v1'
+            or (
+              title is null
+              and agent_id is null
+              and target_runner_id is not null
+              and runner_key_id is not null
+            )
+          ) not valid;
+      end if;
+
+      if not exists (
+        select 1 from pg_constraint where conname = 'runs_e2ee_plaintext_empty'
+      ) then
+        alter table runs
+          add constraint runs_e2ee_plaintext_empty
+          check (
+            content_mode <> 'e2ee-v1'
+            or (
+              protocol_version = 'cg-e2ee/1'
+              and prompt is null
+              and response is null
+              and error is null
+              and progress is null
+              and progress_kind is null
+              and input_tokens is null
+              and output_tokens is null
+              and client_request_id is not null
+              and client_id is not null
+              and client_key_id is not null
+              and target_runner_id is not null
+              and runner_key_id is not null
+              and request_envelope is not null
+            )
+          ) not valid;
+      end if;
+
+      if not exists (
+        select 1 from pg_constraint where conname = 'memory_e2ee_plaintext_empty'
+      ) then
+        alter table memory_facts
+          add constraint memory_e2ee_plaintext_empty
+          check (
+            content_mode <> 'e2ee-v1'
+            or (
+              content is null
+              and client_id is not null
+              and client_key_id is not null
+              and content_envelope is not null
+            )
+          ) not valid;
+      end if;
+    end
+    $constraints$;
+
     update runs
     set finished_at = updated_at
     where finished_at is null and status in ('finished', 'error', 'cancelled');
@@ -174,6 +279,21 @@ export async function migrate() {
       where deleted_at is null;
     create index if not exists memory_user_workspace_idx on memory_facts(user_id, workspace_id);
     create index if not exists audit_created_idx on audit_logs(created_at desc);
+    create index if not exists runs_e2ee_target_queue_idx
+      on runs(target_runner_id, runner_key_id, status, created_at)
+      where content_mode = 'e2ee-v1' and deleted_at is null;
+    create unique index if not exists runs_e2ee_client_request_unique
+      on runs(user_id, client_request_id)
+      where content_mode = 'e2ee-v1' and client_request_id is not null;
+    create unique index if not exists runs_e2ee_conversation_sequence_unique
+      on runs(conversation_id, ((request_envelope ->> 'sequence')::bigint))
+      where content_mode = 'e2ee-v1' and request_envelope is not null;
+    create index if not exists memory_e2ee_user_workspace_idx
+      on memory_facts(user_id, workspace_id, updated_at desc)
+      where content_mode = 'e2ee-v1';
+    create index if not exists runner_devices_seen_idx
+      on runner_devices(last_seen_at desc)
+      where revoked_at is null;
   `);
 }
 
@@ -185,7 +305,7 @@ function mapRun(row: QueryResultRow): RunRecord {
     status: row.status as RunStatus,
     model: row.model,
     workspaceId: row.workspace_id,
-    prompt: row.prompt,
+    prompt: row.prompt ?? "[Encrypted run]",
     response: row.response,
     error: row.error,
     progress: row.progress ?? null,
@@ -311,7 +431,7 @@ export async function updateUserDisplayName(userId: string, displayName: string)
 
 export async function listWorkspaces(): Promise<Workspace[]> {
   const result = await pool.query(
-    "select id, label, path, writable from workspaces where enabled = true order by label"
+    "select id, label, path, writable from workspaces where enabled = true and path is not null order by label"
   );
   return result.rows.map((row) => ({
     id: row.id,
@@ -335,7 +455,7 @@ export async function upsertWorkspace(workspace: Workspace) {
 
 export async function getWorkspace(id: string): Promise<Workspace | undefined> {
   const result = await pool.query(
-    "select id, label, path, writable from workspaces where id = $1 and enabled = true",
+    "select id, label, path, writable from workspaces where id = $1 and enabled = true and path is not null",
     [id]
   );
   const row = result.rows[0];
@@ -368,7 +488,10 @@ export async function getConversation(id: string, userId: string) {
     `
       select id, workspace_id, agent_id, title
       from conversations
-      where id = $1 and user_id = $2 and deleted_at is null
+      where id = $1
+        and user_id = $2
+        and content_mode = 'plaintext'
+        and deleted_at is null
     `,
     [id, userId]
   );
@@ -382,7 +505,10 @@ export async function getLatestConversation(userId: string, workspaceId: string)
     `
       select id, workspace_id, agent_id, title
       from conversations
-      where user_id = $1 and workspace_id = $2 and deleted_at is null
+      where user_id = $1
+        and workspace_id = $2
+        and content_mode = 'plaintext'
+        and deleted_at is null
       order by updated_at desc
       limit 1
     `,
@@ -406,8 +532,11 @@ export async function listConversations(userId: string, limit = 100): Promise<Co
         max(r.created_at) as last_run_at
       from conversations c
       left join runs r on r.conversation_id = c.id
+        and r.content_mode = 'plaintext'
         and r.deleted_at is null
-      where c.user_id = $1 and c.deleted_at is null
+      where c.user_id = $1
+        and c.content_mode = 'plaintext'
+        and c.deleted_at is null
       group by c.id
       order by coalesce(max(r.created_at), c.updated_at) desc
       limit $2
@@ -428,7 +557,10 @@ export async function listConversationRuns(input: {
     `
       select *
       from runs
-      where conversation_id = $1 and user_id = $2 and deleted_at is null
+      where conversation_id = $1
+        and user_id = $2
+        and content_mode = 'plaintext'
+        and deleted_at is null
       order by created_at asc
     `,
     [input.conversationId, input.userId]
@@ -438,7 +570,11 @@ export async function listConversationRuns(input: {
 
 export async function updateConversationAgent(conversationId: string, agentId: string | null) {
   await pool.query(
-    "update conversations set agent_id = $2, updated_at = now() where id = $1",
+    `
+      update conversations
+      set agent_id = $2, updated_at = now()
+      where id = $1 and content_mode = 'plaintext'
+    `,
     [conversationId, agentId]
   );
 }
@@ -505,7 +641,9 @@ export async function claimNextRun(executor: RunExecutor) {
         from runs r
         join conversations c on c.id = r.conversation_id
         where r.status = 'queued'
+          and r.content_mode = 'plaintext'
           and r.deleted_at is null
+          and c.content_mode = 'plaintext'
           and c.deleted_at is null
           and (
             ($1 = 'hermes' and r.model like 'hermes:%')
@@ -532,6 +670,7 @@ export async function requeueStaleRuns(executor: RunExecutor, staleAfterSeconds 
         error = 'requeued after runner interruption',
         updated_at = now()
       where status = 'running'
+        and content_mode = 'plaintext'
         and deleted_at is null
         and updated_at < now() - make_interval(secs => $2)
         and (
@@ -567,6 +706,8 @@ export async function finishRun(input: {
           finished_at = now(),
           updated_at = now()
       where id = $1
+        and content_mode = 'plaintext'
+        and status = 'running'
       returning *
     `,
     [
@@ -592,7 +733,7 @@ export async function updateRunProgress(input: {
       set progress = $2,
           progress_kind = $3,
           updated_at = now()
-      where id = $1 and status = 'running'
+      where id = $1 and content_mode = 'plaintext' and status = 'running'
       returning id
     `,
     [input.runId, input.message, input.kind]
@@ -605,7 +746,10 @@ export async function approveRun(runId: string, userId: string) {
     `
       update runs
       set status = 'queued', updated_at = now()
-      where id = $1 and user_id = $2 and status = 'waiting_approval'
+      where id = $1
+        and user_id = $2
+        and content_mode = 'plaintext'
+        and status = 'waiting_approval'
       returning *
     `,
     [runId, userId]
@@ -615,7 +759,14 @@ export async function approveRun(runId: string, userId: string) {
 
 export async function getRunForUser(runId: string, userId: string) {
   const result = await pool.query(
-    "select * from runs where id = $1 and user_id = $2 and deleted_at is null",
+    `
+      select *
+      from runs
+      where id = $1
+        and user_id = $2
+        and content_mode = 'plaintext'
+        and deleted_at is null
+    `,
     [runId, userId]
   );
   return result.rows[0] ? mapRun(result.rows[0]) : undefined;
@@ -626,7 +777,10 @@ export async function getRunByIdempotencyKey(userId: string, idempotencyKey: str
     `
       select *
       from runs
-      where user_id = $1 and idempotency_key = $2 and deleted_at is null
+      where user_id = $1
+        and idempotency_key = $2
+        and content_mode = 'plaintext'
+        and deleted_at is null
     `,
     [userId, idempotencyKey]
   );
@@ -812,6 +966,7 @@ export async function softDeleteRun(runId: string, userId: string): Promise<Soft
         updated_at = now()
       where id = $1
         and user_id = $2
+        and content_mode = 'plaintext'
         and deleted_at is null
         and status <> 'running'
       returning *
@@ -821,7 +976,11 @@ export async function softDeleteRun(runId: string, userId: string): Promise<Soft
   if (result.rows[0]) return { status: "deleted", run: mapRun(result.rows[0]) };
 
   const current = await pool.query(
-    "select status, deleted_at from runs where id = $1 and user_id = $2",
+    `
+      select status, deleted_at
+      from runs
+      where id = $1 and user_id = $2 and content_mode = 'plaintext'
+    `,
     [runId, userId]
   );
   if (!current.rows[0] || current.rows[0].deleted_at) return { status: "not_found" };
@@ -837,7 +996,10 @@ export async function softDeleteConversation(
       `
         select id
         from conversations
-        where id = $1 and user_id = $2 and deleted_at is null
+        where id = $1
+          and user_id = $2
+          and content_mode = 'plaintext'
+          and deleted_at is null
         for update
       `,
       [conversationId, userId]
@@ -848,7 +1010,9 @@ export async function softDeleteConversation(
       `
         select id, status
         from runs
-        where conversation_id = $1 and deleted_at is null
+        where conversation_id = $1
+          and content_mode = 'plaintext'
+          and deleted_at is null
         for update
       `,
       [conversationId]
@@ -873,7 +1037,9 @@ export async function softDeleteConversation(
           deleted_at = now(),
           deleted_with_conversation = true,
           updated_at = now()
-        where conversation_id = $1 and deleted_at is null
+        where conversation_id = $1
+          and content_mode = 'plaintext'
+          and deleted_at is null
       `,
       [conversationId]
     );
@@ -930,7 +1096,10 @@ export async function listTrash(userId: string): Promise<{
           count(r.id)::integer as run_count
         from conversations c
         left join runs r on r.conversation_id = c.id
-        where c.user_id = $1 and c.deleted_at is not null
+          and r.content_mode = 'plaintext'
+        where c.user_id = $1
+          and c.content_mode = 'plaintext'
+          and c.deleted_at is not null
         group by c.id
         order by c.deleted_at desc
       `,
@@ -949,6 +1118,7 @@ export async function listTrash(userId: string): Promise<{
         from runs r
         join conversations c on c.id = r.conversation_id
         where r.user_id = $1
+          and r.content_mode = 'plaintext'
           and r.deleted_at is not null
           and r.deleted_with_conversation = false
           and c.deleted_at is null
@@ -1049,6 +1219,8 @@ export async function getRunWithConversation(runId: string) {
       join conversations c on c.id = r.conversation_id
       join app_users u on u.id = r.user_id
       where r.id = $1 and r.deleted_at is null and c.deleted_at is null
+        and r.content_mode = 'plaintext'
+        and c.content_mode = 'plaintext'
     `,
     [runId]
   );
@@ -1067,6 +1239,8 @@ export async function listCompletedConversationHistory(input: {
       join runs current_run on current_run.id = $2
       where previous.conversation_id = $1
         and previous.id <> current_run.id
+        and previous.content_mode = 'plaintext'
+        and current_run.content_mode = 'plaintext'
         and previous.created_at <= current_run.created_at
         and previous.status = 'finished'
         and previous.response is not null
@@ -1087,7 +1261,9 @@ export async function listRuns(userId: string): Promise<RunRecord[]> {
     `
       select *
       from runs
-      where user_id = $1 and deleted_at is null
+      where user_id = $1
+        and content_mode = 'plaintext'
+        and deleted_at is null
       order by created_at desc
       limit 50
     `,
@@ -1154,7 +1330,9 @@ export async function listMemoryFacts(input: {
     `
       select id, scope, workspace_id, content, created_at, updated_at
       from memory_facts
-      where user_id = $1 and (workspace_id is null or workspace_id = $2)
+      where user_id = $1
+        and content_mode = 'plaintext'
+        and (workspace_id is null or workspace_id = $2)
       order by updated_at desc
       limit $3
     `,

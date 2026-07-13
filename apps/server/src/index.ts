@@ -14,12 +14,53 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 
 async function main() {
   const app = Fastify({
-    logger: true
+    bodyLimit: 3 * 1024 * 1024,
+    logger: {
+      redact: {
+        paths: [
+          "req.headers.authorization",
+          "req.headers.cookie",
+          "req.headers.cf-access-client-secret",
+          "req.headers.cf-access-jwt-assertion",
+          "req.body",
+          "request.body",
+          "body",
+          "res.headers.set-cookie"
+        ],
+        censor: "[REDACTED]"
+      }
+    }
   });
 
   await app.register(cors, {
-    origin: config.publicOrigin,
+    origin(origin, callback) {
+      if (
+        !origin ||
+        origin === config.publicOrigin ||
+        config.e2eeExtensionOrigins.has(origin)
+      ) {
+        callback(null, true);
+        return;
+      }
+      callback(null, false);
+    },
     credentials: true
+  });
+
+  app.addHook("onSend", async (_request, reply, payload) => {
+    reply.header("x-content-type-options", "nosniff");
+    reply.header("referrer-policy", "no-referrer");
+    reply.header("x-frame-options", "DENY");
+    reply.header(
+      "content-security-policy",
+      "default-src 'self'; base-uri 'none'; frame-ancestors 'none'; object-src 'none'; " +
+        "script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'"
+    );
+    reply.header(
+      "permissions-policy",
+      "camera=(), microphone=(), geolocation=(), payment=(), usb=()"
+    );
+    return payload;
   });
 
   await migrate();

@@ -122,3 +122,36 @@ systemctl --user restart cursor-gateway-runner        # Linux
 - `.env` holds secrets and is git-ignored; never commit it.
 - Set `RUNNER_REQUIRE_APPROVAL=true` on the server if write-enabled runs must be
   approved from the dashboard before the runner can pick them up.
+
+## End-to-end encryption (E2EE)
+
+To run the runner as an E2EE endpoint (ciphertext-only relay through the VPS,
+paired with the signed browser extension), enable it in
+`apps/windows-runner/.env`:
+
+```ini
+RUNNER_E2EE_ENABLED=true
+RUNNER_LEGACY_ENABLED=false
+```
+
+The runner keeps its HPKE/signing private keys, paired clients, and replay state
+in a local state file (default `%USERPROFILE%\.cursor-gateway\runner-e2ee-state.dat`
+on Windows, DPAPI-protected). Never copy that file to the VPS and never enable
+`RUNNER_E2EE_ALLOW_INSECURE_DEV_STORAGE` in production.
+
+Offline pairing (verify both fingerprints by hand):
+
+```bash
+# 1) Export the runner bundle and paste it into the signed extension
+npm run pair:runner -w @cursor-gateway/windows-runner
+
+# 2) Import the client bundle the extension shows back
+npm run pair:client -w @cursor-gateway/windows-runner -- <client-bundle>
+npm run pair:list -w @cursor-gateway/windows-runner
+
+# Revoke a browser device
+npm run pair:revoke -w @cursor-gateway/windows-runner -- <client-id>
+```
+
+See [`e2ee.md`](e2ee.md) for the full deployment order, key rotation, legacy
+plaintext migration, and the security boundary.

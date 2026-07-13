@@ -29,6 +29,8 @@ PUBLIC_ORIGIN=https://gateway.example.com
 JWT_SECRET=<至少 32 字节随机串>
 RUNNER_SHARED_SECRET=<另一段至少 32 字节随机串，且与 JWT_SECRET 不同>
 RUNNER_MAX_CONCURRENT_JOBS=3
+E2EE_REQUIRED_FOR_WEB=false
+E2EE_EXTENSION_ORIGINS=chrome-extension://<签名扩展固定ID>
 POSTGRES_USER=cursor_gateway
 POSTGRES_PASSWORD=<数据库密码>
 POSTGRES_DB=cursor_gateway
@@ -83,11 +85,14 @@ $env:CF_ACCESS_CLIENT_SECRET = "<Cloudflare Access service token client secret>"
 $env:RUNNER_ID = "windows-main"
 $env:RUNNER_SHARED_SECRET = "<与 VPS 相同的 RUNNER_SHARED_SECRET>"
 $env:RUNNER_MAX_CONCURRENT_JOBS = "3"
+$env:RUNNER_E2EE_ENABLED = "true"
+$env:RUNNER_LEGACY_ENABLED = "false"
 $env:RUNNER_WORKSPACES = "C:\Workspaces\project1;D:\Workspaces\project2"
 $env:CURSOR_API_KEY = "<你的 Cursor API Key>"
 $env:DEFAULT_MODEL = "auto"
 npm install
 npm run build -w @cursor-gateway/shared
+npm run build -w @cursor-gateway/e2ee
 npm run build -w @cursor-gateway/windows-runner
 npm run start -w @cursor-gateway/windows-runner
 ```
@@ -97,6 +102,8 @@ npm run start -w @cursor-gateway/windows-runner
 `RUNNER_MAX_CONCURRENT_JOBS` 在 VPS 与 Windows Runner 上保持相同正整数（默认 `3`）。不同会话可并行，同一会话内任务仍串行领取。
 
 更简单的启动方式见 `docs/windows-runner.md` 与 `docs/快速开始.md`。
+
+Runner 启动后按 [e2ee.md](e2ee.md) 完成扩展签名分发、双向离线配对和密钥备份。验证 E2EE 后再将 VPS 的 `E2EE_REQUIRED_FOR_WEB` 改为 `true`；不要先开启强制开关。
 
 ## 5. 审批与写文件
 
@@ -110,12 +117,12 @@ npm run start -w @cursor-gateway/windows-runner
 
 ## 6. 端到端自检
 
-1. 用已放行的 Cloudflare Access 身份打开 `https://gateway.example.com`。
-2. 确认 `/api/me` 正常，仪表盘显示你的邮箱。
-3. 启动 Windows Runner，等待工作区与模型出现。
-4. 对测试工作区排队一个只读提示。
+1. 用已放行的 Cloudflare Access 身份打开 `https://gateway.example.com` 完成登录。
+2. 打开签名扩展，授权同一 HTTPS origin，并确认 `/api/me` 显示正确身份。
+3. 启动并离线配对 Windows Runner，核对两个 fingerprint。
+4. 从扩展对测试工作区排队一个只读提示。
 5. 确认状态从 `queued` → `running` → `finished`。
-6. 添加一条 memory，再排队一次，确认回答用到了 memory。
+6. 在扩展添加一条 E2EE Memory，再排队一次，确认回答用到了 Memory。
 7. 用允许的 Telegram 用户发送 `/start` 与 `/chat hello`。
 
 ## 7. 备份与日志
@@ -125,6 +132,8 @@ npm run start -w @cursor-gateway/windows-runner
 ```bash
 docker compose exec postgres pg_dump -U cursor_gateway cursor_gateway > cursor_gateway.sql
 ```
+
+E2EE 新数据在 dump 中仍是密文，但旧明文、WAL 和迁移前备份不会自动变安全。完成扩展中的旧数据 archive/scrub 后，按保留策略销毁旧 dump、快照与日志。
 
 查看审计日志：
 
