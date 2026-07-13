@@ -1,0 +1,21 @@
+{
+  "manifest_version": 3,
+  "name": "Cursor Gateway Secure",
+  "version": "0.1.0",
+  "description": "Trusted end-to-end encrypted client for Cursor Gateway.",
+  "action": {
+    "default_title": "Open Cursor Gateway Secure"
+  },
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "optional_host_permissions": [
+    "https://*/*",
+    "http://localhost/*",
+    "http://127.0.0.1/*"
+  ],
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
+  }
+}
