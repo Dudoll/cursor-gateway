@@ -142,7 +142,8 @@ export const reportIdSchema = z.enum([
   "finance",
   "news",
   "ai-infra-tips",
-  "ai-infra-interview"
+  "ai-infra-interview",
+  "ai-infra-mianshi"
 ]);
 export type ReportId = z.infer<typeof reportIdSchema>;
 
@@ -173,3 +174,402 @@ export const memoryFactSchema = z.object({
   updatedAt: z.string()
 });
 export type MemoryFact = z.infer<typeof memoryFactSchema>;
+
+export const E2EE_PROTOCOL = "cg-e2ee/1" as const;
+export const E2EE_HPKE_SUITE = "HPKE-v1-P256-HKDF-SHA256-A256GCM" as const;
+
+const base64UrlSchema = (maxLength: number) =>
+  z.string().min(1).max(maxLength).regex(/^[A-Za-z0-9_-]+$/);
+
+export const e2eePublicKeySchema = z
+  .object({
+    kty: z.literal("EC"),
+    crv: z.literal("P-256"),
+    x: base64UrlSchema(43).length(43),
+    y: base64UrlSchema(43).length(43)
+  })
+  .strict();
+export type E2eePublicKey = z.infer<typeof e2eePublicKeySchema>;
+
+export const e2eeKeyDescriptorSchema = z
+  .object({
+    keyId: z.string().trim().min(8).max(128),
+    fingerprint: z.string().regex(/^sha256:[A-Za-z0-9_-]{43}$/),
+    publicKey: e2eePublicKeySchema
+  })
+  .strict();
+export type E2eeKeyDescriptor = z.infer<typeof e2eeKeyDescriptorSchema>;
+
+export const e2eeCiphertextSchema = z
+  .object({
+    alg: z.literal("A256GCM"),
+    nonce: base64UrlSchema(16).length(16),
+    ciphertext: base64UrlSchema(2_000_000)
+  })
+  .strict();
+export type E2eeCiphertext = z.infer<typeof e2eeCiphertextSchema>;
+
+export const e2eeHpkeEnvelopeSchema = z
+  .object({
+    alg: z.literal(E2EE_HPKE_SUITE),
+    enc: base64UrlSchema(87).length(87),
+    ciphertext: base64UrlSchema(64).length(64)
+  })
+  .strict();
+export type E2eeHpkeEnvelope = z.infer<typeof e2eeHpkeEnvelopeSchema>;
+
+export const e2eeSignatureSchema = z
+  .object({
+    alg: z.literal("ES256"),
+    keyId: z.string().trim().min(8).max(128),
+    value: base64UrlSchema(86).length(86)
+  })
+  .strict();
+export type E2eeSignature = z.infer<typeof e2eeSignatureSchema>;
+
+export const publicWorkspaceSchema = z
+  .object({
+    id: z.string().min(1).max(256),
+    label: z.string().min(1).max(256),
+    writable: z.boolean()
+  })
+  .strict();
+export type PublicWorkspace = z.infer<typeof publicWorkspaceSchema>;
+
+export const e2eeRunnerCapabilitySchema = z
+  .object({
+    protocols: z.array(z.literal(E2EE_PROTOCOL)).min(1).max(4),
+    encryptionKey: e2eeKeyDescriptorSchema,
+    signingKey: e2eeKeyDescriptorSchema
+  })
+  .strict();
+export type E2eeRunnerCapability = z.infer<typeof e2eeRunnerCapabilitySchema>;
+
+export const e2eeRunRoutingSchema = z
+  .object({
+    model: z.string().trim().min(1).max(256),
+    workspaceId: z.string().trim().min(1).max(256),
+    allowWrites: z.boolean(),
+    memoryEnabled: z.boolean()
+  })
+  .strict();
+export type E2eeRunRouting = z.infer<typeof e2eeRunRoutingSchema>;
+
+export const e2eeConversationTurnSchema = z
+  .object({
+    prompt: z.string().max(200_000),
+    response: z.string().max(1_000_000)
+  })
+  .strict();
+
+export const e2eeRunPayloadSchema = z
+  .object({
+    protocol: z.literal(E2EE_PROTOCOL),
+    kind: z.literal("run-request"),
+    messageId: z.string().uuid(),
+    runId: z.string().uuid(),
+    conversationId: z.string().uuid(),
+    sequence: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+    routing: e2eeRunRoutingSchema,
+    prompt: z.string().trim().min(1).max(500_000),
+    history: z.array(e2eeConversationTurnSchema).max(50).default([]),
+    memory: z.array(z.string().max(100_000)).max(200).default([]),
+    userIdentity: z.string().max(512).optional(),
+    previousDigest: base64UrlSchema(43).length(43).nullable()
+  })
+  .strict();
+export type E2eeRunPayload = z.infer<typeof e2eeRunPayloadSchema>;
+
+export const e2eeRunRequestEnvelopeSchema = z
+  .object({
+    protocol: z.literal(E2EE_PROTOCOL),
+    kind: z.literal("run-request"),
+    messageId: z.string().uuid(),
+    runId: z.string().uuid(),
+    conversationId: z.string().uuid(),
+    clientId: z.string().trim().min(8).max(128),
+    clientKeyId: z.string().trim().min(8).max(128),
+    runnerId: z.string().trim().min(1).max(128),
+    runnerKeyId: z.string().trim().min(8).max(128),
+    sequence: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+    createdAt: z.string().min(1).max(64),
+    routing: e2eeRunRoutingSchema,
+    previousDigest: base64UrlSchema(43).length(43).nullable(),
+    wrappedConversationKey: e2eeHpkeEnvelopeSchema,
+    title: e2eeCiphertextSchema.nullable(),
+    payload: e2eeCiphertextSchema,
+    signature: e2eeSignatureSchema
+  })
+  .strict();
+export type E2eeRunRequestEnvelope = z.infer<typeof e2eeRunRequestEnvelopeSchema>;
+
+export const e2eeApprovalEnvelopeSchema = z
+  .object({
+    protocol: z.literal(E2EE_PROTOCOL),
+    kind: z.literal("run-approval"),
+    messageId: z.string().uuid(),
+    runId: z.string().uuid(),
+    conversationId: z.string().uuid(),
+    clientId: z.string().trim().min(8).max(128),
+    clientKeyId: z.string().trim().min(8).max(128),
+    runnerId: z.string().trim().min(1).max(128),
+    runnerKeyId: z.string().trim().min(8).max(128),
+    requestDigest: base64UrlSchema(43).length(43),
+    allowWrites: z.literal(true),
+    createdAt: z.string().min(1).max(64),
+    signature: e2eeSignatureSchema
+  })
+  .strict();
+export type E2eeApprovalEnvelope = z.infer<typeof e2eeApprovalEnvelopeSchema>;
+
+export const e2eeProgressPayloadSchema = z
+  .object({
+    protocol: z.literal(E2EE_PROTOCOL),
+    kind: z.literal("run-progress"),
+    runId: z.string().uuid(),
+    conversationId: z.string().uuid(),
+    sequence: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+    progressKind: runProgressKindSchema,
+    message: z.string().trim().min(1).max(200_000)
+  })
+  .strict();
+export type E2eeProgressPayload = z.infer<typeof e2eeProgressPayloadSchema>;
+
+export const e2eeProgressEnvelopeSchema = z
+  .object({
+    protocol: z.literal(E2EE_PROTOCOL),
+    kind: z.literal("run-progress"),
+    messageId: z.string().uuid(),
+    runId: z.string().uuid(),
+    conversationId: z.string().uuid(),
+    runnerId: z.string().trim().min(1).max(128),
+    runnerKeyId: z.string().trim().min(8).max(128),
+    requestDigest: base64UrlSchema(43).length(43),
+    sequence: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+    progressKind: runProgressKindSchema,
+    createdAt: z.string().min(1).max(64),
+    payload: e2eeCiphertextSchema,
+    signature: e2eeSignatureSchema
+  })
+  .strict();
+export type E2eeProgressEnvelope = z.infer<typeof e2eeProgressEnvelopeSchema>;
+
+export const e2eeResultStatusSchema = z.enum(["finished", "error", "cancelled"]);
+
+export const e2eeResultPayloadSchema = z
+  .object({
+    protocol: z.literal(E2EE_PROTOCOL),
+    kind: z.literal("run-result"),
+    runId: z.string().uuid(),
+    conversationId: z.string().uuid(),
+    status: e2eeResultStatusSchema,
+    response: z.string().max(2_000_000).nullable(),
+    error: z.string().max(200_000).nullable(),
+    inputTokens: z.number().int().nonnegative().nullable(),
+    outputTokens: z.number().int().nonnegative().nullable()
+  })
+  .strict();
+export type E2eeResultPayload = z.infer<typeof e2eeResultPayloadSchema>;
+
+export const e2eeResultEnvelopeSchema = z
+  .object({
+    protocol: z.literal(E2EE_PROTOCOL),
+    kind: z.literal("run-result"),
+    messageId: z.string().uuid(),
+    runId: z.string().uuid(),
+    conversationId: z.string().uuid(),
+    runnerId: z.string().trim().min(1).max(128),
+    runnerKeyId: z.string().trim().min(8).max(128),
+    requestDigest: base64UrlSchema(43).length(43),
+    sequence: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+    status: e2eeResultStatusSchema,
+    createdAt: z.string().min(1).max(64),
+    payload: e2eeCiphertextSchema,
+    signature: e2eeSignatureSchema
+  })
+  .strict();
+export type E2eeResultEnvelope = z.infer<typeof e2eeResultEnvelopeSchema>;
+
+export const e2eeMemoryPayloadSchema = z
+  .object({
+    protocol: z.literal(E2EE_PROTOCOL),
+    kind: z.literal("memory"),
+    memoryId: z.string().uuid(),
+    scope: z.enum(["user", "workspace"]),
+    workspaceId: z.string().min(1).max(256).nullable(),
+    content: z.string().trim().min(1).max(100_000)
+  })
+  .strict();
+export type E2eeMemoryPayload = z.infer<typeof e2eeMemoryPayloadSchema>;
+
+export const e2eeMemoryEnvelopeSchema = z
+  .object({
+    protocol: z.literal(E2EE_PROTOCOL),
+    kind: z.literal("memory"),
+    messageId: z.string().uuid(),
+    memoryId: z.string().uuid(),
+    clientId: z.string().trim().min(8).max(128),
+    clientKeyId: z.string().trim().min(8).max(128),
+    scope: z.enum(["user", "workspace"]),
+    workspaceId: z.string().min(1).max(256).nullable(),
+    createdAt: z.string().min(1).max(64),
+    payload: e2eeCiphertextSchema,
+    signature: e2eeSignatureSchema
+  })
+  .strict();
+export type E2eeMemoryEnvelope = z.infer<typeof e2eeMemoryEnvelopeSchema>;
+
+export const e2eeRunnerJobSchema = z
+  .object({
+    contentMode: z.literal("e2ee-v1"),
+    leaseId: z.string().uuid(),
+    leaseExpiresAt: z.string().min(1).max(64),
+    request: e2eeRunRequestEnvelopeSchema,
+    approval: e2eeApprovalEnvelopeSchema.nullable()
+  })
+  .strict();
+export type E2eeRunnerJob = z.infer<typeof e2eeRunnerJobSchema>;
+
+export const e2eeProgressSubmissionSchema = z
+  .object({
+    leaseId: z.string().uuid(),
+    envelope: e2eeProgressEnvelopeSchema
+  })
+  .strict();
+export type E2eeProgressSubmission = z.infer<typeof e2eeProgressSubmissionSchema>;
+
+export const e2eeResultSubmissionSchema = z
+  .object({
+    leaseId: z.string().uuid(),
+    envelope: e2eeResultEnvelopeSchema
+  })
+  .strict();
+export type E2eeResultSubmission = z.infer<typeof e2eeResultSubmissionSchema>;
+
+export const e2eeRunRecordSchema = z
+  .object({
+    id: z.string().uuid(),
+    conversationId: z.string().uuid(),
+    status: runStatusSchema,
+    model: z.string(),
+    workspaceId: z.string(),
+    allowWrites: z.boolean(),
+    request: e2eeRunRequestEnvelopeSchema,
+    approval: e2eeApprovalEnvelopeSchema.nullable(),
+    progress: e2eeProgressEnvelopeSchema.nullable(),
+    result: e2eeResultEnvelopeSchema.nullable(),
+    createdAt: z.string(),
+    startedAt: z.string().nullable(),
+    finishedAt: z.string().nullable(),
+    updatedAt: z.string()
+  })
+  .strict();
+export type E2eeRunRecord = z.infer<typeof e2eeRunRecordSchema>;
+
+export const e2eeConversationRecordSchema = z
+  .object({
+    id: z.string().uuid(),
+    workspaceId: z.string(),
+    runnerId: z.string(),
+    runnerKeyId: z.string(),
+    title: e2eeCiphertextSchema.nullable(),
+    runCount: z.number().int().nonnegative(),
+    lastRunAt: z.string().nullable(),
+    createdAt: z.string(),
+    updatedAt: z.string()
+  })
+  .strict();
+export type E2eeConversationRecord = z.infer<typeof e2eeConversationRecordSchema>;
+
+export const e2eeCreateRunRequestSchema = z
+  .object({
+    request: e2eeRunRequestEnvelopeSchema
+  })
+  .strict();
+export type E2eeCreateRunRequest = z.infer<typeof e2eeCreateRunRequestSchema>;
+
+export const e2eeApprovalSubmissionSchema = z
+  .object({
+    approval: e2eeApprovalEnvelopeSchema
+  })
+  .strict();
+export type E2eeApprovalSubmission = z.infer<typeof e2eeApprovalSubmissionSchema>;
+
+export const e2eeRunnerClaimRequestSchema = z
+  .object({
+    runnerId: z.string().trim().min(1).max(128),
+    runnerKeyId: z.string().trim().min(8).max(128),
+    protocols: z.array(z.literal(E2EE_PROTOCOL)).min(1).max(4)
+  })
+  .strict();
+export type E2eeRunnerClaimRequest = z.infer<typeof e2eeRunnerClaimRequestSchema>;
+
+export const e2eeLeaseRenewalSchema = z
+  .object({
+    runnerId: z.string().trim().min(1).max(128),
+    runnerKeyId: z.string().trim().min(8).max(128),
+    leaseId: z.string().uuid()
+  })
+  .strict();
+export type E2eeLeaseRenewal = z.infer<typeof e2eeLeaseRenewalSchema>;
+
+export const e2eeRunnerHeartbeatSchema = z
+  .object({
+    runnerId: z.string().trim().min(1).max(128),
+    runnerVersion: z.string().trim().min(1).max(64),
+    models: z.array(modelSchema).max(256),
+    workspaces: z.array(publicWorkspaceSchema).max(256),
+    e2ee: e2eeRunnerCapabilitySchema
+  })
+  .strict();
+export type E2eeRunnerHeartbeat = z.infer<typeof e2eeRunnerHeartbeatSchema>;
+
+export const e2eeRunnerDirectoryEntrySchema = e2eeRunnerHeartbeatSchema
+  .extend({
+    lastSeenAt: z.string(),
+    online: z.boolean()
+  })
+  .strict();
+export type E2eeRunnerDirectoryEntry = z.infer<typeof e2eeRunnerDirectoryEntrySchema>;
+
+export const e2eeMemoryCreateRequestSchema = z
+  .object({
+    envelope: e2eeMemoryEnvelopeSchema
+  })
+  .strict();
+export type E2eeMemoryCreateRequest = z.infer<typeof e2eeMemoryCreateRequestSchema>;
+
+export const e2eeMemoryRecordSchema = z
+  .object({
+    id: z.string().uuid(),
+    scope: z.enum(["user", "workspace"]),
+    workspaceId: z.string().nullable(),
+    envelope: e2eeMemoryEnvelopeSchema,
+    createdAt: z.string(),
+    updatedAt: z.string()
+  })
+  .strict();
+export type E2eeMemoryRecord = z.infer<typeof e2eeMemoryRecordSchema>;
+
+export const e2eeRunnerPairingBundleSchema = z
+  .object({
+    protocol: z.literal(E2EE_PROTOCOL),
+    kind: z.literal("runner-pairing"),
+    runnerId: z.string().trim().min(1).max(128),
+    encryptionKey: e2eeKeyDescriptorSchema,
+    signingKey: e2eeKeyDescriptorSchema,
+    createdAt: z.string().min(1).max(64)
+  })
+  .strict();
+export type E2eeRunnerPairingBundle = z.infer<typeof e2eeRunnerPairingBundleSchema>;
+
+export const e2eeClientPairingBundleSchema = z
+  .object({
+    protocol: z.literal(E2EE_PROTOCOL),
+    kind: z.literal("client-pairing"),
+    clientId: z.string().trim().min(8).max(128),
+    signingKey: e2eeKeyDescriptorSchema,
+    createdAt: z.string().min(1).max(64)
+  })
+  .strict();
+export type E2eeClientPairingBundle = z.infer<typeof e2eeClientPairingBundleSchema>;
