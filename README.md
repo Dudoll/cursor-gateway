@@ -80,7 +80,8 @@ decrypts locally before calling the Cursor SDK.
 
 Setup order, server/runner environment variables (`E2EE_REQUIRED_FOR_WEB`,
 `E2EE_EXTENSION_ORIGINS`, `RUNNER_E2EE_ENABLED`, …), offline pairing, key
-rotation/revocation, the extension build + `SHA256SUMS` check, and the security
+rotation/revocation, the extension build + `SHA256SUMS` check, authenticated
+download of the prebuilt zip (`GET /api/extension/download`), and the security
 boundary are documented in [`docs/e2ee.md`](docs/e2ee.md). Telegram, Reports,
 Automation, and Hermes are **not** E2EE.
 

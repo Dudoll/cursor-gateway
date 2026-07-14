@@ -7,6 +7,7 @@ import {
   ChevronLeft,
   ChevronRight,
   Database,
+  Download,
   FileText,
   Home,
   LockKeyhole,
@@ -237,6 +238,47 @@ function BrandMark() {
       </strong>
       <span>CS Gateway</span>
     </a>
+  );
+}
+
+const EXTENSION_DOWNLOAD_HREF = "/api/extension/download";
+
+function ExtensionDownloadLink({ className = "topbar-link extension-download" }: { className?: string }) {
+  return (
+    <a className={className} href={EXTENSION_DOWNLOAD_HREF} download="cursor-gateway-secure.zip">
+      <Download aria-hidden="true" size={15} strokeWidth={1.75} />
+      <span>下载扩展</span>
+    </a>
+  );
+}
+
+function ExtensionInstallGuide() {
+  return (
+    <section className="extension-install" aria-label="Install Cursor Gateway Secure">
+      <div className="extension-install-header">
+        <LockKeyhole aria-hidden="true" size={18} strokeWidth={1.75} />
+        <div>
+          <h2>下载 Cursor Gateway Secure 扩展</h2>
+          <p>服务端已预构建安装包。登录后即可下载，无需在浏览器里执行 npm build。</p>
+        </div>
+      </div>
+      <a className="extension-download-button" href={EXTENSION_DOWNLOAD_HREF} download="cursor-gateway-secure.zip">
+        <Download aria-hidden="true" size={16} strokeWidth={1.75} />
+        下载 Cursor Gateway Secure 扩展
+      </a>
+      <ol className="extension-install-steps">
+        <li>解压下载的 <code>cursor-gateway-secure.zip</code></li>
+        <li>打开 Chrome <code>chrome://extensions</code>，打开右上角「开发者模式」</li>
+        <li>点击「加载已解压的扩展程序」，选择解压后的文件夹</li>
+      </ol>
+      <p className="extension-install-note">
+        生产信任根仍建议使用商店或组织签名渠道。旁加载 zip 适合当前 Gateway；勿把 pairing 私钥放进扩展目录。详见{" "}
+        <a href="https://github.com/Dudoll/cursor-gateway/blob/main/docs/e2ee.md" rel="noreferrer" target="_blank">
+          E2EE 文档
+        </a>
+        。
+      </p>
+    </section>
   );
 }
 
@@ -526,10 +568,13 @@ function GatewayDashboard() {
       <header className="reports-topbar">
         <BrandMark />
         <TopTabs active="home" />
-        <a className="topbar-link" href="/trash">
-          <Trash2 aria-hidden="true" size={15} strokeWidth={1.75} />
-          <span>Recycle Bin</span>
-        </a>
+        <div className="topbar-actions">
+          <ExtensionDownloadLink />
+          <a className="topbar-link" href="/trash">
+            <Trash2 aria-hidden="true" size={15} strokeWidth={1.75} />
+            <span>Recycle Bin</span>
+          </a>
+        </div>
       </header>
 
       <div className={`home-layout${sidebarCollapsed ? " sidebar-collapsed" : ""}`}>
@@ -647,6 +692,7 @@ function GatewayDashboard() {
                     verify the Runner fingerprints shown locally on the runner. This VPS-hosted
                     page never receives E2EE prompt or response plaintext.
                   </p>
+                  <ExtensionInstallGuide />
                 </div>
               </section>
             ) : null}
@@ -658,6 +704,7 @@ function GatewayDashboard() {
                   Hermes answers on the VPS host. Switch to a Cursor runner model when you need
                   workspace-aware reads or writes.
                 </p>
+                <ExtensionInstallGuide />
               </div>
             ) : null}
 
@@ -949,10 +996,13 @@ function ReportsPage({ initialReportId }: { initialReportId?: ReportId }) {
       <header className="reports-topbar">
         <BrandMark />
         <TopTabs active="reports" />
-        <a className="topbar-link" href="/trash">
-          <Trash2 aria-hidden="true" size={15} strokeWidth={1.75} />
-          <span>Recycle Bin</span>
-        </a>
+        <div className="topbar-actions">
+          <ExtensionDownloadLink />
+          <a className="topbar-link" href="/trash">
+            <Trash2 aria-hidden="true" size={15} strokeWidth={1.75} />
+            <span>Recycle Bin</span>
+          </a>
+        </div>
       </header>
 
       <div className={`reports-layout${sidebarCollapsed ? " sidebar-collapsed" : ""}`}>
@@ -1207,10 +1257,13 @@ function TrashPage() {
       <header className="reports-topbar" style={{ marginBottom: "1.25rem" }}>
         <BrandMark />
         <TopTabs active="home" />
-        <a className="topbar-link" href="/trash" aria-current="page">
-          <Trash2 aria-hidden="true" size={15} strokeWidth={1.75} />
-          <span>Recycle Bin</span>
-        </a>
+        <div className="topbar-actions">
+          <ExtensionDownloadLink />
+          <a className="topbar-link" href="/trash" aria-current="page">
+            <Trash2 aria-hidden="true" size={15} strokeWidth={1.75} />
+            <span>Recycle Bin</span>
+          </a>
+        </div>
       </header>
       <header className="report-hero">
         <a href="/"><ArrowLeft aria-hidden="true" size={16} strokeWidth={1.75} /> Back</a>

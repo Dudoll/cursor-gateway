@@ -1,5 +1,8 @@
 import { z } from "zod";
 import type { FastifyInstance } from "fastify";
+import { createReadStream, existsSync, statSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   E2EE_PROTOCOL,
   automationCreateRunSchema,
@@ -27,6 +30,9 @@ import {
   requireRole
 } from "./auth.js";
 import { config } from "./config.js";
+
+const serverRoot = dirname(fileURLToPath(import.meta.url));
+const extensionZipPath = join(serverRoot, "../../../artifacts/cursor-gateway-secure.zip");
 import {
   AutomationThreadWorkspaceMismatchError,
   type RunExecutor,
@@ -176,6 +182,31 @@ export async function registerRoutes(app: FastifyInstance) {
     api.addHook("preHandler", requireCloudflareUser);
 
     api.get("/me", async (request) => ({ principal: request.principal }));
+
+    api.get("/extension/download", async (request, reply) => {
+      if (!existsSync(extensionZipPath)) {
+        await appendAudit({
+          ...(request.principal?.id ? { actorUserId: request.principal.id } : {}),
+          eventType: "extension.download.missing",
+          details: { path: "/api/extension/download" }
+        });
+        return reply.code(404).send({ error: "extension_bundle_unavailable" });
+      }
+
+      const { size } = statSync(extensionZipPath);
+      await appendAudit({
+        ...(request.principal?.id ? { actorUserId: request.principal.id } : {}),
+        eventType: "extension.download",
+        details: { bytes: size }
+      });
+
+      return reply
+        .header("content-type", "application/zip")
+        .header("content-length", size)
+        .header("content-disposition", 'attachment; filename="cursor-gateway-secure.zip"')
+        .header("cache-control", "no-store")
+        .send(createReadStream(extensionZipPath));
+    });
 
     api.get("/e2ee-policy", async () => ({
       requiredForWeb: config.e2eeRequiredForWeb,

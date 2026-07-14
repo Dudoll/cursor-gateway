@@ -52,7 +52,7 @@ JWT_SECRET=<至少 32 字节随机串>
 RUNNER_SHARED_SECRET=<另一段至少 32 字节随机串，且与 JWT_SECRET 不同>
 RUNNER_MAX_CONCURRENT_JOBS=3
 E2EE_REQUIRED_FOR_WEB=false
-E2EE_EXTENSION_ORIGINS=chrome-extension://<签名扩展固定ID>
+E2EE_EXTENSION_ORIGINS=chrome-extension://oicmfijjdbjkjhnljcjhnojpeiobhefe
 POSTGRES_USER=cursor_gateway
 POSTGRES_PASSWORD=<数据库密码>
 POSTGRES_DB=cursor_gateway
@@ -64,6 +64,7 @@ TELEGRAM_WEBHOOK_SECRET=<随机 webhook 路径密钥>
 TELEGRAM_ALLOWED_USER_IDS=<Telegram 数字用户 ID，逗号分隔>
 ```
 
+已登录用户可从网页下载预构建扩展：`GET /api/extension/download`（`cursor-gateway-secure.zip`）。未登录不可下载。
 启动：
 
 ```bash
