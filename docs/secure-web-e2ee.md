@@ -68,21 +68,29 @@ npm run build -w @cursor-gateway/secure-web
 npx wrangler pages deploy apps/secure-web/dist --project-name=cursor-gateway-secure
 ```
 
+当前生产回退（zone token 无 Pages 权限时）：把 `dist/` 同步到 VPS `/var/www/cursor-gateway-secure`，用 `infra/nginx-secure.joelzt.org.conf` + Cloudflare 代理 DNS（`secure.joelzt.org`）。HTTPS 由 Cloudflare 终止。
+
 部署后：
 
-1. 记下 Pages URL（例如 `https://cursor-gateway-secure.pages.dev` 或自定义域）。
+1. 记下 PWA HTTPS origin（例如 `https://secure.joelzt.org` 或 `https://cursor-gateway-secure.pages.dev`）。
 2. VPS `.env` 追加 `SECURE_CLIENT_ORIGIN=<该 HTTPS origin>`（**保留**现有密钥与 `E2EE_REQUIRED_FOR_WEB=false`），重建 app。
 3. Runner `.env` 同步 `SECURE_CLIENT_ORIGIN`，并设 `PAIRING_MAIL_MODE=log`（或接真实邮件后改 `smtp` + 自备投递）。
-4. 若无 Cloudflare API token：在本机/CI 用上述 `wrangler pages deploy`，或把 `dist/` 上传到任意 HTTPS 静态站；文档级步骤相同，只是托管商不同。
+4. 若 Gateway 前有 Cloudflare Access：在 Access 应用上开启 **Options Preflight Bypass**，否则跨域 PWA 的 CORS 预检会被 Access 拦成 403。
+5. 若无 Cloudflare Pages 权限：用上述 nginx 静态站或任意 HTTPS 托管；文档级步骤相同。
 
 CORS：Gateway 仅当 `Origin === SECURE_CLIENT_ORIGIN`（或扩展 allowlist / 同源）时允许带 cookie 的跨域请求。
 
 ## 干跑配对（开发）
 
 1. Gateway 与 Runner 已起，且 Runner `PAIRING_MAIL_MODE=log`。
-2. 本地 `npm run dev -w @cursor-gateway/secure-web`（默认 `http://127.0.0.1:5174`，API 代理到 `8080`）。  
+2. 打开生产 PWA（`https://secure.joelzt.org`）或本地 `npm run dev -w @cursor-gateway/secure-web`（默认 `http://127.0.0.1:5174`，API 代理到 `8080`）。  
    若 Gateway 强制校验 `SECURE_CLIENT_ORIGIN`，开发期可临时设为 `http://127.0.0.1:5174`，或用 HTTPS 隧道。
-3. Start pairing → 读 `pairing-mail.log` 中的 `#pair=...` → 粘到同一浏览器地址栏。
+3. Start pairing → 读取 magic link：
+   ```bash
+   bash scripts/e2ee/read-pairing-mail.sh          # 打印最新 magicLink
+   bash scripts/e2ee/read-pairing-mail.sh watch    # 等待下一条
+   ```
+   默认日志：`~/.cursor-gateway/pairing-mail.log`。把链接粘到**同一浏览器**地址栏。
 4. 单元级 crypto 干跑：`npm run test -w @cursor-gateway/e2ee`（含 magic-link MAC）与 `npm run test -w @cursor-gateway/secure-web`。
 
 ## 明确不做（MVP）
