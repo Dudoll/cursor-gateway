@@ -51,12 +51,12 @@
 | --- | --- |
 | `SECURE_CLIENT_ORIGIN` | 与 PWA origin 一致时才认领配对。 |
 | `PAIRING_TTL_SECONDS` | offer 过期时间，默认 `900`。 |
-| `PAIRING_MAIL_MODE` | `log`（干跑写文件）、`smtp`（通用 SMTP）、`api`（Resend/Mailgun/SendGrid HTTP）。详见 [pairing-mail.md](./pairing-mail.md)。 |
-| `PAIRING_MAIL_TO` | 收件人；也作为 offer `emailHint`。 |
+| `PAIRING_MAIL_MODE` | `log`（干跑写文件）、`smtp`（Nodemailer）、`api`（Resend HTTP 等）。详见 [pairing-mail.md](./pairing-mail.md)。 |
+| `PAIRING_MAIL_TO` | **仅** `send-test-pairing-mail` 测试脚本；真实配对收件人来自 Server `recipientEmail`（CF Access）。 |
 | `PAIRING_MAIL_FROM` / `PAIRING_MAIL_FROM_NAME` | 默认 `no-reply@piallera.com` / `Piallera Secure`。 |
 | `PAIRING_MAIL_LOG_FILE` | 可选；默认 `~/.cursor-gateway/pairing-mail.log`。 |
 | `PAIRING_ALLOWED_EMAILS` | Access JWT 邮箱白名单（启用 JWT 时）。 |
-| `SMTP_*` / `SMTP_URL` | `smtp` 模式凭据。 |
+| `SMTP_*` / `SMTP_URL` | `smtp` 模式凭据（Nodemailer）。 |
 | `MAIL_API_PROVIDER` / `MAIL_API_KEY` | `api` 模式；默认 provider=`resend`。 |
 | `CF_ACCESS_TEAM_DOMAIN` / `CF_ACCESS_AUD` | 可选 JWT 校验。 |
 

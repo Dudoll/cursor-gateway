@@ -610,7 +610,13 @@ export const e2eePairingOfferSchema = z
     clientEncryptionFingerprint: z.string().regex(/^sha256:[A-Za-z0-9_-]{43}$/),
     secureOrigin: z.string().url().max(512),
     gatewayOrigin: z.string().url().max(512),
-    emailHint: z.string().email().max(320).optional(),
+    emailHint: z
+      .string()
+      .trim()
+      .min(3)
+      .max(320)
+      .refine((value) => !/[\r\n\0]/.test(value), "email_hint_injection")
+      .optional(),
     expiresAt: z.string().min(1).max(64),
     createdAt: z.string().min(1).max(64)
   })

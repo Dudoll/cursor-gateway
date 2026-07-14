@@ -81,6 +81,7 @@ const envSchema = z.object({
   SECURE_CLIENT_ORIGIN: optionalEnvString,
   PAIRING_TTL_SECONDS: z.coerce.number().int().positive().default(900),
   PAIRING_MAIL_MODE: z.enum(["log", "smtp", "api"]).default("log"),
+  // PAIRING_MAIL_TO is ONLY for scripts/e2ee/send-test-pairing-mail.* — never for live pairing.
   PAIRING_MAIL_TO: optionalEnvString,
   PAIRING_MAIL_LOG_FILE: optionalEnvString,
   PAIRING_MAIL_FROM: z.string().min(3).default("no-reply@piallera.com"),

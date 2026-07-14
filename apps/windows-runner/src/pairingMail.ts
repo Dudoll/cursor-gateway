@@ -4,40 +4,51 @@ import { homedir } from "node:os";
 import { config } from "./config.js";
 import { sendApiMail } from "./mail/apiProviders.js";
 import { sendSmtpMail } from "./mail/smtpClient.js";
+import { assertMailAddress, maskEmail, pairingMailIdempotencyKey } from "./mail/mailAddress.js";
 
 export type PairingMailPayload = {
   to: string;
   subject: string;
   text: string;
+  html?: string;
   magicLink: string;
+  /** When set, used as Resend/SendGrid Idempotency-Key (stable per pairId). */
+  pairId?: string;
 };
 
 export type PairingMailDelivery = "log" | "smtp" | "api";
+
+export type PairingMailSendResult = {
+  delivery: PairingMailDelivery;
+  messageId?: string;
+};
 
 /**
  * Deliver Secure Web magic-link mail.
  *
  * Modes:
- * - `log`  — write to a local file (dry-run / fallback). Never production delivery.
- * - `smtp` — generic SMTP (Resend/SES/Mailgun/SendGrid SMTP relays, etc.).
+ * - `log`  — write to a local file (dry-run). Never production delivery.
+ * - `smtp` — Nodemailer SMTP (Resend/SES/Mailgun/SendGrid SMTP relays, etc.).
  * - `api`  — HTTP API (`MAIL_API_PROVIDER=resend|mailgun|sendgrid`).
  *
- * On smtp/api failure the error is thrown (caller should not publish a broken offer
- * without knowing delivery failed). Use `PAIRING_MAIL_ALSO_LOG=true` to mirror
- * successful deliveries into the log file for ops debugging (magic link still
- * appears in the log — keep file perms 0600).
+ * Live modes (smtp/api) must be fully configured at process start (fail-fast).
+ * On send failure the error is thrown. Use `PAIRING_MAIL_ALSO_LOG=true` to mirror
+ * successful deliveries into the log file (magic link still appears — keep 0600).
  */
 export async function sendPairingEmail(
   payload: PairingMailPayload
-): Promise<PairingMailDelivery> {
+): Promise<PairingMailSendResult> {
   const mode = config.pairingMailMode;
-  const fromHeader = formatFromHeader(config.pairingMailFrom, config.pairingMailFromName);
+  const to = assertMailAddress(payload.to, "recipient");
+  const from = assertMailAddress(config.pairingMailFrom, "from");
+  assertNoHeaderInjection(payload.subject, "subject");
+  const fromHeader = formatFromHeader(from, config.pairingMailFromName);
 
   if (mode === "api") {
     if (!config.mailApiKey) {
       throw new Error("PAIRING_MAIL_MODE=api requires MAIL_API_KEY");
     }
-    await sendApiMail(
+    const result = await sendApiMail(
       {
         provider: config.mailApiProvider,
         apiKey: config.mailApiKey,
@@ -45,41 +56,53 @@ export async function sendPairingEmail(
       },
       {
         from: fromHeader,
-        to: payload.to,
+        to,
         subject: payload.subject,
-        text: payload.text
+        text: payload.text,
+        ...(payload.html ? { html: payload.html } : {}),
+        ...(payload.pairId
+          ? { idempotencyKey: pairingMailIdempotencyKey(payload.pairId) }
+          : {})
       }
     );
     maybeMirrorLog(payload, "api");
-    console.log(`[pairing-mail] Sent via API provider=${config.mailApiProvider} to=${redactEmail(payload.to)}`);
-    return "api";
+    console.log(
+      `[pairing-mail] Sent via API provider=${config.mailApiProvider}` +
+        ` to=${maskEmail(to)}` +
+        (result.messageId ? ` messageId=${result.messageId}` : "")
+    );
+    return {
+      delivery: "api",
+      ...(result.messageId ? { messageId: result.messageId } : {})
+    };
   }
 
   if (mode === "smtp") {
     const smtp = resolveSmtpSettings();
     if (!smtp) {
-      console.warn(
-        "[pairing-mail] SMTP mode selected but SMTP_HOST (or SMTP_URL) is not configured; falling back to log."
-      );
-      writeLog(payload);
-      return "log";
+      throw new Error("PAIRING_MAIL_MODE=smtp requires SMTP_HOST (or SMTP_URL)");
     }
-    await sendSmtpMail({
+    const result = await sendSmtpMail({
       ...smtp,
       from: fromHeader,
-      to: payload.to,
+      to,
       subject: payload.subject,
-      text: payload.text
+      text: payload.text,
+      ...(payload.html ? { html: payload.html } : {})
     });
     maybeMirrorLog(payload, "smtp");
     console.log(
-      `[pairing-mail] Sent via SMTP host=${smtp.host}:${smtp.port} to=${redactEmail(payload.to)}`
+      `[pairing-mail] Sent via SMTP host=${smtp.host}:${smtp.port} to=${maskEmail(to)}` +
+        (result.messageId ? ` messageId=${result.messageId}` : "")
     );
-    return "smtp";
+    return {
+      delivery: "smtp",
+      ...(result.messageId ? { messageId: result.messageId } : {})
+    };
   }
 
   writeLog(payload);
-  return "log";
+  return { delivery: "log" };
 }
 
 function resolveSmtpSettings():
@@ -134,6 +157,9 @@ export function parseSmtpUrl(raw: string): {
   const secure = url.protocol === "smtps:" || url.port === "465";
   const port = url.port ? Number(url.port) : secure ? 465 : 587;
   if (!url.hostname) throw new Error("SMTP_URL is missing host");
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    throw new Error("SMTP_URL has invalid port");
+  }
   const settings: {
     host: string;
     port: number;
@@ -152,10 +178,14 @@ export function parseSmtpUrl(raw: string): {
 
 function formatFromHeader(from: string, fromName?: string): string {
   if (!fromName) return from;
-  // Quote display name if it contains non-atom characters.
+  if (/[\r\n\0]/.test(fromName)) throw new Error("from_name_injection");
   const needsQuote = /[^\w.+ -]/u.test(fromName) || /\s/.test(fromName);
   const name = needsQuote ? `"${fromName.replace(/"/g, '\\"')}"` : fromName;
   return `${name} <${from}>`;
+}
+
+function assertNoHeaderInjection(value: string, label: string) {
+  if (/[\r\n\0]/.test(value)) throw new Error(`${label}_injection`);
 }
 
 function maybeMirrorLog(payload: PairingMailPayload, via: string) {
@@ -187,8 +217,55 @@ export function pairingMailLogPath() {
   );
 }
 
-function redactEmail(email: string): string {
-  const at = email.indexOf("@");
-  if (at <= 1) return "***";
-  return `${email[0]}***${email.slice(at)}`;
+/**
+ * Fail-fast validation for live mail modes. Call once at runner startup.
+ * Incomplete smtp/api config must not silently degrade to log.
+ */
+export function assertPairingMailConfigOrThrow(): void {
+  const mode = config.pairingMailMode;
+  assertMailAddress(config.pairingMailFrom, "from");
+  if (config.pairingMailFromName && /[\r\n\0]/.test(config.pairingMailFromName)) {
+    throw new Error("PAIRING_MAIL_FROM_NAME contains illegal characters");
+  }
+
+  if (mode === "log") {
+    console.warn(
+      "╔══════════════════════════════════════════════════════════════════╗\n" +
+        "║  WARNING: PAIRING_MAIL_MODE=log — pairing mail is NOT delivered  ║\n" +
+        "║  Magic links are written to a local log file only (non-prod).    ║\n" +
+        "║  Set PAIRING_MAIL_MODE=api (Resend) or smtp for production.      ║\n" +
+        "╚══════════════════════════════════════════════════════════════════╝"
+    );
+    return;
+  }
+
+  if (mode === "api") {
+    if (!config.mailApiKey) {
+      throw new Error(
+        "PAIRING_MAIL_MODE=api requires MAIL_API_KEY (fail-fast; will not fall back to log)"
+      );
+    }
+    if (config.mailApiProvider === "mailgun" && !config.mailgunBaseUrl) {
+      throw new Error("MAIL_API_PROVIDER=mailgun requires MAILGUN_BASE_URL");
+    }
+    console.log(
+      `[pairing-mail] Live API mode enabled provider=${config.mailApiProvider} from=${maskEmail(config.pairingMailFrom)}`
+    );
+    return;
+  }
+
+  if (mode === "smtp") {
+    const smtp = resolveSmtpSettings();
+    if (!smtp?.host) {
+      throw new Error(
+        "PAIRING_MAIL_MODE=smtp requires SMTP_HOST or SMTP_URL (fail-fast; will not fall back to log)"
+      );
+    }
+    if (!Number.isInteger(smtp.port) || smtp.port < 1 || smtp.port > 65535) {
+      throw new Error("SMTP_PORT is invalid");
+    }
+    console.log(
+      `[pairing-mail] Live SMTP mode enabled host=${smtp.host}:${smtp.port} from=${maskEmail(config.pairingMailFrom)}`
+    );
+  }
 }

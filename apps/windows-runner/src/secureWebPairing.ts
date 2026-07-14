@@ -16,30 +16,28 @@ import {
   verifyPairingTranscriptMac,
   verifyValue
 } from "@cursor-gateway/e2ee";
+import { join } from "node:path";
+import { homedir } from "node:os";
 import { config } from "./config.js";
 import { RunnerE2eeState } from "./e2eeState.js";
 import { sendPairingEmail } from "./pairingMail.js";
 import { buildPairingMailContent } from "./mail/pairingMailTemplate.js";
+import { assertMailAddress, emailFingerprint, maskEmail } from "./mail/mailAddress.js";
+import { PairingPendingStore } from "./pairingPendingStore.js";
 import { verifyAccessJwt } from "./accessJwt.js";
 
 type GatewayFetch = (path: string, init?: RequestInit) => Promise<Response>;
 
-type PendingPairing = {
-  token: string;
-  offer: E2eePairingOffer;
-  start: E2eePairingStart;
-  createdAt: string;
-};
-
-const pendingByPairId = new Map<string, PendingPairing>();
+const pendingStore = new PairingPendingStore(
+  join(
+    homedir(),
+    ".cursor-gateway",
+    `pairing-pending-${config.runnerId.replace(/[^a-zA-Z0-9._-]/g, "_")}.json`
+  )
+);
 
 function pruneExpired() {
-  const now = Date.now();
-  for (const [pairId, pending] of pendingByPairId) {
-    if (Date.parse(pending.offer.expiresAt) <= now) {
-      pendingByPairId.delete(pairId);
-    }
-  }
+  pendingStore.pruneExpired();
 }
 
 export async function processSecureWebPairingCycle(input: {
@@ -65,10 +63,24 @@ async function claimAndOffer(input: {
     throw new Error(`pairing_claim_start_failed_${response.status}`);
   }
   const body = (await response.json()) as {
-    pairing?: { start: E2eePairingStart; expiresAt: string };
+    pairing?: {
+      start: E2eePairingStart;
+      expiresAt: string;
+      recipientEmail?: string;
+    };
   };
   if (!body.pairing?.start) return;
   const start = body.pairing.start;
+
+  let recipientEmail: string;
+  try {
+    recipientEmail = assertMailAddress(body.pairing.recipientEmail, "recipient");
+  } catch (error) {
+    console.warn(
+      `Rejecting pairing ${start.pairId}: trusted recipient missing/invalid (${error instanceof Error ? error.message : "unknown"})`
+    );
+    return;
+  }
 
   if (
     config.secureClientOrigin &&
@@ -91,54 +103,74 @@ async function claimAndOffer(input: {
     return;
   }
 
-  const token = generateMagicLinkToken();
-  const runnerChallenge = generatePairingChallenge();
-  const expiresAt = new Date(
-    Date.now() + config.pairingTtlSeconds * 1000
-  ).toISOString();
-  const offer = buildPairingOffer({
-    start,
-    runnerId: config.runnerId,
-    runnerChallenge,
-    runnerEncryptionKey: input.state.encryptionKey,
-    runnerSigningKey: input.state.signingKey,
-    expiresAt,
-    ...(config.pairingMailTo ? { emailHint: config.pairingMailTo } : {})
-  });
+  // Reuse the same token/offer across mail + offer publish retries (never regenerate
+  // after mailSent). PAIRING_MAIL_TO / browser-supplied emails are never used here.
+  let pending = pendingStore.get(start.pairId);
+  if (!pending) {
+    const token = generateMagicLinkToken();
+    const runnerChallenge = generatePairingChallenge();
+    const expiresAt = new Date(
+      Date.now() + config.pairingTtlSeconds * 1000
+    ).toISOString();
+    const offer = buildPairingOffer({
+      start,
+      runnerId: config.runnerId,
+      runnerChallenge,
+      runnerEncryptionKey: input.state.encryptionKey,
+      runnerSigningKey: input.state.signingKey,
+      expiresAt,
+      emailHint: maskEmail(recipientEmail)
+    });
+    pending = {
+      token,
+      offer,
+      start,
+      recipientEmail,
+      mailSent: false,
+      createdAt: new Date().toISOString()
+    };
+    pendingStore.set(start.pairId, pending);
+  } else if (pending.recipientEmail !== recipientEmail) {
+    console.warn(
+      `Rejecting pairing ${start.pairId}: recipient fingerprint mismatch fp=${emailFingerprint(recipientEmail)}`
+    );
+    pendingStore.delete(start.pairId);
+    return;
+  }
 
-  pendingByPairId.set(start.pairId, {
-    token,
-    offer,
-    start,
-    createdAt: new Date().toISOString()
-  });
-
-  const magicLink = `${start.secureOrigin.replace(/\/$/, "")}/#pair=${start.pairId}.${token}`;
-  const mailTo = config.pairingMailTo || "operator@example.com";
-  const ttlMinutes = Math.max(1, Math.round(config.pairingTtlSeconds / 60));
-  const mail = buildPairingMailContent({
-    magicLink,
-    pairId: start.pairId,
-    runnerId: config.runnerId,
-    expiresAt,
-    ttlHint: `约 ${ttlMinutes} 分钟`
-  });
-  await sendPairingEmail({
-    to: mailTo,
-    subject: mail.subject,
-    magicLink,
-    text: mail.text
-  });
+  if (!pending.mailSent) {
+    const magicLink = `${start.secureOrigin.replace(/\/$/, "")}/#pair=${start.pairId}.${pending.token}`;
+    const ttlMinutes = Math.max(1, Math.round(config.pairingTtlSeconds / 60));
+    const mail = buildPairingMailContent({
+      magicLink,
+      pairId: start.pairId,
+      runnerId: config.runnerId,
+      expiresAt: pending.offer.expiresAt,
+      ttlHint: `约 ${ttlMinutes} 分钟`
+    });
+    await sendPairingEmail({
+      to: pending.recipientEmail,
+      subject: mail.subject,
+      magicLink,
+      text: mail.text,
+      html: mail.html,
+      pairId: start.pairId
+    });
+    pending = { ...pending, mailSent: true };
+    pendingStore.set(start.pairId, pending);
+  }
 
   const offerResponse = await input.gatewayFetch("/api/runner/e2ee/v1/pairings/offer", {
     method: "POST",
-    body: JSON.stringify({ runnerId: config.runnerId, offer })
+    body: JSON.stringify({ runnerId: config.runnerId, offer: pending.offer })
   });
   if (!offerResponse.ok) {
-    pendingByPairId.delete(start.pairId);
+    // Keep pending (mailSent) so the next loop retries offer publish without re-mailing.
     throw new Error(`pairing_offer_publish_failed_${offerResponse.status}`);
   }
-  console.log(`Published pairing offer for ${start.pairId}; magic link mailed/logged`);
+  console.log(
+    `Published pairing offer for ${start.pairId}; magic link mailed (recipient_fp=${emailFingerprint(pending.recipientEmail)})`
+  );
 }
 
 async function claimAndComplete(input: {
@@ -167,7 +199,7 @@ async function claimAndComplete(input: {
   if (!body.pairing?.complete || !body.pairing.offer) return;
 
   const { start, offer, complete } = body.pairing;
-  const pending = pendingByPairId.get(complete.pairId);
+  const pending = pendingStore.get(complete.pairId);
   let status: "paired" | "rejected" = "rejected";
 
   try {
@@ -227,7 +259,7 @@ async function claimAndComplete(input: {
     );
     status = "rejected";
   } finally {
-    pendingByPairId.delete(complete.pairId);
+    pendingStore.delete(complete.pairId);
   }
 
   const unsignedAck = {
@@ -266,8 +298,10 @@ async function syncRevocations(input: {
   const response = await input.gatewayFetch(
     `/api/runner/e2ee/v1/devices/pending-revocations?runnerId=${encodeURIComponent(config.runnerId)}`
   );
-  if (!response.ok) return;
-  const body = (await response.json()) as {
+  if (!response.ok || response.status === 204) return;
+  const raw = await response.text();
+  if (!raw.trim()) return;
+  const body = JSON.parse(raw) as {
     revocations?: Array<{ clientId: string }>;
   };
   for (const item of body.revocations ?? []) {
@@ -285,5 +319,5 @@ async function syncRevocations(input: {
 
 /** Expose for tests / dry-run helpers. */
 export function __testPendingPairings() {
-  return pendingByPairId;
+  return pendingStore;
 }

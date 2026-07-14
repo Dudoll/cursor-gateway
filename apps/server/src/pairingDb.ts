@@ -12,6 +12,7 @@ import {
   type E2eePairingStatus
 } from "@cursor-gateway/shared";
 import { pool } from "./db.js";
+import { assertTrustedRecipientEmail } from "./pairingRecipient.js";
 
 export class PairingConflictError extends Error {
   constructor(readonly code: string) {
@@ -47,6 +48,11 @@ export type PairingRow = {
   expiresAt: string;
   createdAt: string;
   updatedAt: string;
+};
+
+/** Claimed start for runners: includes Access-bound recipient email only. */
+export type ClaimedPairingStart = PairingRow & {
+  recipientEmail: string;
 };
 
 function mapPairing(row: QueryResultRow): PairingRow {
@@ -130,35 +136,62 @@ export async function getPairingForUser(
 
 export async function claimNextPairingStart(input: {
   runnerId: string;
-}): Promise<PairingRow | undefined> {
+}): Promise<ClaimedPairingStart | undefined> {
   await expireStalePairings();
-  return inTransaction(async (client) => {
-    const selected = await client.query(
-      `
-        select *
-        from e2ee_pairings
-        where status = 'pending_start'
-          and expires_at > now()
-          and (runner_id is null or runner_id = $1)
-        order by created_at
-        for update skip locked
-        limit 1
-      `,
-      [input.runnerId]
-    );
-    const row = selected.rows[0];
-    if (!row) return undefined;
-    const updated = await client.query(
-      `
-        update e2ee_pairings
-        set runner_id = $2, updated_at = now()
-        where pair_id = $1
-        returning *
-      `,
-      [row.pair_id, input.runnerId]
-    );
-    return mapPairing(updated.rows[0]);
-  });
+  // Retry a few times so a single bad/missing user email does not block the queue.
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    const claimed = await inTransaction(async (client) => {
+      const selected = await client.query(
+        `
+          select p.*, u.email as user_email
+          from e2ee_pairings p
+          join app_users u on u.id = p.user_id
+          where p.status = 'pending_start'
+            and p.expires_at > now()
+            and (p.runner_id is null or p.runner_id = $1)
+          order by p.created_at
+          for update of p skip locked
+          limit 1
+        `,
+        [input.runnerId]
+      );
+      const row = selected.rows[0];
+      if (!row) return undefined;
+
+      let recipientEmail: string;
+      try {
+        recipientEmail = assertTrustedRecipientEmail(row.user_email);
+      } catch {
+        await client.query(
+          `
+            update e2ee_pairings
+            set status = 'rejected', updated_at = now()
+            where pair_id = $1
+          `,
+          [row.pair_id]
+        );
+        return { skippedInvalidRecipient: true as const };
+      }
+
+      const updated = await client.query(
+        `
+          update e2ee_pairings
+          set runner_id = $2, updated_at = now()
+          where pair_id = $1
+          returning *
+        `,
+        [row.pair_id, input.runnerId]
+      );
+      return {
+        pairing: { ...mapPairing(updated.rows[0]), recipientEmail }
+      };
+    });
+
+    if (!claimed) return undefined;
+    if ("skippedInvalidRecipient" in claimed) continue;
+    return claimed.pairing;
+  }
+  return undefined;
 }
 
 export async function publishPairingOffer(input: {

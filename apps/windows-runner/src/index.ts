@@ -23,6 +23,7 @@ import { toLocalPath } from "./pathTranslation.js";
 import { writeHealthSnapshot } from "./health.js";
 import { processCsAuthCycle } from "./csAuth.js";
 import { processSecureWebPairingCycle } from "./secureWebPairing.js";
+import { assertPairingMailConfigOrThrow } from "./pairingMail.js";
 
 const GATEWAY_REQUEST_TIMEOUT_MS = 30_000;
 const HEARTBEAT_INTERVAL_MS = 60_000;
@@ -481,6 +482,7 @@ async function main() {
 
   const workspaces = configuredWorkspaces();
   const workspaceMap = new Map(workspaces.map((workspace) => [workspace.id, workspace]));
+  assertPairingMailConfigOrThrow();
   const state = config.e2eeEnabled
     ? await RunnerE2eeState.loadOrCreate()
     : undefined;

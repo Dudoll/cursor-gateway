@@ -20,10 +20,12 @@
     "@cursor-gateway/e2ee": "file:../../packages/e2ee",
     "@cursor-gateway/shared": "file:../../packages/shared",
     "@cursor/sdk": "^1.0.23",
+    "nodemailer": "^7.0.5",
     "zod": "^4.4.3"
   },
   "devDependencies": {
     "@types/node": "^26.1.1",
+    "@types/nodemailer": "^6.4.17",
     "tsx": "^4.23.0",
     "typescript": "^7.0.2"
   }

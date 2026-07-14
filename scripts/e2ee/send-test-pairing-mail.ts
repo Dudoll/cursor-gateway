@@ -51,10 +51,12 @@ const delivery = await sendPairingEmail({
   to,
   subject: mail.subject,
   magicLink,
-  text: mail.text
+  text: mail.text,
+  html: mail.html
 });
-console.log(`delivery=${delivery}`);
-if (delivery === "log") {
+console.log(`delivery=${delivery.delivery}`);
+if (delivery.messageId) console.log(`messageId=${delivery.messageId}`);
+if (delivery.delivery === "log") {
   console.log(`logFile=${pairingMailLogPath()}`);
 }
 console.log("ok");

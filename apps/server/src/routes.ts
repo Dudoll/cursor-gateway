@@ -1315,7 +1315,9 @@ export async function registerRoutes(app: FastifyInstance) {
               pairId: pairing.pairId,
               status: pairing.status,
               start: pairing.start,
-              expiresAt: pairing.expiresAt
+              expiresAt: pairing.expiresAt,
+              // Access-bound app_users.email only — never from client envelope.
+              recipientEmail: pairing.recipientEmail
             }
           }
         : reply.code(204).send();
