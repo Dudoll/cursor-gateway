@@ -92,18 +92,18 @@ export function App() {
     if (!parseMagicLinkFragment(window.location.hash)) return;
     let cancelled = false;
     setBusy(true);
-    setStatus({ tone: "info", text: "Completing magic-link pairing…" });
+    setStatus({ tone: "info", text: "正在完成 magic-link 配对…" });
     tryConsumeMagicLink({ api, keys: boot.keys })
       .then(async (result) => {
         if (cancelled || !result) return;
-        setStatus({ tone: "ok", text: `Paired with runner ${result.runnerId}` });
+        setStatus({ tone: "ok", text: `已与 Runner ${result.runnerId} 配对` });
         setRunnerId(result.runnerId);
         setStep(3);
         await refreshDirectory(api, boot.keys);
       })
       .catch((error) => {
         if (!cancelled) {
-          setStatus({ tone: "error", text: `Pairing failed: ${errorText(error)}` });
+          setStatus({ tone: "error", text: `配对失败：${errorText(error)}` });
         }
       })
       .finally(() => {
@@ -140,7 +140,7 @@ export function App() {
       setGatewayInput(origin);
       setStatus({
         tone: "ok",
-        text: `Gateway saved: ${origin}. Log in via Cloudflare Access on that origin if needed, then start pairing.`
+        text: `Gateway 已保存：${origin}。如需请先在该 origin 完成 Cloudflare Access 登录，再开始配对。`
       });
       setStep(2);
     } catch (error) {
@@ -158,13 +158,13 @@ export function App() {
       setStatus({
         tone: "warn",
         text:
-          `Pairing started (${started.pairId}).\n` +
-          `Check email (or runner pairing-mail.log in dev) for the magic link.\n` +
-          `Open the link in THIS browser. Expires ${started.expiresAt}.`
+          `配对已开始（${started.pairId}）。\n` +
+          `请查收邮件（开发环境可看 Runner 的 pairing-mail.log）中的 magic link。\n` +
+          `请在本浏览器打开该链接。过期时间：${started.expiresAt}。`
       });
       setStep(2);
     } catch (error) {
-      setStatus({ tone: "error", text: `Start failed: ${errorText(error)}` });
+      setStatus({ tone: "error", text: `启动配对失败：${errorText(error)}` });
     } finally {
       setBusy(false);
     }
@@ -175,12 +175,12 @@ export function App() {
     setBusy(true);
     try {
       const result = await completePairingFromFragment({ api, keys: boot.keys });
-      setStatus({ tone: "ok", text: `Paired with runner ${result.runnerId}` });
+      setStatus({ tone: "ok", text: `已与 Runner ${result.runnerId} 配对` });
       setRunnerId(result.runnerId);
       setStep(3);
       await refreshDirectory(api, boot.keys);
     } catch (error) {
-      setStatus({ tone: "error", text: `Complete failed: ${errorText(error)}` });
+      setStatus({ tone: "error", text: `完成配对失败：${errorText(error)}` });
     } finally {
       setBusy(false);
     }
@@ -191,7 +191,7 @@ export function App() {
     setBusy(true);
     try {
       await refreshDirectory(api, boot.keys);
-      setStatus({ tone: "ok", text: "Directory refreshed." });
+      setStatus({ tone: "ok", text: "目录已刷新。" });
     } catch (error) {
       setStatus({ tone: "error", text: errorText(error) });
     } finally {
@@ -232,7 +232,7 @@ export function App() {
       setActiveConversationId(run.conversationId);
       await refreshDirectory(api, boot.keys);
       await openConversation(run.conversationId);
-      setStatus({ tone: "ok", text: `Submitted run ${run.id}` });
+      setStatus({ tone: "ok", text: `已提交 run ${run.id}` });
     } catch (error) {
       setStatus({ tone: "error", text: errorText(error) });
     } finally {
@@ -244,7 +244,7 @@ export function App() {
     return (
       <div className="app">
         <h1 className="brand">Cursor Gateway Secure</h1>
-        <p className="lede">Checking WebCrypto + IndexedDB persistence…</p>
+        <p className="lede">正在检查 WebCrypto 与 IndexedDB 持久化…</p>
       </div>
     );
   }
@@ -254,10 +254,10 @@ export function App() {
       <div className="app">
         <h1 className="brand">Cursor Gateway Secure</h1>
         <div className="panel blocker">
-          <h2>Device storage unavailable</h2>
+          <h2>设备存储不可用</h2>
           <p>
-            This browser cannot keep non-exportable device keys (private / ephemeral mode,
-            blocked storage, or insecure context). Open a normal HTTPS window and retry.
+            当前浏览器无法保存不可导出的设备密钥（隐私 / 临时模式、存储被拦截，或不安全上下文）。
+            请使用普通 HTTPS 窗口重试。
           </p>
           <div className="status error">{boot.reason}</div>
         </div>
@@ -269,22 +269,22 @@ export function App() {
     <div className="app">
       <h1 className="brand">Cursor Gateway Secure</h1>
       <p className="lede">
-        Cross-browser E2EE client. Keys stay non-exportable in this device. Gateway only relays
-        ciphertext. Protocol: <code>cg-e2ee/1</code>.
+        跨浏览器 E2EE 客户端。密钥以不可导出形式保存在本设备。Gateway 仅中继密文。协议：
+        <code>cg-e2ee/1</code>。
       </p>
 
       <ol className="steps">
         <li className={step > 1 ? "done" : step === 1 ? "active" : ""}>
           <span className="n">1</span>
-          <span>Configure Gateway origin (Cloudflare Access login)</span>
+          <span>配置 Gateway origin（Cloudflare Access 登录）</span>
         </li>
         <li className={step > 2 ? "done" : step === 2 ? "active" : ""}>
           <span className="n">2</span>
-          <span>Start pairing → open magic link from email</span>
+          <span>开始配对 → 打开邮件中的 magic link</span>
         </li>
         <li className={step === 3 ? "active done" : ""}>
           <span className="n">3</span>
-          <span>Chat with paired Runner over E2EE</span>
+          <span>与已配对 Runner 进行 E2EE 聊天</span>
         </li>
       </ol>
 
@@ -301,33 +301,32 @@ export function App() {
           />
           <div className="row">
             <button type="submit" disabled={busy}>
-              Save origin
+              保存 origin
             </button>
             <button type="button" className="secondary" disabled={busy} onClick={onRefresh}>
-              Refresh directory
+              刷新目录
             </button>
           </div>
         </form>
         <p className="meta">
-          Device clientId: <code>{boot.device.clientId}</code>
+          设备 clientId：<code>{boot.device.clientId}</code>
           {boot.device.pairedRunnerId ? (
             <>
               {" "}
-              · paired runner: <code>{boot.device.pairedRunnerId}</code>
+              · 已配对 runner：<code>{boot.device.pairedRunnerId}</code>
             </>
           ) : null}
         </p>
       </section>
 
       <section className="panel">
-        <h2>2. Magic-link pairing</h2>
+        <h2>2. Magic-link 配对</h2>
         <p className="meta">
-          Token never leaves the URL fragment / Runner mail path. Gateway stores only public
-          pairing metadata.
+          Token 不会离开 URL fragment / Runner 邮件路径。Gateway 仅存储公开配对元数据。
         </p>
         <div className="row">
           <button type="button" disabled={busy || !api} onClick={onStartPairing}>
-            Start pairing
+            开始配对
           </button>
           <button
             type="button"
@@ -335,20 +334,20 @@ export function App() {
             disabled={busy || !api || !parseMagicLinkFragment(window.location.hash)}
             onClick={onManualComplete}
           >
-            Complete from URL fragment
+            从 URL fragment 完成配对
           </button>
         </div>
         {pairId ? (
           <p className="meta">
-            Active pairId: <code>{pairId}</code>
+            当前 pairId：<code>{pairId}</code>
           </p>
         ) : null}
       </section>
 
       <section className="panel">
-        <h2>3. Encrypted chat</h2>
+        <h2>3. 加密聊天</h2>
         {runners.length === 0 ? (
-          <p className="meta">No runners advertised yet. Pair first, then refresh.</p>
+          <p className="meta">尚无 Runner。请先完成配对，再刷新目录。</p>
         ) : (
           <>
             <label htmlFor="runner">Runner</label>
@@ -391,7 +390,7 @@ export function App() {
                   setRuns([]);
                 }}
               >
-                + New encrypted conversation
+                + 新建加密会话
               </button>
               {conversations.map((conversation) => (
                 <button
@@ -408,7 +407,7 @@ export function App() {
             <div className="messages">
               {runs.map((run) => (
                 <div key={run.record.id} className="msg">
-                  <div className="role">You</div>
+                  <div className="role">你</div>
                   <div>{run.request.prompt}</div>
                   {run.progress && !run.result ? (
                     <>
@@ -421,9 +420,9 @@ export function App() {
                   {run.result ? (
                     <>
                       <div className="role" style={{ marginTop: 8 }}>
-                        Runner ({run.result.status})
+                        Runner（{run.result.status}）
                       </div>
-                      <div>{run.result.response ?? run.result.error ?? "(no body)"}</div>
+                      <div>{run.result.response ?? run.result.error ?? "（无正文）"}</div>
                     </>
                   ) : null}
                 </div>
@@ -436,7 +435,7 @@ export function App() {
                 id="prompt"
                 value={prompt}
                 onChange={(event) => setPrompt(event.target.value)}
-                placeholder="Encrypted prompt…"
+                placeholder="加密 Prompt…"
                 required
               />
               <label className="meta" style={{ display: "flex", gap: 8, alignItems: "center" }}>
@@ -445,11 +444,11 @@ export function App() {
                   checked={allowWrites}
                   onChange={(event) => setAllowWrites(event.target.checked)}
                 />
-                Allow writes (requires signed approval)
+                允许写入（需签名审批）
               </label>
               <div className="row">
                 <button type="submit" disabled={busy || !runnerId || !prompt.trim()}>
-                  Send encrypted run
+                  发送加密 run
                 </button>
               </div>
             </form>

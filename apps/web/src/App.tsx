@@ -7,7 +7,6 @@ import {
   ChevronLeft,
   ChevronRight,
   Database,
-  Download,
   FileText,
   Home,
   LockKeyhole,
@@ -241,46 +240,8 @@ function BrandMark() {
   );
 }
 
-const EXTENSION_DOWNLOAD_HREF = "/api/extension/download";
-
-function ExtensionDownloadLink({ className = "topbar-link extension-download" }: { className?: string }) {
-  return (
-    <a className={className} href={EXTENSION_DOWNLOAD_HREF} download="cursor-gateway-secure.zip">
-      <Download aria-hidden="true" size={15} strokeWidth={1.75} />
-      <span>下载扩展</span>
-    </a>
-  );
-}
-
-function ExtensionInstallGuide() {
-  return (
-    <section className="extension-install" aria-label="Install Cursor Gateway Secure">
-      <div className="extension-install-header">
-        <LockKeyhole aria-hidden="true" size={18} strokeWidth={1.75} />
-        <div>
-          <h2>下载 Cursor Gateway Secure 扩展</h2>
-          <p>服务端已预构建安装包。登录后即可下载，无需在浏览器里执行 npm build。</p>
-        </div>
-      </div>
-      <a className="extension-download-button" href={EXTENSION_DOWNLOAD_HREF} download="cursor-gateway-secure.zip">
-        <Download aria-hidden="true" size={16} strokeWidth={1.75} />
-        下载 Cursor Gateway Secure 扩展
-      </a>
-      <ol className="extension-install-steps">
-        <li>解压下载的 <code>cursor-gateway-secure.zip</code></li>
-        <li>打开 Chrome <code>chrome://extensions</code>，打开右上角「开发者模式」</li>
-        <li>点击「加载已解压的扩展程序」，选择解压后的文件夹</li>
-      </ol>
-      <p className="extension-install-note">
-        生产信任根仍建议使用商店或组织签名渠道。旁加载 zip 适合当前 Gateway；勿把 pairing 私钥放进扩展目录。详见{" "}
-        <a href="https://github.com/Dudoll/cursor-gateway/blob/main/docs/e2ee.md" rel="noreferrer" target="_blank">
-          E2EE 文档
-        </a>
-        。
-      </p>
-    </section>
-  );
-}
+/** Download API remains at /api/extension/download; Web UI no longer promotes install. */
+const SECURE_WEB_ORIGIN = "https://secure.joelzt.org";
 
 const SIDEBAR_COLLAPSED_KEY = "cursor-gateway:sidebar-collapsed";
 
@@ -569,7 +530,6 @@ function GatewayDashboard() {
         <BrandMark />
         <TopTabs active="home" />
         <div className="topbar-actions">
-          <ExtensionDownloadLink />
           <a className="topbar-link" href="/trash">
             <Trash2 aria-hidden="true" size={15} strokeWidth={1.75} />
             <span>Recycle Bin</span>
@@ -686,13 +646,14 @@ function GatewayDashboard() {
               <section className="e2ee-required" aria-live="polite">
                 <LockKeyhole aria-hidden="true" size={22} />
                 <div>
-                  <h2>Encrypted chat requires Cursor Gateway Secure</h2>
+                  <h2>此 Gateway 要求 E2EE 加密聊天</h2>
                   <p>
-                    Open the signed browser extension, authenticate this Gateway origin, and
-                    verify the Runner fingerprints shown locally on the runner. This VPS-hosted
-                    page never receives E2EE prompt or response plaintext.
+                    请使用{" "}
+                    <a href={SECURE_WEB_ORIGIN} rel="noreferrer" target="_blank">
+                      Secure Web
+                    </a>
+                    （{SECURE_WEB_ORIGIN}）完成配对后发送密文。本页不会接收 E2EE 明文。
                   </p>
-                  <ExtensionInstallGuide />
                 </div>
               </section>
             ) : null}
@@ -704,7 +665,6 @@ function GatewayDashboard() {
                   Hermes answers on the VPS host. Switch to a Cursor runner model when you need
                   workspace-aware reads or writes.
                 </p>
-                <ExtensionInstallGuide />
               </div>
             ) : null}
 
@@ -997,7 +957,6 @@ function ReportsPage({ initialReportId }: { initialReportId?: ReportId }) {
         <BrandMark />
         <TopTabs active="reports" />
         <div className="topbar-actions">
-          <ExtensionDownloadLink />
           <a className="topbar-link" href="/trash">
             <Trash2 aria-hidden="true" size={15} strokeWidth={1.75} />
             <span>Recycle Bin</span>
@@ -1258,7 +1217,6 @@ function TrashPage() {
         <BrandMark />
         <TopTabs active="home" />
         <div className="topbar-actions">
-          <ExtensionDownloadLink />
           <a className="topbar-link" href="/trash" aria-current="page">
             <Trash2 aria-hidden="true" size={15} strokeWidth={1.75} />
             <span>Recycle Bin</span>

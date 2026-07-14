@@ -1,7 +1,7 @@
 {
   "name": "Cursor Gateway Secure",
   "short_name": "CG Secure",
-  "description": "Trusted end-to-end encrypted client for Cursor Gateway",
+  "description": "Cursor Gateway 可信端到端加密（E2EE）客户端",
   "start_url": "/",
   "display": "standalone",
   "background_color": "#0f172a",

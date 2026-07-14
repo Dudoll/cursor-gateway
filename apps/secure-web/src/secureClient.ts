@@ -489,8 +489,8 @@ export class SecureGatewayClient {
 }
 
 export function progressLabel(kind: RunProgressKind) {
-  if (kind === "thinking") return "Thinking";
-  if (kind === "tool") return "Using a tool";
-  if (kind === "responding") return "Responding";
-  return "Working";
+  if (kind === "thinking") return "思考中";
+  if (kind === "tool") return "正在使用工具";
+  if (kind === "responding") return "正在回复";
+  return "处理中";
 }
