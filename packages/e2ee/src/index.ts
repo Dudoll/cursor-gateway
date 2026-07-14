@@ -1,12 +1,19 @@
 import {
   E2EE_CS_AUTH_KIND,
+  E2EE_DEVICE_APPROVAL_KIND,
   E2EE_HPKE_SUITE,
   E2EE_PAIRING_KIND,
   E2EE_PROTOCOL,
+  E2EE_RECOVERY_PAIRING_KIND,
+  E2EE_RUNNER_CERT_KIND,
+  E2EE_TRUST_ROOT_KIND,
   e2eeCsAuthGrantSchema,
+  e2eeRunnerIdentityCertSchema,
   type E2eeCiphertext,
   type E2eeCsAuthGrant,
   type E2eeCsAuthIntent,
+  type E2eeDeviceApprovalDecision,
+  type E2eeDeviceApprovalRequest,
   type E2eeHpkeEnvelope,
   type E2eeKeyDescriptor,
   type E2eeMemoryEnvelope,
@@ -14,9 +21,12 @@ import {
   type E2eePairingStart,
   type E2eeProgressEnvelope,
   type E2eePublicKey,
+  type E2eeRecoveryPairingOffer,
   type E2eeResultEnvelope,
   type E2eeRunRequestEnvelope,
-  type E2eeSignature
+  type E2eeRunnerIdentityCert,
+  type E2eeSignature,
+  type E2eeTrustRootPublic
 } from "@cursor-gateway/shared";
 import {
   Aes256Gcm,
@@ -681,6 +691,13 @@ export function csAuthGrantTranscript(
     runnerId: grant.runnerId,
     runnerEncryptionFingerprint: grant.runnerEncryptionKey.fingerprint,
     runnerSigningFingerprint: grant.runnerSigningKey.fingerprint,
+    ...(grant.runnerCertificate
+      ? {
+          runnerCertId: grant.runnerCertificate.certId,
+          runnerCertRootFingerprint: grant.runnerCertificate.rootFingerprint,
+          runnerCertEpoch: grant.runnerCertificate.epoch
+        }
+      : {}),
     status: grant.status,
     expiresAt: grant.expiresAt,
     createdAt: grant.createdAt
@@ -695,7 +712,8 @@ export function buildCsAuthGrantUnsigned(input: {
   status: "authorized" | "rejected";
   expiresAt: string;
   createdAt?: string;
-}): Omit<E2eeCsAuthGrant, "signature"> {
+  runnerCertificate?: E2eeRunnerIdentityCert;
+}): Omit<E2eeCsAuthGrant & { runnerCertificate?: E2eeRunnerIdentityCert }, "signature"> {
   return {
     protocol: E2EE_PROTOCOL,
     authKind: E2EE_CS_AUTH_KIND,
@@ -712,7 +730,10 @@ export function buildCsAuthGrantUnsigned(input: {
     runnerSigningKey: input.runnerSigningKey,
     status: input.status,
     expiresAt: input.expiresAt,
-    createdAt: input.createdAt ?? new Date().toISOString()
+    createdAt: input.createdAt ?? new Date().toISOString(),
+    ...(input.runnerCertificate
+      ? { runnerCertificate: input.runnerCertificate }
+      : {})
   };
 }
 
@@ -838,7 +859,7 @@ export function clearCsAuthFragment() {
  * Does not mark replay; caller must consume via Gateway.
  */
 export async function validateCsAuthGrant(input: {
-  grant: E2eeCsAuthGrant;
+  grant: E2eeCsAuthGrant & { runnerCertificate?: E2eeRunnerIdentityCert };
   expected: {
     authId: string;
     clientId: string;
@@ -852,6 +873,9 @@ export async function validateCsAuthGrant(input: {
   nowMs?: number;
   /** When set, signature must verify under this pinned Runner key (Secure path). */
   pinnedRunnerSigningKey?: CryptoKey;
+  /** Offline trust roots; when non-empty, grant.runnerCertificate is required and verified first. */
+  trustRoots?: E2eeTrustRootPublic[];
+  expectedSecureOrigin?: string;
 }): Promise<{ ok: true } | { ok: false; reason: string }> {
   const grant = input.grant;
   const expected = input.expected;
@@ -881,15 +905,414 @@ export async function validateCsAuthGrant(input: {
   }
   if (Date.parse(grant.expiresAt) <= now) return { ok: false, reason: "grant_expired" };
 
+  const trustRoots = input.trustRoots ?? [];
+  if (trustRoots.length > 0) {
+    const certCheck = await validateGrantRunnerCertificate({
+      grant,
+      trustRoots,
+      ...(input.expectedSecureOrigin
+        ? { expectedSecureOrigin: input.expectedSecureOrigin }
+        : {}),
+      nowMs: now
+    });
+    if (!certCheck.ok) return certCheck;
+  }
+
   const verifyKey =
     input.pinnedRunnerSigningKey ??
     (await importSigningPublicKey(grant.runnerSigningKey.publicKey));
-  if (input.pinnedRunnerSigningKey) {
-    // Pin continuity: grant must advertise the same key id / fingerprint as pin.
-    // Fingerprint check is done by caller comparing descriptors when available.
-  }
   if (!(await verifyCsAuthGrant(grant, verifyKey))) {
     return { ok: false, reason: "grant_signature_invalid" };
   }
   return { ok: true };
+}
+
+// --- Offline trust root / Runner identity certificate ---
+
+export function runnerCertTranscript(
+  cert: Omit<E2eeRunnerIdentityCert, "signature">
+): JsonValue {
+  return {
+    protocol: cert.protocol,
+    kind: cert.kind,
+    version: cert.version,
+    certId: cert.certId,
+    runnerId: cert.runnerId,
+    epoch: cert.epoch,
+    encryptionFingerprint: cert.encryptionKey.fingerprint,
+    encryptionKeyId: cert.encryptionKey.keyId,
+    signingFingerprint: cert.signingKey.fingerprint,
+    signingKeyId: cert.signingKey.keyId,
+    allowedSecureOrigins: [...cert.allowedSecureOrigins].sort(),
+    allowedRpIds: [...cert.allowedRpIds].sort(),
+    issuedAt: cert.issuedAt,
+    expiresAt: cert.expiresAt,
+    rootKeyId: cert.rootKeyId,
+    rootFingerprint: cert.rootFingerprint
+  };
+}
+
+export async function generateTrustRootKeyPair(epoch = 1): Promise<{
+  privateJwk: JsonWebKey;
+  public: E2eeTrustRootPublic;
+  privateKey: CryptoKey;
+}> {
+  const pair = await generateSigningKeyPair(true);
+  const descriptor = await createKeyDescriptor(pair.publicKey);
+  const privateJwk = await exportPrivateJwk(pair.privateKey);
+  return {
+    privateJwk,
+    privateKey: pair.privateKey,
+    public: {
+      protocol: E2EE_PROTOCOL,
+      kind: E2EE_TRUST_ROOT_KIND,
+      keyId: descriptor.keyId,
+      fingerprint: descriptor.fingerprint,
+      publicKey: descriptor.publicKey,
+      epoch,
+      createdAt: new Date().toISOString()
+    }
+  };
+}
+
+export async function importTrustRootPrivateKey(jwk: JsonWebKey): Promise<CryptoKey> {
+  return importSigningPrivateKey(jwk);
+}
+
+export async function issueRunnerIdentityCert(input: {
+  rootPrivateKey: CryptoKey;
+  rootPublic: E2eeTrustRootPublic;
+  runnerId: string;
+  encryptionKey: E2eeKeyDescriptor;
+  signingKey: E2eeKeyDescriptor;
+  allowedSecureOrigins: string[];
+  allowedRpIds: string[];
+  epoch?: number;
+  validityDays?: number;
+  issuedAt?: string;
+}): Promise<E2eeRunnerIdentityCert> {
+  const issuedAt = input.issuedAt ?? new Date().toISOString();
+  const validityDays = input.validityDays ?? 365;
+  const expiresAt = new Date(Date.parse(issuedAt) + validityDays * 86_400_000).toISOString();
+  const unsigned: Omit<E2eeRunnerIdentityCert, "signature"> = {
+    protocol: E2EE_PROTOCOL,
+    kind: E2EE_RUNNER_CERT_KIND,
+    version: 1,
+    certId: crypto.randomUUID(),
+    runnerId: input.runnerId,
+    epoch: input.epoch ?? input.rootPublic.epoch,
+    encryptionKey: input.encryptionKey,
+    signingKey: input.signingKey,
+    allowedSecureOrigins: input.allowedSecureOrigins,
+    allowedRpIds: input.allowedRpIds,
+    issuedAt,
+    expiresAt,
+    rootKeyId: input.rootPublic.keyId,
+    rootFingerprint: input.rootPublic.fingerprint
+  };
+  const signature = await signValue(
+    runnerCertTranscript(unsigned),
+    input.rootPrivateKey,
+    input.rootPublic.keyId
+  );
+  return e2eeRunnerIdentityCertSchema.parse({ ...unsigned, signature });
+}
+
+export type RunnerCertValidation =
+  | { ok: true; root: E2eeTrustRootPublic }
+  | { ok: false; reason: string };
+
+export async function verifyRunnerIdentityCert(input: {
+  cert: E2eeRunnerIdentityCert;
+  trustRoots: E2eeTrustRootPublic[];
+  expected?: {
+    runnerId?: string;
+    epoch?: number;
+    secureOrigin?: string;
+    rpId?: string;
+    encryptionFingerprint?: string;
+    signingFingerprint?: string;
+  };
+  nowMs?: number;
+}): Promise<RunnerCertValidation> {
+  const cert = input.cert;
+  const now = input.nowMs ?? Date.now();
+  if (cert.protocol !== E2EE_PROTOCOL || cert.kind !== E2EE_RUNNER_CERT_KIND) {
+    return { ok: false, reason: "cert_kind_mismatch" };
+  }
+  if (cert.version !== 1) return { ok: false, reason: "cert_version_unsupported" };
+  if (Date.parse(cert.expiresAt) <= now) return { ok: false, reason: "cert_expired" };
+  if (Date.parse(cert.issuedAt) > now + 60_000) return { ok: false, reason: "cert_not_yet_valid" };
+  if (input.expected?.runnerId && cert.runnerId !== input.expected.runnerId) {
+    return { ok: false, reason: "cert_runner_mismatch" };
+  }
+  if (input.expected?.epoch !== undefined && cert.epoch !== input.expected.epoch) {
+    return { ok: false, reason: "cert_epoch_mismatch" };
+  }
+  if (
+    input.expected?.encryptionFingerprint &&
+    cert.encryptionKey.fingerprint !== input.expected.encryptionFingerprint
+  ) {
+    return { ok: false, reason: "cert_encryption_fingerprint_mismatch" };
+  }
+  if (
+    input.expected?.signingFingerprint &&
+    cert.signingKey.fingerprint !== input.expected.signingFingerprint
+  ) {
+    return { ok: false, reason: "cert_signing_fingerprint_mismatch" };
+  }
+  if (
+    input.expected?.secureOrigin &&
+    !cert.allowedSecureOrigins.includes(input.expected.secureOrigin)
+  ) {
+    return { ok: false, reason: "cert_secure_origin_not_allowed" };
+  }
+  if (input.expected?.rpId && !cert.allowedRpIds.includes(input.expected.rpId)) {
+    return { ok: false, reason: "cert_rp_id_not_allowed" };
+  }
+  const root = input.trustRoots.find(
+    (candidate) =>
+      candidate.keyId === cert.rootKeyId &&
+      candidate.fingerprint === cert.rootFingerprint
+  );
+  if (!root) return { ok: false, reason: "trust_root_not_found" };
+  const rootKey = await importSigningPublicKey(root.publicKey);
+  if (cert.signature.keyId !== root.keyId) {
+    return { ok: false, reason: "cert_signature_key_mismatch" };
+  }
+  const valid = await verifyValue(
+    runnerCertTranscript(unsignedEnvelope(cert)),
+    cert.signature,
+    rootKey
+  );
+  if (!valid) return { ok: false, reason: "cert_signature_invalid" };
+  return { ok: true, root };
+}
+
+export async function validateGrantRunnerCertificate(input: {
+  grant: E2eeCsAuthGrant & { runnerCertificate?: E2eeRunnerIdentityCert };
+  trustRoots: E2eeTrustRootPublic[];
+  expectedSecureOrigin?: string;
+  nowMs?: number;
+}): Promise<RunnerCertValidation> {
+  const cert = input.grant.runnerCertificate;
+  if (!cert) return { ok: false, reason: "runner_certificate_required" };
+  if (input.trustRoots.length === 0) {
+    return { ok: false, reason: "trust_roots_not_configured" };
+  }
+  return verifyRunnerIdentityCert({
+    cert,
+    trustRoots: input.trustRoots,
+    expected: {
+      runnerId: input.grant.runnerId,
+      encryptionFingerprint: input.grant.runnerEncryptionKey.fingerprint,
+      signingFingerprint: input.grant.runnerSigningKey.fingerprint,
+      ...(input.expectedSecureOrigin
+        ? { secureOrigin: input.expectedSecureOrigin }
+        : {})
+    },
+    ...(input.nowMs !== undefined ? { nowMs: input.nowMs } : {})
+  });
+}
+
+// --- High-entropy recovery secret (not OTP) ---
+
+const CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+
+/** 256-bit recovery secret as base64url (43 chars). */
+export function generateRecoverySecret(): string {
+  return encodeBase64Url(globalThis.crypto.getRandomValues(new Uint8Array(32)));
+}
+
+/** Encode 128+ bit material as Crockford base32 groups for manual entry. */
+export function encodeCrockfordGrouped(secretBase64Url: string, groups = 8): string {
+  const bytes = decodeBase64Url(secretBase64Url);
+  let bits = 0;
+  let value = 0;
+  let out = "";
+  for (const byte of bytes) {
+    value = (value << 8) | byte;
+    bits += 8;
+    while (bits >= 5) {
+      out += CROCKFORD[(value >>> (bits - 5)) & 31];
+      bits -= 5;
+    }
+  }
+  if (bits > 0) out += CROCKFORD[(value << (5 - bits)) & 31];
+  const chunk = Math.ceil(out.length / groups);
+  const parts: string[] = [];
+  for (let i = 0; i < out.length; i += chunk) parts.push(out.slice(i, i + chunk));
+  return parts.join("-");
+}
+
+/** Decode Crockford-grouped display form back to the base64url recovery secret. */
+export function decodeCrockfordGrouped(grouped: string, expectedBytes = 32): string {
+  const normalized = grouped
+    .toUpperCase()
+    .replace(/[\s-]/g, "")
+    .replace(/O/g, "0")
+    .replace(/[IL]/g, "1");
+  let bits = 0;
+  let value = 0;
+  const bytes: number[] = [];
+  for (const ch of normalized) {
+    const index = CROCKFORD.indexOf(ch);
+    if (index < 0) throw new Error("invalid_crockford_character");
+    value = (value << 5) | index;
+    bits += 5;
+    if (bits >= 8) {
+      bytes.push((value >>> (bits - 8)) & 0xff);
+      bits -= 8;
+    }
+  }
+  if (bytes.length < expectedBytes) throw new Error("invalid_crockford_length");
+  return encodeBase64Url(Uint8Array.from(bytes.slice(0, expectedBytes)));
+}
+
+/**
+ * Accept either the raw base64url recovery secret or its Crockford display form.
+ */
+export function normalizeRecoverySecretInput(raw: string): string {
+  const trimmed = raw.trim();
+  if (/^[A-Za-z0-9_-]{43}$/.test(trimmed)) return trimmed;
+  // Grouped / ungrouped Crockford (I/L/O tolerated; decode normalizes them).
+  const crockfordLike = /^[0-9A-HJKMNPQRSTVWXYZa-hjmnpqrstvwxyzILOilo\s-]+$/;
+  if (crockfordLike.test(trimmed) && /[0-9A-Ha-hJjKkMmNnPpQqRrSsTtVvWwXxYyZzIlOo-]/.test(trimmed)) {
+    return decodeCrockfordGrouped(trimmed);
+  }
+  throw new Error("invalid_recovery_secret_format");
+}
+
+export function recoveryPairingTranscript(offer: E2eeRecoveryPairingOffer): JsonValue {
+  return {
+    protocol: E2EE_PROTOCOL,
+    pairingKind: E2EE_RECOVERY_PAIRING_KIND,
+    purpose: "secure-web-recovery-transcript",
+    pairId: offer.pairId,
+    runnerId: offer.runnerId,
+    runnerChallenge: offer.runnerChallenge,
+    runnerEncryptionFingerprint: offer.runnerEncryptionKey.fingerprint,
+    runnerSigningFingerprint: offer.runnerSigningKey.fingerprint,
+    runnerCertId: offer.runnerCertificate.certId,
+    clientId: offer.clientId,
+    clientChallenge: offer.clientChallenge,
+    clientSigningFingerprint: offer.clientSigningFingerprint,
+    clientEncryptionFingerprint: offer.clientEncryptionFingerprint,
+    secureOrigin: offer.secureOrigin,
+    gatewayOrigin: offer.gatewayOrigin,
+    expiresAt: offer.expiresAt
+  };
+}
+
+export async function deriveRecoveryMacKey(secret: string): Promise<CryptoKey> {
+  const raw = decodeBase64Url(secret);
+  if (raw.length < 16) throw new Error("invalid_recovery_secret_length");
+  const ikm = await subtle.importKey("raw", toArrayBuffer(raw), "HKDF", false, [
+    "deriveKey"
+  ]);
+  return subtle.deriveKey(
+    {
+      name: "HKDF",
+      hash: "SHA-256",
+      salt: toArrayBuffer(encoder.encode(E2EE_PROTOCOL)),
+      info: toArrayBuffer(encoder.encode("cursor-gateway:secure-web-recovery-mac"))
+    },
+    ikm,
+    { name: "HMAC", hash: "SHA-256", length: 256 },
+    false,
+    ["sign", "verify"]
+  );
+}
+
+export async function macRecoveryTranscript(
+  secret: string,
+  offer: E2eeRecoveryPairingOffer
+): Promise<string> {
+  const key = await deriveRecoveryMacKey(secret);
+  const mac = new Uint8Array(
+    await subtle.sign(
+      "HMAC",
+      key,
+      toArrayBuffer(canonicalBytes(recoveryPairingTranscript(offer)))
+    )
+  );
+  return encodeBase64Url(mac);
+}
+
+export async function verifyRecoveryTranscriptMac(
+  secret: string,
+  offer: E2eeRecoveryPairingOffer,
+  expectedMac: string
+): Promise<boolean> {
+  try {
+    const key = await deriveRecoveryMacKey(secret);
+    return subtle.verify(
+      "HMAC",
+      key,
+      toArrayBuffer(decodeBase64Url(expectedMac)),
+      toArrayBuffer(canonicalBytes(recoveryPairingTranscript(offer)))
+    );
+  } catch {
+    return false;
+  }
+}
+
+/** Device-approval transcript signed by an already-paired device. */
+export function deviceApprovalTranscript(
+  request: E2eeDeviceApprovalRequest,
+  decision: Omit<E2eeDeviceApprovalDecision, "signature">
+): JsonValue {
+  return {
+    protocol: E2EE_PROTOCOL,
+    approvalKind: E2EE_DEVICE_APPROVAL_KIND,
+    purpose: "paired-device-approval-decision",
+    approvalId: request.approvalId,
+    newClientId: request.newClientId,
+    newSigningFingerprint: request.newSigningFingerprint,
+    newEncryptionFingerprint: request.newEncryptionFingerprint,
+    secureOrigin: request.secureOrigin,
+    gatewayOrigin: request.gatewayOrigin,
+    expiresAt: request.expiresAt,
+    approverClientId: decision.approverClientId,
+    decision: decision.decision,
+    createdAt: decision.createdAt
+  };
+}
+
+export async function signDeviceApprovalDecision(input: {
+  request: E2eeDeviceApprovalRequest;
+  approverClientId: string;
+  decision: "approved" | "rejected";
+  signingPrivateKey: CryptoKey;
+  signingKeyId: string;
+}): Promise<E2eeDeviceApprovalDecision> {
+  const unsigned: Omit<E2eeDeviceApprovalDecision, "signature"> = {
+    protocol: E2EE_PROTOCOL,
+    approvalKind: E2EE_DEVICE_APPROVAL_KIND,
+    approvalId: input.request.approvalId,
+    approverClientId: input.approverClientId,
+    decision: input.decision,
+    createdAt: new Date().toISOString()
+  };
+  return {
+    ...unsigned,
+    signature: await signValue(
+      deviceApprovalTranscript(input.request, unsigned),
+      input.signingPrivateKey,
+      input.signingKeyId
+    )
+  };
+}
+
+export async function verifyDeviceApprovalDecision(input: {
+  request: E2eeDeviceApprovalRequest;
+  decision: E2eeDeviceApprovalDecision;
+  approverSigningPublicKey: CryptoKey;
+}): Promise<boolean> {
+  if (input.decision.approvalId !== input.request.approvalId) return false;
+  return verifyValue(
+    deviceApprovalTranscript(input.request, unsignedEnvelope(input.decision)),
+    input.decision.signature,
+    input.approverSigningPublicKey
+  );
 }

@@ -35,6 +35,14 @@ const envSchema = z.object({
   WEB_E2EE_RETURN_ORIGINS: z.string().default(""),
   E2EE_PAIRING_TTL_SECONDS: z.coerce.number().int().positive().default(900),
   E2EE_CS_AUTH_TTL_SECONDS: z.coerce.number().int().positive().default(300),
+  // Offline trust roots for verifying Runner identity certificates (passkey /
+  // device-approval / recovery acks and cs-auth grants). Provide either an
+  // inline JSON array or a file path; JSON takes precedence when both are set.
+  E2EE_TRUST_ROOTS_JSON: z.string().default(""),
+  E2EE_TRUST_ROOTS_FILE: z.string().default(""),
+  E2EE_PASSKEY_PAIRING_TTL_SECONDS: z.coerce.number().int().positive().default(300),
+  E2EE_DEVICE_APPROVAL_TTL_SECONDS: z.coerce.number().int().positive().default(600),
+  E2EE_RECOVERY_PAIRING_TTL_SECONDS: z.coerce.number().int().positive().default(1_800),
   // Optional Cloudflare Access team domain for client logout links, e.g.
   // https://yourteam.cloudflareaccess.com → …/cdn-cgi/access/logout
   CF_ACCESS_TEAM_DOMAIN: z.string().default(""),
@@ -75,6 +83,11 @@ export const config = {
   webE2eeReturnOrigins: new Set(splitCsv(parsed.WEB_E2EE_RETURN_ORIGINS)),
   e2eePairingTtlSeconds: parsed.E2EE_PAIRING_TTL_SECONDS,
   e2eeCsAuthTtlSeconds: parsed.E2EE_CS_AUTH_TTL_SECONDS,
+  e2eeTrustRootsJson: parsed.E2EE_TRUST_ROOTS_JSON.trim(),
+  e2eeTrustRootsFile: parsed.E2EE_TRUST_ROOTS_FILE.trim(),
+  e2eePasskeyPairingTtlSeconds: parsed.E2EE_PASSKEY_PAIRING_TTL_SECONDS,
+  e2eeDeviceApprovalTtlSeconds: parsed.E2EE_DEVICE_APPROVAL_TTL_SECONDS,
+  e2eeRecoveryPairingTtlSeconds: parsed.E2EE_RECOVERY_PAIRING_TTL_SECONDS,
   cfAccessTeamDomain: parsed.CF_ACCESS_TEAM_DOMAIN.trim().replace(/\/$/, ""),
   webDefaultModel: parsed.WEB_DEFAULT_MODEL,
   reportModelId: parsed.REPORT_MODEL_ID,

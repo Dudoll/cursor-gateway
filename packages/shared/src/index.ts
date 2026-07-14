@@ -691,6 +691,47 @@ export const e2eeKeyGrantSchema = z
   .strict();
 export type E2eeKeyGrant = z.infer<typeof e2eeKeyGrantSchema>;
 
+/** Offline ECDSA P-256 trust root that signs Runner identity certificates. */
+export const E2EE_TRUST_ROOT_KIND = "trust-root-public/1" as const;
+export const E2EE_RUNNER_CERT_KIND = "runner-identity-cert/1" as const;
+export const E2EE_PASSKEY_PAIRING_KIND = "secure-web-passkey/1" as const;
+export const E2EE_DEVICE_APPROVAL_KIND = "paired-device-approval/1" as const;
+export const E2EE_RECOVERY_PAIRING_KIND = "secure-web-recovery/1" as const;
+
+export const e2eeTrustRootPublicSchema = z
+  .object({
+    protocol: z.literal(E2EE_PROTOCOL),
+    kind: z.literal(E2EE_TRUST_ROOT_KIND),
+    keyId: z.string().trim().min(8).max(128),
+    fingerprint: z.string().regex(/^sha256:[A-Za-z0-9_-]{43}$/),
+    publicKey: e2eePublicKeySchema,
+    epoch: z.number().int().nonnegative().max(1_000_000),
+    createdAt: z.string().min(1).max(64)
+  })
+  .strict();
+export type E2eeTrustRootPublic = z.infer<typeof e2eeTrustRootPublicSchema>;
+
+export const e2eeRunnerIdentityCertSchema = z
+  .object({
+    protocol: z.literal(E2EE_PROTOCOL),
+    kind: z.literal(E2EE_RUNNER_CERT_KIND),
+    version: z.literal(1),
+    certId: z.string().uuid(),
+    runnerId: z.string().trim().min(1).max(128),
+    epoch: z.number().int().nonnegative().max(1_000_000),
+    encryptionKey: e2eeKeyDescriptorSchema,
+    signingKey: e2eeKeyDescriptorSchema,
+    allowedSecureOrigins: z.array(z.string().url().max(512)).min(1).max(16),
+    allowedRpIds: z.array(z.string().trim().min(1).max(253)).min(1).max(16),
+    issuedAt: z.string().min(1).max(64),
+    expiresAt: z.string().min(1).max(64),
+    rootKeyId: z.string().trim().min(8).max(128),
+    rootFingerprint: z.string().regex(/^sha256:[A-Za-z0-9_-]{43}$/),
+    signature: e2eeSignatureSchema
+  })
+  .strict();
+export type E2eeRunnerIdentityCert = z.infer<typeof e2eeRunnerIdentityCertSchema>;
+
 /**
  * CS → Secure redirect authorization: Runner signs a one-time grant for a CS
  * device public key (private key never leaves cs origin).
@@ -739,6 +780,7 @@ export const e2eeCsAuthGrantSchema = z
     runnerId: z.string().trim().min(1).max(128),
     runnerEncryptionKey: e2eeKeyDescriptorSchema,
     runnerSigningKey: e2eeKeyDescriptorSchema,
+    runnerCertificate: e2eeRunnerIdentityCertSchema.optional(),
     status: z.enum(["authorized", "rejected"]),
     expiresAt: z.string().min(1).max(64),
     createdAt: z.string().min(1).max(64),
@@ -764,3 +806,234 @@ export const e2eePairingCompleteRequestSchema = z
     complete: e2eePairingCompleteSchema
   })
   .strict();
+
+export const e2eePasskeyCredentialPublicSchema = z
+  .object({
+    credentialId: z.string().trim().min(16).max(512),
+    publicKey: z.string().trim().min(16).max(8_192),
+    counter: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+    transports: z.array(z.string().trim().min(1).max(32)).max(16).optional(),
+    label: z.string().trim().min(1).max(128).nullable(),
+    createdAt: z.string().min(1).max(64),
+    revokedAt: z.string().min(1).max(64).nullable()
+  })
+  .strict();
+export type E2eePasskeyCredentialPublic = z.infer<typeof e2eePasskeyCredentialPublicSchema>;
+
+export const e2eePasskeyPairingStartSchema = z
+  .object({
+    protocol: z.literal(E2EE_PROTOCOL),
+    pairingKind: z.literal(E2EE_PASSKEY_PAIRING_KIND),
+    pairId: z.string().uuid(),
+    clientId: z.string().trim().min(8).max(128),
+    clientChallenge: base64UrlSchema(43).length(43),
+    signingKey: e2eeKeyDescriptorSchema,
+    encryptionKey: e2eeKeyDescriptorSchema,
+    secureOrigin: z.string().url().max(512),
+    gatewayOrigin: z.string().url().max(512),
+    createdAt: z.string().min(1).max(64)
+  })
+  .strict();
+export type E2eePasskeyPairingStart = z.infer<typeof e2eePasskeyPairingStartSchema>;
+
+export const e2eePasskeyPairingOptionsSchema = z
+  .object({
+    protocol: z.literal(E2EE_PROTOCOL),
+    pairingKind: z.literal(E2EE_PASSKEY_PAIRING_KIND),
+    pairId: z.string().uuid(),
+    runnerId: z.string().trim().min(1).max(128),
+    mode: z.enum(["registration", "authentication"]),
+    options: z.record(z.string(), z.unknown()),
+    runnerEncryptionKey: e2eeKeyDescriptorSchema,
+    runnerSigningKey: e2eeKeyDescriptorSchema,
+    runnerCertificate: e2eeRunnerIdentityCertSchema,
+    clientId: z.string().trim().min(8).max(128),
+    clientChallenge: base64UrlSchema(43).length(43),
+    clientSigningFingerprint: z.string().regex(/^sha256:[A-Za-z0-9_-]{43}$/),
+    clientEncryptionFingerprint: z.string().regex(/^sha256:[A-Za-z0-9_-]{43}$/),
+    secureOrigin: z.string().url().max(512),
+    gatewayOrigin: z.string().url().max(512),
+    expiresAt: z.string().min(1).max(64),
+    createdAt: z.string().min(1).max(64)
+  })
+  .strict();
+export type E2eePasskeyPairingOptions = z.infer<typeof e2eePasskeyPairingOptionsSchema>;
+
+export const e2eePasskeyPairingCompleteSchema = z
+  .object({
+    protocol: z.literal(E2EE_PROTOCOL),
+    pairingKind: z.literal(E2EE_PASSKEY_PAIRING_KIND),
+    pairId: z.string().uuid(),
+    clientId: z.string().trim().min(8).max(128),
+    mode: z.enum(["registration", "authentication"]),
+    response: z.record(z.string(), z.unknown()),
+    signature: e2eeSignatureSchema,
+    createdAt: z.string().min(1).max(64)
+  })
+  .strict();
+export type E2eePasskeyPairingComplete = z.infer<typeof e2eePasskeyPairingCompleteSchema>;
+
+export const e2eePasskeyPairingAckSchema = z
+  .object({
+    protocol: z.literal(E2EE_PROTOCOL),
+    pairingKind: z.literal(E2EE_PASSKEY_PAIRING_KIND),
+    pairId: z.string().uuid(),
+    clientId: z.string().trim().min(8).max(128),
+    runnerId: z.string().trim().min(1).max(128),
+    status: z.enum(["paired", "rejected"]),
+    runnerEncryptionKey: e2eeKeyDescriptorSchema,
+    runnerSigningKey: e2eeKeyDescriptorSchema,
+    runnerCertificate: e2eeRunnerIdentityCertSchema,
+    createdAt: z.string().min(1).max(64),
+    signature: e2eeSignatureSchema
+  })
+  .strict();
+export type E2eePasskeyPairingAck = z.infer<typeof e2eePasskeyPairingAckSchema>;
+
+export const e2eeDeviceApprovalRequestSchema = z
+  .object({
+    protocol: z.literal(E2EE_PROTOCOL),
+    approvalKind: z.literal(E2EE_DEVICE_APPROVAL_KIND),
+    approvalId: z.string().uuid(),
+    newClientId: z.string().trim().min(8).max(128),
+    newSigningFingerprint: z.string().regex(/^sha256:[A-Za-z0-9_-]{43}$/),
+    newEncryptionFingerprint: z.string().regex(/^sha256:[A-Za-z0-9_-]{43}$/),
+    newSigningKey: e2eeKeyDescriptorSchema,
+    newEncryptionKey: e2eeKeyDescriptorSchema,
+    secureOrigin: z.string().url().max(512),
+    gatewayOrigin: z.string().url().max(512),
+    label: z.string().trim().min(1).max(128).nullable().optional(),
+    expiresAt: z.string().min(1).max(64),
+    createdAt: z.string().min(1).max(64)
+  })
+  .strict();
+export type E2eeDeviceApprovalRequest = z.infer<typeof e2eeDeviceApprovalRequestSchema>;
+
+export const e2eeDeviceApprovalDecisionSchema = z
+  .object({
+    protocol: z.literal(E2EE_PROTOCOL),
+    approvalKind: z.literal(E2EE_DEVICE_APPROVAL_KIND),
+    approvalId: z.string().uuid(),
+    approverClientId: z.string().trim().min(8).max(128),
+    decision: z.enum(["approved", "rejected"]),
+    createdAt: z.string().min(1).max(64),
+    signature: e2eeSignatureSchema
+  })
+  .strict();
+export type E2eeDeviceApprovalDecision = z.infer<typeof e2eeDeviceApprovalDecisionSchema>;
+
+export const e2eeRecoveryPairingStartSchema = z
+  .object({
+    protocol: z.literal(E2EE_PROTOCOL),
+    pairingKind: z.literal(E2EE_RECOVERY_PAIRING_KIND),
+    pairId: z.string().uuid(),
+    clientId: z.string().trim().min(8).max(128),
+    clientChallenge: base64UrlSchema(43).length(43),
+    signingKey: e2eeKeyDescriptorSchema,
+    encryptionKey: e2eeKeyDescriptorSchema,
+    secureOrigin: z.string().url().max(512),
+    gatewayOrigin: z.string().url().max(512),
+    createdAt: z.string().min(1).max(64)
+  })
+  .strict();
+export type E2eeRecoveryPairingStart = z.infer<typeof e2eeRecoveryPairingStartSchema>;
+
+export const e2eeRecoveryPairingOfferSchema = z
+  .object({
+    protocol: z.literal(E2EE_PROTOCOL),
+    pairingKind: z.literal(E2EE_RECOVERY_PAIRING_KIND),
+    pairId: z.string().uuid(),
+    runnerId: z.string().trim().min(1).max(128),
+    runnerChallenge: base64UrlSchema(43).length(43),
+    runnerEncryptionKey: e2eeKeyDescriptorSchema,
+    runnerSigningKey: e2eeKeyDescriptorSchema,
+    runnerCertificate: e2eeRunnerIdentityCertSchema,
+    clientId: z.string().trim().min(8).max(128),
+    clientChallenge: base64UrlSchema(43).length(43),
+    clientSigningFingerprint: z.string().regex(/^sha256:[A-Za-z0-9_-]{43}$/),
+    clientEncryptionFingerprint: z.string().regex(/^sha256:[A-Za-z0-9_-]{43}$/),
+    secureOrigin: z.string().url().max(512),
+    gatewayOrigin: z.string().url().max(512),
+    expiresAt: z.string().min(1).max(64),
+    createdAt: z.string().min(1).max(64)
+  })
+  .strict();
+export type E2eeRecoveryPairingOffer = z.infer<typeof e2eeRecoveryPairingOfferSchema>;
+
+export const e2eeRecoveryPairingCompleteSchema = z
+  .object({
+    protocol: z.literal(E2EE_PROTOCOL),
+    pairingKind: z.literal(E2EE_RECOVERY_PAIRING_KIND),
+    pairId: z.string().uuid(),
+    clientId: z.string().trim().min(8).max(128),
+    transcriptMac: base64UrlSchema(43).length(43),
+    signature: e2eeSignatureSchema,
+    createdAt: z.string().min(1).max(64)
+  })
+  .strict();
+export type E2eeRecoveryPairingComplete = z.infer<typeof e2eeRecoveryPairingCompleteSchema>;
+
+export const e2eeRecoveryPairingAckSchema = z
+  .object({
+    protocol: z.literal(E2EE_PROTOCOL),
+    pairingKind: z.literal(E2EE_RECOVERY_PAIRING_KIND),
+    pairId: z.string().uuid(),
+    clientId: z.string().trim().min(8).max(128),
+    runnerId: z.string().trim().min(1).max(128),
+    status: z.enum(["paired", "rejected"]),
+    runnerEncryptionKey: e2eeKeyDescriptorSchema,
+    runnerSigningKey: e2eeKeyDescriptorSchema,
+    runnerCertificate: e2eeRunnerIdentityCertSchema,
+    createdAt: z.string().min(1).max(64),
+    signature: e2eeSignatureSchema
+  })
+  .strict();
+export type E2eeRecoveryPairingAck = z.infer<typeof e2eeRecoveryPairingAckSchema>;
+
+/** Runner-signed final outcome of a paired-device-approval decision. */
+export const e2eeDeviceApprovalResultSchema = z
+  .object({
+    protocol: z.literal(E2EE_PROTOCOL),
+    approvalKind: z.literal(E2EE_DEVICE_APPROVAL_KIND),
+    approvalId: z.string().uuid(),
+    newClientId: z.string().trim().min(8).max(128),
+    runnerId: z.string().trim().min(1).max(128),
+    status: z.enum(["paired", "rejected"]),
+    runnerEncryptionKey: e2eeKeyDescriptorSchema,
+    runnerSigningKey: e2eeKeyDescriptorSchema,
+    runnerCertificate: e2eeRunnerIdentityCertSchema,
+    createdAt: z.string().min(1).max(64),
+    signature: e2eeSignatureSchema
+  })
+  .strict();
+export type E2eeDeviceApprovalResult = z.infer<typeof e2eeDeviceApprovalResultSchema>;
+
+export const e2eePasskeyPairingStartRequestSchema = z
+  .object({ start: e2eePasskeyPairingStartSchema })
+  .strict();
+export const e2eePasskeyPairingCompleteRequestSchema = z
+  .object({ complete: e2eePasskeyPairingCompleteSchema })
+  .strict();
+export const e2eeDeviceApprovalRequestBodySchema = z
+  .object({ request: e2eeDeviceApprovalRequestSchema })
+  .strict();
+export const e2eeDeviceApprovalDecisionBodySchema = z
+  .object({ decision: e2eeDeviceApprovalDecisionSchema })
+  .strict();
+export const e2eeRecoveryPairingStartRequestSchema = z
+  .object({ start: e2eeRecoveryPairingStartSchema })
+  .strict();
+export const e2eeRecoveryPairingCompleteRequestSchema = z
+  .object({
+    complete: e2eeRecoveryPairingCompleteSchema
+  })
+  .strict();
+
+/** Public recovery handle advertised by Runner CLI (secret stays in URL fragment). */
+export const e2eeRecoveryHandleSchema = z
+  .object({
+    recoveryId: z.string().uuid(),
+    expiresAt: z.string().min(1).max(64)
+  })
+  .strict();
+export type E2eeRecoveryHandle = z.infer<typeof e2eeRecoveryHandleSchema>;

@@ -24,8 +24,6 @@ import { sendPairingEmail } from "./pairingMail.js";
 import { buildPairingMailContent } from "./mail/pairingMailTemplate.js";
 import { assertMailAddress, emailFingerprint, maskEmail } from "./mail/mailAddress.js";
 import { PairingPendingStore } from "./pairingPendingStore.js";
-import { verifyAccessJwt } from "./accessJwt.js";
-
 type GatewayFetch = (path: string, init?: RequestInit) => Promise<Response>;
 
 const pendingStore = new PairingPendingStore(
@@ -90,18 +88,9 @@ async function claimAndOffer(input: {
     return;
   }
 
-  // Optional Access JWT proof may be attached later by an identity bridge.
-  // MVP magic-link MAC remains the anti-substitution root.
-  const jwtCheck = await verifyAccessJwt({
-    token: undefined,
-    teamDomain: config.cfAccessTeamDomain,
-    audience: config.cfAccessAud,
-    allowedEmails: config.pairingAllowedEmails
-  });
-  if (!jwtCheck.ok) {
-    console.warn(`Rejecting pairing ${start.pairId}: ${jwtCheck.reason}`);
-    return;
-  }
+  // Magic-link identity is bound by Gateway's Access-authenticated recipient
+  // email + high-entropy MAC. Access JWT verification is required for the
+  // Passkey path (see webauthnPairing.ts), not for this mail fallback.
 
   // Reuse the same token/offer across mail + offer publish retries (never regenerate
   // after mailSent). PAIRING_MAIL_TO / browser-supplied emails are never used here.

@@ -10,6 +10,7 @@ import {
 } from "@cursor-gateway/e2ee";
 import { config } from "./config.js";
 import { RunnerE2eeState } from "./e2eeState.js";
+import { getRunnerCertificate } from "./runnerCert.js";
 
 type GatewayFetch = (path: string, init?: RequestInit) => Promise<Response>;
 
@@ -89,13 +90,21 @@ export async function processCsAuthCycle(input: {
     )
   ).toISOString();
 
+  const runnerCertificate = await getRunnerCertificate(input.state);
+  if (status === "authorized" && !runnerCertificate) {
+    console.warn(
+      `CS auth ${intent.authId}: downgrading authorized→rejected (no valid Runner identity certificate)`
+    );
+    status = "rejected";
+  }
   const unsigned = buildCsAuthGrantUnsigned({
     intent,
     runnerId: config.runnerId,
     runnerEncryptionKey: input.state.encryptionKey,
     runnerSigningKey: input.state.signingKey,
     status,
-    expiresAt
+    expiresAt,
+    ...(runnerCertificate ? { runnerCertificate } : {})
   });
   const grant: E2eeCsAuthGrant = await signCsAuthGrant(
     unsigned,

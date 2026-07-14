@@ -12,6 +12,9 @@
     "pair:client": "tsx src/pair.ts client",
     "pair:list": "tsx src/pair.ts list-clients",
     "pair:revoke": "tsx src/pair.ts revoke-client",
+    "trust-root:init": "tsx ../../scripts/e2ee/trust-root-cli.ts init-root",
+    "trust-root:issue-cert": "tsx ../../scripts/e2ee/trust-root-cli.ts issue-cert",
+    "recovery:code": "tsx ../../scripts/e2ee/trust-root-cli.ts recovery-code",
     "start": "node dist/index.js",
     "test": "tsx --test test/*.test.ts",
     "typecheck": "tsc --noEmit -p tsconfig.json"
@@ -20,12 +23,15 @@
     "@cursor-gateway/e2ee": "file:../../packages/e2ee",
     "@cursor-gateway/shared": "file:../../packages/shared",
     "@cursor/sdk": "^1.0.23",
+    "@simplewebauthn/server": "^13.3.2",
     "nodemailer": "^7.0.5",
+    "qrcode": "^1.5.4",
     "zod": "^4.4.3"
   },
   "devDependencies": {
     "@types/node": "^26.1.1",
     "@types/nodemailer": "^6.4.17",
+    "@types/qrcode": "^1.5.5",
     "tsx": "^4.23.0",
     "typescript": "^7.0.2"
   }

@@ -96,9 +96,9 @@ export async function verifyAccessJwt(input: {
     if (parsed.header.alg !== "RS256") {
       return { ok: false, reason: "access_jwt_alg_unsupported" };
     }
+    if (!parsed.header.kid) return { ok: false, reason: "access_jwt_kid_missing" };
     const keys = await fetchJwks(input.teamDomain);
-    const jwk =
-      keys.find((key) => key.kid && key.kid === parsed.header.kid) ?? keys[0];
+    const jwk = keys.find((key) => key.kid === parsed.header.kid);
     if (!jwk) return { ok: false, reason: "access_jwt_jwk_missing" };
     const key = await importRsaJwk(jwk);
     const valid = await crypto.subtle.verify(
@@ -110,17 +110,24 @@ export async function verifyAccessJwt(input: {
     if (!valid) return { ok: false, reason: "access_jwt_signature_invalid" };
 
     const now = Math.floor(Date.now() / 1000);
-    if (typeof parsed.payload.exp === "number" && parsed.payload.exp < now) {
+    if (typeof parsed.payload.exp !== "number") {
+      return { ok: false, reason: "access_jwt_exp_missing" };
+    }
+    if (parsed.payload.exp < now) {
       return { ok: false, reason: "access_jwt_expired" };
     }
     if (typeof parsed.payload.nbf === "number" && parsed.payload.nbf > now + 60) {
       return { ok: false, reason: "access_jwt_not_yet_valid" };
     }
-    if (parsed.payload.iss !== input.teamDomain.replace(/\/$/, "")) {
-      // Also accept iss without trailing differences already normalized
-      if (parsed.payload.iss !== input.teamDomain) {
-        return { ok: false, reason: "access_jwt_iss_mismatch" };
-      }
+    if (typeof parsed.payload.iat === "number" && parsed.payload.iat > now + 60) {
+      return { ok: false, reason: "access_jwt_iat_in_future" };
+    }
+    if (!parsed.payload.sub || typeof parsed.payload.sub !== "string") {
+      return { ok: false, reason: "access_jwt_sub_missing" };
+    }
+    const expectedIss = input.teamDomain.replace(/\/$/, "");
+    if (parsed.payload.iss !== expectedIss && parsed.payload.iss !== input.teamDomain) {
+      return { ok: false, reason: "access_jwt_iss_mismatch" };
     }
     const aud = parsed.payload.aud;
     const audOk = Array.isArray(aud)
@@ -136,7 +143,7 @@ export async function verifyAccessJwt(input: {
     return {
       ok: true,
       email,
-      ...(parsed.payload.sub ? { sub: parsed.payload.sub } : {})
+      sub: parsed.payload.sub
     };
   } catch {
     return { ok: false, reason: "access_jwt_verify_failed" };

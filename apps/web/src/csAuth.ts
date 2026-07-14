@@ -15,6 +15,7 @@ import {
 } from "@cursor-gateway/e2ee";
 import { GatewayApi } from "./api.js";
 import { CsWebKeyStore } from "./keyStore.js";
+import { loadTrustRoots } from "./trustRoots.js";
 
 const PENDING_KEY = "cg-cs-web:pending-cs-auth";
 
@@ -118,8 +119,18 @@ export async function completeCsDeviceAuthFromFragment(input: {
     clearCsAuthFragment();
     throw new Error("cs_auth_pending_missing");
   }
+  const trustRoots = await loadTrustRoots(input.api);
+  if (trustRoots.length === 0) {
+    clearCsAuthFragment();
+    throw new Error("trust_roots_not_configured");
+  }
+  const runnerCertificate = grant.runnerCertificate;
+  if (!runnerCertificate) {
+    clearCsAuthFragment();
+    throw new Error("runner_certificate_required");
+  }
   const validated = await validateCsAuthGrant({
-    grant,
+    grant: { ...grant, runnerCertificate },
     expected: {
       authId: pending.authId,
       clientId: pending.clientId,
@@ -129,7 +140,9 @@ export async function completeCsDeviceAuthFromFragment(input: {
       signingFingerprint: pending.signingFingerprint,
       encryptionFingerprint: pending.encryptionFingerprint,
       gatewayOrigin: pending.gatewayOrigin
-    }
+    },
+    trustRoots,
+    expectedSecureOrigin: pending.secureOrigin
   });
   if (!validated.ok) {
     clearCsAuthFragment();

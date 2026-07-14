@@ -13,6 +13,7 @@
   "dependencies": {
     "@cursor-gateway/e2ee": "file:../../packages/e2ee",
     "@cursor-gateway/shared": "file:../../packages/shared",
+    "@simplewebauthn/browser": "^13.3.0",
     "@vitejs/plugin-react": "^6.0.3",
     "lucide-react": "^1.24.0",
     "react": "^19.2.7",

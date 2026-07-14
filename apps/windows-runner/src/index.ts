@@ -24,6 +24,9 @@ import { writeHealthSnapshot } from "./health.js";
 import { processCsAuthCycle } from "./csAuth.js";
 import { processSecureWebPairingCycle } from "./secureWebPairing.js";
 import { assertPairingMailConfigOrThrow } from "./pairingMail.js";
+import { processWebauthnPairingCycle } from "./webauthnPairing.js";
+import { processDeviceApprovalCycle } from "./deviceApproval.js";
+import { processRecoveryPairingCycle } from "./recoveryPairing.js";
 
 const GATEWAY_REQUEST_TIMEOUT_MS = 30_000;
 const HEARTBEAT_INTERVAL_MS = 60_000;
@@ -468,6 +471,39 @@ async function pairingLoop(state: RunnerE2eeState) {
         error instanceof Error ? error.message : "unknown"
       );
     }
+    try {
+      await processWebauthnPairingCycle({
+        state,
+        gatewayFetch
+      });
+    } catch (error) {
+      console.warn(
+        "Passkey pairing cycle failed:",
+        error instanceof Error ? error.message : "unknown"
+      );
+    }
+    try {
+      await processDeviceApprovalCycle({
+        state,
+        gatewayFetch
+      });
+    } catch (error) {
+      console.warn(
+        "Device approval cycle failed:",
+        error instanceof Error ? error.message : "unknown"
+      );
+    }
+    try {
+      await processRecoveryPairingCycle({
+        state,
+        gatewayFetch
+      });
+    } catch (error) {
+      console.warn(
+        "Recovery pairing cycle failed:",
+        error instanceof Error ? error.message : "unknown"
+      );
+    }
     await sleep(Math.max(config.pollIntervalMs, 3_000));
   }
 }
@@ -501,7 +537,8 @@ async function main() {
   const loops: Array<Promise<void>> = [heartbeatLoop(state), ...workers];
   if (state) {
     console.log(
-      `Secure-web pairing enabled (mail=${config.pairingMailMode}, ttl=${config.pairingTtlSeconds}s)`
+      `Secure-web pairing enabled (mail=${config.pairingMailMode}, ttl=${config.pairingTtlSeconds}s, ` +
+        `webauthn=${config.webauthnEnabled}, rpId=${config.webauthnRpId})`
     );
     loops.push(pairingLoop(state));
   }

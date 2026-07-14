@@ -345,6 +345,91 @@ export async function migrate() {
     create index if not exists e2ee_cs_auth_pending_idx
       on e2ee_cs_auth(status, created_at)
       where status = 'pending_runner';
+
+    -- Passkey (WebAuthn) pairing. Mirrors e2ee_pairings but never stores a
+    -- JWT or credential secret: options/complete/ack envelopes only.
+    create table if not exists e2ee_passkey_pairings (
+      pair_id uuid primary key,
+      user_id uuid not null references app_users(id),
+      status text not null,
+      start_envelope jsonb not null,
+      options_envelope jsonb,
+      complete_envelope jsonb,
+      ack_envelope jsonb,
+      runner_id text,
+      expires_at timestamptz not null,
+      created_at timestamptz not null default now(),
+      updated_at timestamptz not null default now()
+    );
+
+    create index if not exists e2ee_passkey_pairings_pending_idx
+      on e2ee_passkey_pairings(status, created_at)
+      where status in ('pending_start', 'complete_submitted');
+
+    -- Optional public-only credential metadata for admin visibility. The
+    -- Runner remains the sole source of truth for verification; only a
+    -- digest of the credential id is stored here, never the public key.
+    create table if not exists e2ee_passkey_credentials (
+      credential_id_digest text primary key,
+      user_id uuid not null references app_users(id),
+      runner_id text not null,
+      label text,
+      counter bigint not null default 0,
+      created_at timestamptz not null default now(),
+      updated_at timestamptz not null default now(),
+      revoked_at timestamptz
+    );
+
+    create index if not exists e2ee_passkey_credentials_user_idx
+      on e2ee_passkey_credentials(user_id, created_at desc);
+
+    -- Paired-device approval: an already-paired Secure Web device approves a
+    -- new device by signing a decision. No pairing "offer" step is required.
+    create table if not exists e2ee_device_approvals (
+      approval_id uuid primary key,
+      user_id uuid not null references app_users(id),
+      status text not null,
+      request_envelope jsonb not null,
+      decision_envelope jsonb,
+      result_envelope jsonb,
+      runner_id text,
+      expires_at timestamptz not null,
+      created_at timestamptz not null default now(),
+      updated_at timestamptz not null default now()
+    );
+
+    create index if not exists e2ee_device_approvals_pending_idx
+      on e2ee_device_approvals(status, created_at)
+      where status in ('requested', 'decided');
+
+    -- Recovery pairing. Mirrors e2ee_pairings; the high-entropy secret never
+    -- leaves the Runner machine / the printed URL fragment.
+    create table if not exists e2ee_recovery_pairings (
+      pair_id uuid primary key,
+      user_id uuid not null references app_users(id),
+      status text not null,
+      start_envelope jsonb not null,
+      offer_envelope jsonb,
+      complete_envelope jsonb,
+      ack_envelope jsonb,
+      runner_id text,
+      expires_at timestamptz not null,
+      created_at timestamptz not null default now(),
+      updated_at timestamptz not null default now()
+    );
+
+    create index if not exists e2ee_recovery_pairings_pending_idx
+      on e2ee_recovery_pairings(status, created_at)
+      where status in ('pending_start', 'complete_submitted');
+
+    -- Public recovery handle (recoveryId + expiry only, no secret) advertised
+    -- by the Runner CLI so Secure Web can pre-validate a scanned/typed code.
+    create table if not exists e2ee_recovery_handles (
+      recovery_id uuid primary key,
+      runner_id text not null,
+      expires_at timestamptz not null,
+      created_at timestamptz not null default now()
+    );
   `);
 }
 

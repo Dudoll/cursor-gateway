@@ -104,7 +104,20 @@ const envSchema = z.object({
   CF_ACCESS_AUD: optionalEnvString,
   // CS → Secure → CS one-time device auth grants (see docs/cs-secure-redirect-e2ee.md)
   WEB_E2EE_RETURN_ORIGINS: z.string().default(""),
-  E2EE_CS_AUTH_GRANT_TTL_SECONDS: z.coerce.number().int().positive().default(120)
+  E2EE_CS_AUTH_GRANT_TTL_SECONDS: z.coerce.number().int().positive().default(120),
+  // Offline trust root / Runner identity certificate (see docs/trust-root-rotation.md)
+  RUNNER_IDENTITY_CERT_FILE: optionalEnvString,
+  E2EE_TRUST_ROOTS_FILE: optionalEnvString,
+  // Passkey pairing (WebAuthn)
+  RUNNER_WEBAUTHN_ENABLED: booleanEnv(false),
+  WEBAUTHN_RP_ID: z.string().min(1).default("secure.joelzt.org"),
+  WEBAUTHN_RP_NAME: z.string().min(1).default("Cursor Gateway Secure"),
+  WEBAUTHN_ORIGINS: z.string().default(""),
+  WEBAUTHN_CHALLENGE_TTL_SECONDS: z.coerce.number().int().positive().default(300),
+  // Paired-device approval
+  DEVICE_APPROVAL_TTL_SECONDS: z.coerce.number().int().positive().default(600),
+  // Recovery pairing (local high-entropy code, never sent to Gateway)
+  RECOVERY_TTL_SECONDS: z.coerce.number().int().positive().default(1_800)
 });
 
 const parsed = envSchema.parse(process.env);
@@ -123,6 +136,13 @@ if (Boolean(parsed.CF_ACCESS_CLIENT_ID) !== Boolean(parsed.CF_ACCESS_CLIENT_SECR
 
 if (!parsed.RUNNER_E2EE_ENABLED && !parsed.RUNNER_LEGACY_ENABLED) {
   throw new Error("At least one of RUNNER_E2EE_ENABLED or RUNNER_LEGACY_ENABLED must be enabled");
+}
+
+if (parsed.RUNNER_WEBAUTHN_ENABLED && (!parsed.CF_ACCESS_TEAM_DOMAIN || !parsed.CF_ACCESS_AUD)) {
+  throw new Error(
+    "RUNNER_WEBAUTHN_ENABLED=true requires CF_ACCESS_TEAM_DOMAIN and CF_ACCESS_AUD " +
+      "(passkey pairing must verify the Secure Web user's Access identity)"
+  );
 }
 
 function resolveE2eeMasterKey(): string | undefined {
@@ -192,5 +212,20 @@ export const config = {
   webE2eeReturnOrigins: parsed.WEB_E2EE_RETURN_ORIGINS.split(",")
     .map((item) => item.trim())
     .filter(Boolean),
-  csAuthGrantTtlSeconds: parsed.E2EE_CS_AUTH_GRANT_TTL_SECONDS
+  csAuthGrantTtlSeconds: parsed.E2EE_CS_AUTH_GRANT_TTL_SECONDS,
+  runnerIdentityCertFile:
+    parsed.RUNNER_IDENTITY_CERT_FILE ??
+    join(homedir(), ".cursor-gateway", "runner-identity-cert.json"),
+  e2eeTrustRootsFile:
+    parsed.E2EE_TRUST_ROOTS_FILE ??
+    join(homedir(), ".cursor-gateway", "trust-root-public.json"),
+  webauthnEnabled: parsed.RUNNER_WEBAUTHN_ENABLED,
+  webauthnRpId: parsed.WEBAUTHN_RP_ID,
+  webauthnRpName: parsed.WEBAUTHN_RP_NAME,
+  webauthnOrigins: parsed.WEBAUTHN_ORIGINS.split(",")
+    .map((item) => item.trim())
+    .filter(Boolean),
+  webauthnChallengeTtlSeconds: parsed.WEBAUTHN_CHALLENGE_TTL_SECONDS,
+  deviceApprovalTtlSeconds: parsed.DEVICE_APPROVAL_TTL_SECONDS,
+  recoveryTtlSeconds: parsed.RECOVERY_TTL_SECONDS
 };

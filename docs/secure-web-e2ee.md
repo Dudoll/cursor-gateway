@@ -1,21 +1,30 @@
 # 跨浏览器 Secure Web E2EE（`cg-e2ee/1`）
 
-可信客户端是独立部署的 **PWA**（`apps/secure-web`），不是 Gateway 同源页面，也不是 Chrome 扩展。Gateway 只中继密文与公开配对元数据；**256-bit magic-link token 永不进入 Gateway**（仅出现在邮件 URL fragment 与 Runner 本地内存）。
+可信客户端是独立部署的 **PWA**（`apps/secure-web`），不是 Gateway 同源页面，也不是 Chrome 扩展。Gateway 只中继密文与公开配对元数据。
 
 数据面协议与扩展相同：`cg-e2ee/1`（HPKE 会话根、AEAD 载荷、客户端/Runner 签名、会话链 digest）。
+
+## 配对通道（免外部邮件优先）
+
+| 优先级 | 通道 | 说明 |
+| --- | --- | --- |
+| 主 | **Passkey** | Cloudflare Access 身份 + WebAuthn（UV required）+ Runner 离线证书。Passkey 只证明在场，不是 E2EE 私钥。 |
+| 备 | **已配对设备批准** | 新设备发起 pending；已配对设备签 transcript；Runner 验签后发 grant。 |
+| 再备 | **Runner 本地恢复码 / 二维码** | ≥128-bit 高熵；HKDF/HMAC 认证 transcript；单次/TTL；Gateway 看不到明文。见 [trust-root-rotation.md](./trust-root-rotation.md)。 |
+| 可选 | **邮件 magic link** | Resend/SMTP 保留；公司无法访问外部邮箱时不要依赖。Token 仅在邮件 URL fragment 与 Runner 本地。 |
+
+CS→Secure→CS 回跳（含手机 localStorage 持久化）在任一配对成功后仍走一次性 `cs_auth` grant；CS 客户端先验 trust root / Runner cert 再接受 pin。
 
 ## 三步 UX
 
 1. **配置 Gateway origin**  
    在 PWA 填入 Gateway 的 HTTPS 源（例如 `https://cs.joelzt.org`）。若与 Gateway 跨域，需先在该 origin 完成 Cloudflare Access 登录（cookie），以便 `credentials: include` 调用 `/api/e2ee/v1/*`。
 
-2. **开始配对 → 打开邮件 magic link**  
-   点击「Start pairing」。Runner 认领 `pending_start`、生成 256-bit token，把  
-   `{SECURE_ORIGIN}/#pair={pairId}.{token}`  
-   写入邮件（生产）或 `~/.cursor-gateway/pairing-mail.log`（`PAIRING_MAIL_MODE=log` 干跑）。**必须在启动配对的同一浏览器**打开链接；fragment 不会发给服务器。手机上请尽量用同一浏览器打开邮件链接；Gmail App 可能导致额外标签，但若从 CS 跳入，回跳上下文已持久化到 Secure origin 存储。
+2. **使用 Passkey / Face ID / 指纹继续**  
+   主按钮触发 WebAuthn。可选：「由已配对设备批准」、高级「扫描 Runner 二维码 / 输入恢复码」、折叠区「其他方式（需外部邮箱）」。
 
 3. **加密聊天**  
-   客户端用 token 对 offer transcript 做 HMAC，提交 `complete`；Runner 校验 MAC + 客户端签名后 ack，并把 Runner 公钥 fingerprint 固定到本地 IndexedDB。之后提交/读取 run 与扩展走同一套 E2EE API。
+   配对成功后把 Runner 公钥 fingerprint 固定到本地 IndexedDB。成功回 CS 时右上角显示「本次聊天已加密」；「退出加密」仍在徽章面板内。
 
 私密 / 无痕模式会拒绝保存：启动时做非导出 `CryptoKey` 持久化自测，失败则阻断（不写密钥）。
 
@@ -42,7 +51,8 @@
 | --- | --- |
 | `SECURE_CLIENT_ORIGIN` | PWA 的 HTTPS origin（CORS + 配对 `secureOrigin` 校验）。空则不强制（仅开发）。 |
 | `E2EE_PAIRING_TTL_SECONDS` | 配对 TTL，默认 `900`。 |
-| `E2EE_REQUIRED_FOR_WEB` | **保持 `false`**，直到 Secure Web / 扩展已完成生产配对验收。 |
+| `E2EE_REQUIRED_FOR_WEB` | 生产可保持 `true`（强制 CS 走 Secure 配对）。 |
+| `E2EE_TRUST_ROOTS_FILE` / `E2EE_TRUST_ROOTS_JSON` | 离线 trust root 公钥，供 `/api/e2ee-policy` 与客户端验 Runner cert。 |
 | `E2EE_EXTENSION_ORIGINS` | 扩展 origin；与 Secure Web 无关，可并存。 |
 
 ### Runner

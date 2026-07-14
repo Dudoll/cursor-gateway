@@ -18,6 +18,18 @@ import {
   startPairing,
   tryConsumeMagicLink
 } from "./pairing.js";
+import { pairWithPasskey } from "./passkeyPairing.js";
+import {
+  decideDeviceApproval,
+  listPendingApprovals,
+  requestDeviceApproval,
+  waitForDeviceApprovalResult
+} from "./deviceApprovalClient.js";
+import {
+  clearRecoveryFragment,
+  pairWithRecovery,
+  parseRecoveryFragment
+} from "./recoveryPairingClient.js";
 import {
   captureCsAuthRedirectParams,
   completeCsAuthReturn,
@@ -26,7 +38,11 @@ import {
 } from "./csAuthReturn.js";
 import type { CsAuthRedirectParams } from "@cursor-gateway/e2ee";
 import { SecureGatewayClient, progressLabel, type DecryptedRun } from "./secureClient.js";
-import type { E2eeConversationRecord, E2eeRunnerDirectoryEntry } from "@cursor-gateway/shared";
+import type {
+  E2eeConversationRecord,
+  E2eeDeviceApprovalRequest,
+  E2eeRunnerDirectoryEntry
+} from "@cursor-gateway/shared";
 import {
   E2EE_ACCESS_LOGOUT_CONFIRM,
   E2EE_LOGOUT_CONFIRM,
@@ -41,6 +57,7 @@ type BootState =
   | { kind: "ready"; keys: SecureWebKeyStore; device: DeviceRecord };
 
 type Step = 1 | 2 | 3;
+type PairingPanel = "passkey" | "approval" | "recovery" | "mail";
 
 function errorText(error: unknown) {
   if (error instanceof GatewayApiError) return error.code;
@@ -56,6 +73,13 @@ export function App() {
   );
   const [pairId, setPairId] = useState<string | null>(null);
   const [step, setStep] = useState<Step>(1);
+  const [pairingPanel, setPairingPanel] = useState<PairingPanel>("passkey");
+  const [approvalId, setApprovalId] = useState<string | null>(null);
+  const [pendingApprovals, setPendingApprovals] = useState<
+    Array<{ approvalId: string; request: E2eeDeviceApprovalRequest; expiresAt: string }>
+  >([]);
+  const [recoveryIdInput, setRecoveryIdInput] = useState("");
+  const [recoverySecretInput, setRecoverySecretInput] = useState("");
   const [runners, setRunners] = useState<E2eeRunnerDirectoryEntry[]>([]);
   const [conversations, setConversations] = useState<E2eeConversationRecord[]>([]);
   const [titles, setTitles] = useState<Record<string, string>>({});
@@ -168,9 +192,42 @@ export function App() {
 
   useEffect(() => {
     if (boot.kind !== "ready" || !api) return;
+    const recovery = parseRecoveryFragment(window.location.hash);
+    if (recovery) {
+      let cancelled = false;
+      setBusy(true);
+      setPairingPanel("recovery");
+      setStatus({ tone: "info", text: "检测到恢复码链接，正在配对…" });
+      pairWithRecovery({
+        api,
+        keys: boot.keys,
+        recoveryId: recovery.recoveryId,
+        secret: recovery.secret,
+        onStatus: (text) => {
+          if (!cancelled) setStatus({ tone: "info", text });
+        }
+      })
+        .then(async (result) => {
+          if (cancelled) return;
+          await finishPairingThenMaybeReturnToCs(api, boot.keys, result.runnerId);
+        })
+        .catch((error) => {
+          if (!cancelled) {
+            setStatus({ tone: "error", text: `恢复码配对失败：${errorText(error)}` });
+            clearRecoveryFragment();
+          }
+        })
+        .finally(() => {
+          if (!cancelled) setBusy(false);
+        });
+      return () => {
+        cancelled = true;
+      };
+    }
     if (!parseMagicLinkFragment(window.location.hash)) return;
     let cancelled = false;
     setBusy(true);
+    setPairingPanel("mail");
     setStatus({ tone: "info", text: "正在完成 magic-link 配对…" });
     tryConsumeMagicLink({ api, keys: boot.keys })
       .then(async (result) => {
@@ -294,6 +351,114 @@ export function App() {
     }
   }
 
+  async function onPasskeyPair() {
+    if (boot.kind !== "ready" || !api) return;
+    setBusy(true);
+    try {
+      saveGatewayOrigin(gatewayInput);
+      const result = await pairWithPasskey({
+        api,
+        keys: boot.keys,
+        onStatus: (text) => setStatus({ tone: "info", text })
+      });
+      await finishPairingThenMaybeReturnToCs(api, boot.keys, result.runnerId);
+    } catch (error) {
+      setStatus({ tone: "error", text: `Passkey 配对失败：${errorText(error)}` });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function onRequestApproval() {
+    if (boot.kind !== "ready" || !api) return;
+    setBusy(true);
+    try {
+      saveGatewayOrigin(gatewayInput);
+      const started = await requestDeviceApproval({ api, keys: boot.keys });
+      setApprovalId(started.approvalId);
+      setStatus({
+        tone: "warn",
+        text: `已请求设备批准（${started.approvalId}）。请在已配对设备上批准。过期：${started.expiresAt}`
+      });
+      const result = await waitForDeviceApprovalResult({
+        api,
+        keys: boot.keys,
+        approvalId: started.approvalId,
+        onStatus: (text) => setStatus({ tone: "info", text })
+      });
+      await finishPairingThenMaybeReturnToCs(api, boot.keys, result.runnerId);
+    } catch (error) {
+      setStatus({ tone: "error", text: `设备批准失败：${errorText(error)}` });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function onRefreshApprovals() {
+    if (!api) return;
+    setBusy(true);
+    try {
+      const list = await listPendingApprovals(api);
+      setPendingApprovals(list);
+      setStatus({
+        tone: "ok",
+        text: list.length === 0 ? "当前没有待批准的新设备。" : `待批准：${list.length} 台设备`
+      });
+    } catch (error) {
+      setStatus({ tone: "error", text: errorText(error) });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function onDecideApproval(
+    request: E2eeDeviceApprovalRequest,
+    decision: "approved" | "rejected"
+  ) {
+    if (boot.kind !== "ready" || !api) return;
+    setBusy(true);
+    try {
+      await decideDeviceApproval({ api, keys: boot.keys, request, decision });
+      setPendingApprovals((current) =>
+        current.filter((item) => item.approvalId !== request.approvalId)
+      );
+      setStatus({
+        tone: "ok",
+        text: decision === "approved" ? "已批准新设备。" : "已拒绝新设备。"
+      });
+    } catch (error) {
+      setStatus({ tone: "error", text: errorText(error) });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function onRecoveryPair() {
+    if (boot.kind !== "ready" || !api) return;
+    setBusy(true);
+    try {
+      saveGatewayOrigin(gatewayInput);
+      const fromFragment = parseRecoveryFragment();
+      const recoveryId = (fromFragment?.recoveryId || recoveryIdInput).trim();
+      const secret = fromFragment?.secret || recoverySecretInput;
+      if (!recoveryId || !secret) {
+        throw new Error("请输入 recoveryId 与恢复码，或扫描 Runner 二维码");
+      }
+      const result = await pairWithRecovery({
+        api,
+        keys: boot.keys,
+        recoveryId,
+        secret,
+        onStatus: (text) => setStatus({ tone: "info", text })
+      });
+      await finishPairingThenMaybeReturnToCs(api, boot.keys, result.runnerId);
+    } catch (error) {
+      setStatus({ tone: "error", text: `恢复码配对失败：${errorText(error)}` });
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function onStartPairing() {
     if (boot.kind !== "ready" || !api) return;
     setBusy(true);
@@ -304,14 +469,13 @@ export function App() {
       setStatus({
         tone: "warn",
         text:
-          `配对已开始（${started.pairId}）。\n` +
-          `请查收邮件中的 magic link，并尽量用**本浏览器**打开（勿仅用 Gmail App 内置浏览器，以免设备密钥不一致）。\n` +
-          `回跳 CS 的上下文已保存在本站；同浏览器其它标签完成配对后也会自动返回 CS。\n` +
+          `邮件配对已开始（${started.pairId}）。\n` +
+          `请查收外部邮箱中的 magic link，并尽量用本浏览器打开。\n` +
           `过期时间：${started.expiresAt}。`
       });
       setStep(2);
     } catch (error) {
-      setStatus({ tone: "error", text: `启动配对失败：${errorText(error)}` });
+      setStatus({ tone: "error", text: `启动邮件配对失败：${errorText(error)}` });
     } finally {
       setBusy(false);
     }
@@ -428,7 +592,7 @@ export function App() {
         </li>
         <li className={step > 2 ? "done" : step === 2 ? "active" : ""}>
           <span className="n">2</span>
-          <span>开始配对 → 打开邮件中的 magic link</span>
+          <span>使用 Passkey / Face ID / 指纹完成配对</span>
         </li>
         <li className={step === 3 ? "active done" : ""}>
           <span className="n">3</span>
@@ -478,28 +642,164 @@ export function App() {
       </section>
 
       <section className="panel">
-        <h2>2. Magic-link 配对</h2>
+        <h2>2. 设备配对</h2>
         <p className="meta">
-          Token 不会离开 URL fragment / Runner 邮件路径。Gateway 仅存储公开配对元数据。手机请尽量用同一浏览器打开邮件链接；Gmail App
-          可能另开标签，但 CS 回跳上下文已持久化到本站存储。
+          主通道不依赖外部邮件：Cloudflare Access 身份 + Passkey（User Verification）+ Runner
+          离线证书。Passkey 只证明你在场，不会成为 E2EE 私钥。
         </p>
-        <div className="row">
-          <button type="button" disabled={busy || !api} onClick={onStartPairing}>
-            开始配对
+        <div className="row" style={{ marginBottom: 12 }}>
+          <button
+            type="button"
+            className={pairingPanel === "passkey" ? undefined : "secondary"}
+            disabled={busy}
+            onClick={() => setPairingPanel("passkey")}
+          >
+            Passkey
           </button>
           <button
             type="button"
-            className="secondary"
-            disabled={busy || !api || !parseMagicLinkFragment(window.location.hash)}
-            onClick={onManualComplete}
+            className={pairingPanel === "approval" ? undefined : "secondary"}
+            disabled={busy}
+            onClick={() => setPairingPanel("approval")}
           >
-            从 URL fragment 完成配对
+            已配对设备批准
+          </button>
+          <button
+            type="button"
+            className={pairingPanel === "recovery" ? undefined : "secondary"}
+            disabled={busy}
+            onClick={() => setPairingPanel("recovery")}
+          >
+            高级：二维码 / 恢复码
+          </button>
+          <button
+            type="button"
+            className={pairingPanel === "mail" ? undefined : "secondary"}
+            disabled={busy}
+            onClick={() => setPairingPanel("mail")}
+          >
+            其他方式（需外部邮箱）
           </button>
         </div>
-        {pairId ? (
-          <p className="meta">
-            当前 pairId：<code>{pairId}</code>
-          </p>
+
+        {pairingPanel === "passkey" ? (
+          <>
+            <p className="meta">支持 Chrome 桌面、Android Chrome、iOS Safari 的系统 Passkey / Face ID / 指纹。</p>
+            <div className="row">
+              <button type="button" disabled={busy || !api} onClick={onPasskeyPair}>
+                使用 Passkey / Face ID / 指纹继续
+              </button>
+            </div>
+          </>
+        ) : null}
+
+        {pairingPanel === "approval" ? (
+          <>
+            <p className="meta">新设备发起请求；已配对设备在同一 Cloudflare Access 账号下批准。</p>
+            <div className="row">
+              <button type="button" disabled={busy || !api} onClick={onRequestApproval}>
+                由已配对设备批准（新设备）
+              </button>
+              <button
+                type="button"
+                className="secondary"
+                disabled={busy || !api || !boot.device.pairedRunnerId}
+                onClick={onRefreshApprovals}
+              >
+                刷新待批准列表（已配对设备）
+              </button>
+            </div>
+            {approvalId ? (
+              <p className="meta">
+                当前 approvalId：<code>{approvalId}</code>
+              </p>
+            ) : null}
+            {pendingApprovals.length > 0 ? (
+              <ul className="meta">
+                {pendingApprovals.map((item) => (
+                  <li key={item.approvalId} style={{ marginBottom: 8 }}>
+                    <code>{item.request.newClientId.slice(0, 12)}…</code>
+                    {" · "}
+                    {item.request.label ?? "新设备"}
+                    <div className="row" style={{ marginTop: 6 }}>
+                      <button
+                        type="button"
+                        disabled={busy}
+                        onClick={() => onDecideApproval(item.request, "approved")}
+                      >
+                        批准
+                      </button>
+                      <button
+                        type="button"
+                        className="secondary"
+                        disabled={busy}
+                        onClick={() => onDecideApproval(item.request, "rejected")}
+                      >
+                        拒绝
+                      </button>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            ) : null}
+          </>
+        ) : null}
+
+        {pairingPanel === "recovery" ? (
+          <>
+            <p className="meta">
+              在 Runner 本机生成高熵二维码 / 恢复码（Gateway 看不到明文）。扫描 QR 或分别输入
+              recoveryId 与代码。
+            </p>
+            <label htmlFor="recoveryId">recoveryId</label>
+            <input
+              id="recoveryId"
+              value={recoveryIdInput}
+              onChange={(event) => setRecoveryIdInput(event.target.value)}
+              placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+              autoComplete="off"
+            />
+            <label htmlFor="recoverySecret">恢复码（base64url 或 Crockford 分组）</label>
+            <input
+              id="recoverySecret"
+              value={recoverySecretInput}
+              onChange={(event) => setRecoverySecretInput(event.target.value)}
+              placeholder="XXXX-XXXX-…"
+              autoComplete="off"
+            />
+            <div className="row">
+              <button type="button" disabled={busy || !api} onClick={onRecoveryPair}>
+                扫描 Runner 二维码 / 输入恢复码
+              </button>
+            </div>
+          </>
+        ) : null}
+
+        {pairingPanel === "mail" ? (
+          <>
+            <p className="meta">
+              备用：外部邮箱 magic link。公司无法访问外部邮件时请使用 Passkey。Token 留在 URL
+              fragment / Runner 邮件路径，Gateway 仅存公开元数据。
+            </p>
+            <div className="row">
+              <button type="button" disabled={busy || !api} onClick={onStartPairing}>
+                开始邮件配对
+              </button>
+              <button
+                type="button"
+                className="secondary"
+                disabled={busy || !api || !parseMagicLinkFragment(window.location.hash)}
+                onClick={onManualComplete}
+              >
+                从 URL fragment 完成配对
+              </button>
+            </div>
+            {pairId ? (
+              <p className="meta">
+                当前 pairId：<code>{pairId}</code>
+              </p>
+            ) : null}
+          </>
         ) : null}
       </section>
 
