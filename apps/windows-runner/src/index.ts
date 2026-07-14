@@ -48,7 +48,15 @@ function configuredWorkspaces(): Workspace[] {
     })
     .map((path) => ({
       id: workspaceId(path),
-      label: basename(path) || path,
+      // Display basename only; keep Windows-style path for id/routing. On Linux,
+      // Node posix basename leaves "D:\\foo" intact — normalize separators first
+      // and mark WSL-hosted registrations clearly in the UI label.
+      label: (() => {
+        const base = basename(path.replace(/\\/g, "/")) || path;
+        return /^[A-Za-z]:[\\/]/.test(path) && process.platform !== "win32"
+          ? `${base} (WSL)`
+          : base;
+      })(),
       path,
       writable: true
     }));

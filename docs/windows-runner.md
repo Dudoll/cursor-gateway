@@ -135,8 +135,12 @@ RUNNER_LEGACY_ENABLED=false
 ```
 
 The runner keeps its HPKE/signing private keys, paired clients, and replay state
-in a local state file (default `%USERPROFILE%\.cursor-gateway\runner-e2ee-state.dat`
-on Windows, DPAPI-protected). Never copy that file to the VPS and never enable
+in a local state file (default `~/.cursor-gateway/runner-e2ee-state.dat`). On
+Windows the file is DPAPI-protected. On Linux/WSL set
+`RUNNER_E2EE_MASTER_KEY` or `RUNNER_E2EE_MASTER_KEY_FILE` (prefer a tmpfs path
+such as `/dev/shm/cursor-gateway/runner-e2ee-master.key`) and use
+`scripts/e2ee/` to passphrase-seal that key across reboots. Never copy the state
+file, master key, or `*.enc` blob to the VPS, and never enable
 `RUNNER_E2EE_ALLOW_INSECURE_DEV_STORAGE` in production.
 
 Offline pairing (verify both fingerprints by hand):
