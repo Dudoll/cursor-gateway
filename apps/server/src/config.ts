@@ -35,6 +35,9 @@ const envSchema = z.object({
   WEB_E2EE_RETURN_ORIGINS: z.string().default(""),
   E2EE_PAIRING_TTL_SECONDS: z.coerce.number().int().positive().default(900),
   E2EE_CS_AUTH_TTL_SECONDS: z.coerce.number().int().positive().default(300),
+  // Optional Cloudflare Access team domain for client logout links, e.g.
+  // https://yourteam.cloudflareaccess.com → …/cdn-cgi/access/logout
+  CF_ACCESS_TEAM_DOMAIN: z.string().default(""),
   WEB_DEFAULT_MODEL: z.string().default("auto"),
   REPORT_MODEL_ID: z.string().default(""),
   REPORT_WORKSPACE_ID: z.string().default("")
@@ -72,6 +75,7 @@ export const config = {
   webE2eeReturnOrigins: new Set(splitCsv(parsed.WEB_E2EE_RETURN_ORIGINS)),
   e2eePairingTtlSeconds: parsed.E2EE_PAIRING_TTL_SECONDS,
   e2eeCsAuthTtlSeconds: parsed.E2EE_CS_AUTH_TTL_SECONDS,
+  cfAccessTeamDomain: parsed.CF_ACCESS_TEAM_DOMAIN.trim().replace(/\/$/, ""),
   webDefaultModel: parsed.WEB_DEFAULT_MODEL,
   reportModelId: parsed.REPORT_MODEL_ID,
   reportWorkspaceId: parsed.REPORT_WORKSPACE_ID

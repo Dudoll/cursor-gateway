@@ -25,6 +25,13 @@ import {
 import type { CsAuthRedirectParams } from "@cursor-gateway/e2ee";
 import { SecureGatewayClient, progressLabel, type DecryptedRun } from "./secureClient.js";
 import type { E2eeConversationRecord, E2eeRunnerDirectoryEntry } from "@cursor-gateway/shared";
+import {
+  E2EE_ACCESS_LOGOUT_CONFIRM,
+  E2EE_LOGOUT_CONFIRM,
+  E2EE_LOGOUT_DONE,
+  E2EE_LOGOUT_LABEL,
+  clearLocalE2eeAuthorization
+} from "./e2eeLogout.js";
 
 type BootState =
   | { kind: "loading" }
@@ -59,6 +66,7 @@ export function App() {
   const [allowWrites, setAllowWrites] = useState(false);
   const [busy, setBusy] = useState(false);
   const [csAuthPending, setCsAuthPending] = useState<CsAuthRedirectParams | null>(null);
+  const [cfAccessLogoutUrl, setCfAccessLogoutUrl] = useState<string | null>(null);
 
   const api = useMemo(() => {
     try {
@@ -91,6 +99,20 @@ export function App() {
       if (cancelled) return;
       setBoot({ kind: "ready", keys, device });
       if (device.pairedRunnerId) setStep(3);
+      const saved = savedGatewayOrigin();
+      if (saved) {
+        try {
+          const clientApi = new GatewayApi(saved);
+          const policy = await clientApi.get<{ cfAccessLogoutUrl?: string | null }>(
+            "/api/e2ee-policy"
+          );
+          if (!cancelled && policy.cfAccessLogoutUrl) {
+            setCfAccessLogoutUrl(policy.cfAccessLogoutUrl);
+          }
+        } catch {
+          // Optional.
+        }
+      }
     })().catch((error) => {
       if (!cancelled) {
         setBoot({ kind: "blocked", reason: errorText(error) });
@@ -199,8 +221,57 @@ export function App() {
         text: `Gateway 已保存：${origin}。如需请先在该 origin 完成 Cloudflare Access 登录，再开始配对。`
       });
       setStep(2);
+      try {
+        const clientApi = new GatewayApi(origin);
+        const policy = await clientApi.get<{
+          cfAccessLogoutUrl?: string | null;
+        }>("/api/e2ee-policy");
+        if (policy.cfAccessLogoutUrl) setCfAccessLogoutUrl(policy.cfAccessLogoutUrl);
+      } catch {
+        // Policy is optional for logout link.
+      }
     } catch (error) {
       setStatus({ tone: "error", text: errorText(error) });
+    }
+  }
+
+  async function onLogoutE2ee() {
+    if (boot.kind !== "ready") return;
+    if (!window.confirm(E2EE_LOGOUT_CONFIRM)) return;
+    setBusy(true);
+    try {
+      await clearLocalE2eeAuthorization({
+        api,
+        keys: boot.keys,
+        clientId: boot.device.clientId
+      });
+      setPairId(null);
+      setRunners([]);
+      setConversations([]);
+      setTitles({});
+      setActiveConversationId(null);
+      setRuns([]);
+      setRunnerId("");
+      setCsAuthPending(null);
+      setStep(1);
+      const keys = await SecureWebKeyStore.open();
+      const device = await keys.device();
+      setBoot({ kind: "ready", keys, device });
+      setStatus({ tone: "ok", text: E2EE_LOGOUT_DONE });
+      window.alert(E2EE_LOGOUT_DONE);
+      if (cfAccessLogoutUrl && window.confirm(E2EE_ACCESS_LOGOUT_CONFIRM)) {
+        try {
+          const url = new URL(cfAccessLogoutUrl);
+          if (api?.origin) url.searchParams.set("returnTo", api.origin);
+          window.open(url.toString(), "_blank", "noopener,noreferrer");
+        } catch {
+          window.open(cfAccessLogoutUrl, "_blank", "noopener,noreferrer");
+        }
+      }
+    } catch (error) {
+      setStatus({ tone: "error", text: errorText(error) });
+    } finally {
+      setBusy(false);
     }
   }
 
@@ -329,11 +400,24 @@ export function App() {
 
   return (
     <div className="app">
-      <h1 className="brand">Cursor Gateway Secure</h1>
-      <p className="lede">
-        跨浏览器 E2EE 客户端。密钥以不可导出形式保存在本设备。Gateway 仅中继密文。协议：
-        <code>cg-e2ee/1</code>。
-      </p>
+      <header className="app-top">
+        <div>
+          <h1 className="brand">Cursor Gateway Secure</h1>
+          <p className="lede">
+            跨浏览器 E2EE 客户端。密钥以不可导出形式保存在本设备。Gateway 仅中继密文。协议：
+            <code>cg-e2ee/1</code>。
+          </p>
+        </div>
+        <button
+          type="button"
+          className="logout-quiet"
+          disabled={busy}
+          onClick={onLogoutE2ee}
+          title="清除本机设备密钥与配对，便于反复测试"
+        >
+          {E2EE_LOGOUT_LABEL}
+        </button>
+      </header>
 
       <ol className="steps">
         <li className={step > 1 ? "done" : step === 1 ? "active" : ""}>

@@ -191,6 +191,28 @@ export class CsWebKeyStore {
     return new CsWebKeyStore(await openDatabase());
   }
 
+  close() {
+    this.database.close();
+  }
+
+  /** Delete all local E2EE state for this origin (device keys, runner pins, conversation secrets). */
+  static async wipe(openStore?: CsWebKeyStore | null) {
+    openStore?.close();
+    await new Promise<void>((resolve, reject) => {
+      const request = indexedDB.deleteDatabase(DB_NAME);
+      let settled = false;
+      const finish = (fn: () => void) => {
+        if (settled) return;
+        settled = true;
+        fn();
+      };
+      request.onsuccess = () => finish(() => resolve());
+      request.onerror = () =>
+        finish(() => reject(request.error ?? new Error("indexeddb_delete_failed")));
+      // onblocked: wait for remaining connections to close, then onsuccess fires.
+    });
+  }
+
   async device() {
     const transaction = this.database.transaction(META_STORE, "readonly");
     const existing = (await requestValue(

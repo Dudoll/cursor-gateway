@@ -34,6 +34,42 @@ body {
   padding: 28px 18px 64px;
 }
 
+.app-top {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 8px;
+}
+
+.app-top .lede {
+  margin-bottom: 0;
+}
+
+.logout-quiet {
+  flex-shrink: 0;
+  margin-top: 4px;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.85rem;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  opacity: 0.75;
+}
+
+.logout-quiet:hover:not(:disabled) {
+  color: var(--ink);
+  opacity: 1;
+}
+
+.logout-quiet:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
 .brand {
   font-size: clamp(1.6rem, 3vw, 2.2rem);
   font-weight: 700;

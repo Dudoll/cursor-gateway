@@ -10,6 +10,7 @@ import {
   FileText,
   Home,
   LockKeyhole,
+  LogOut,
   MessageSquare,
   PanelLeftClose,
   PanelLeftOpen,
@@ -47,6 +48,14 @@ import {
   e2eeRunEvidenceLabel,
   e2eeRunEvidenceTitle
 } from "./e2eeStatusUi.js";
+import {
+  E2EE_ACCESS_LOGOUT_CONFIRM,
+  E2EE_LOGOUT_CONFIRM,
+  E2EE_LOGOUT_DONE,
+  E2EE_LOGOUT_LABEL,
+  buildCfAccessLogoutUrl,
+  clearLocalE2eeAuthorization
+} from "./e2eeLogout.js";
 
 type ReportSummary = ReportDefinition & {
   runCount: number;
@@ -343,6 +352,7 @@ function GatewayDashboard() {
   >([]);
   const [lastE2eeRunId, setLastE2eeRunId] = useState<string | null>(null);
   const [e2eeEvidenceOpen, setE2eeEvidenceOpen] = useState(false);
+  const [cfAccessLogoutUrl, setCfAccessLogoutUrl] = useState<string | null>(null);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useSidebarCollapsed();
@@ -418,6 +428,8 @@ function GatewayDashboard() {
       api<{
         requiredForWeb: boolean;
         secureClientOrigin?: string | null;
+        cfAccessLogoutUrl?: string | null;
+        cfAccessTeamDomain?: string | null;
       }>("/api/e2ee-policy"),
       conversationId && !useE2eeChat
         ? api<{ runs: RunRecord[] }>(`/api/conversations/${conversationId}/runs`)
@@ -426,6 +438,11 @@ function GatewayDashboard() {
     setE2eeRequired(policy.requiredForWeb);
     if (policy.secureClientOrigin) {
       setSecureClientOrigin(policy.secureClientOrigin);
+    }
+    if (policy.cfAccessLogoutUrl) {
+      setCfAccessLogoutUrl(policy.cfAccessLogoutUrl);
+    } else if (policy.cfAccessTeamDomain) {
+      setCfAccessLogoutUrl(buildCfAccessLogoutUrl(policy.cfAccessTeamDomain));
     }
 
     setState({
@@ -513,6 +530,46 @@ function GatewayDashboard() {
       });
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
+      setLoading(false);
+    }
+  }
+
+  async function logoutE2ee() {
+    if (!window.confirm(E2EE_LOGOUT_CONFIRM)) return;
+    setLoading(true);
+    setError("");
+    setE2eeEvidenceOpen(false);
+    try {
+      await clearLocalE2eeAuthorization({
+        api: gatewayApi,
+        keys: e2eeKeys,
+        clientId: e2eeDevice?.clientId ?? null
+      });
+      setE2eeKeys(null);
+      setE2eeDevice(null);
+      setE2eeRuns([]);
+      setE2eeTitles({});
+      setE2eeConversations([]);
+      setLastE2eeRunId(null);
+      setSelectedConversationId("");
+      const keys = await CsWebKeyStore.open();
+      const device = await keys.device();
+      setE2eeKeys(keys);
+      setE2eeDevice(device);
+      window.alert(E2EE_LOGOUT_DONE);
+      if (cfAccessLogoutUrl && window.confirm(E2EE_ACCESS_LOGOUT_CONFIRM)) {
+        try {
+          const url = new URL(cfAccessLogoutUrl);
+          url.searchParams.set("returnTo", window.location.origin);
+          window.location.assign(url.toString());
+        } catch {
+          window.location.assign(cfAccessLogoutUrl);
+        }
+        return;
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
       setLoading(false);
     }
   }
@@ -733,6 +790,14 @@ function GatewayDashboard() {
                       </dd>
                     </div>
                   </dl>
+                  <button
+                    className="e2ee-logout-in-panel"
+                    disabled={loading}
+                    onClick={logoutE2ee}
+                    type="button"
+                  >
+                    {E2EE_LOGOUT_LABEL}并重新配对
+                  </button>
                 </div>
               ) : null}
             </div>
@@ -748,6 +813,16 @@ function GatewayDashboard() {
               <span>启用加密</span>
             </button>
           ) : null}
+          <button
+            className="topbar-link e2ee-logout-link"
+            disabled={loading || !e2eeKeys}
+            onClick={logoutE2ee}
+            title="清除本机设备密钥与配对，便于反复测试授权流程"
+            type="button"
+          >
+            <LogOut aria-hidden="true" size={15} strokeWidth={1.75} />
+            <span>{E2EE_LOGOUT_LABEL}</span>
+          </button>
           <a className="topbar-link" href="/trash">
             <Trash2 aria-hidden="true" size={15} strokeWidth={1.75} />
             <span>Recycle Bin</span>

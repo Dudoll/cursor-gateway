@@ -237,14 +237,28 @@ export async function registerRoutes(app: FastifyInstance) {
         .send(createReadStream(extensionZipPath));
     });
 
-    api.get("/e2ee-policy", async () => ({
-      requiredForWeb: config.e2eeRequiredForWeb,
-      protocol: E2EE_PROTOCOL,
-      trustedClient: "signed-browser-extension",
-      secureClientOrigin: config.secureClientOrigin || null,
-      webE2eeReturnOrigins: [...config.webE2eeReturnOrigins],
-      csAuthTtlSeconds: config.e2eeCsAuthTtlSeconds
-    }));
+    api.get("/e2ee-policy", async () => {
+      const team = config.cfAccessTeamDomain;
+      let cfAccessLogoutUrl: string | null = null;
+      if (team) {
+        try {
+          const origin = team.includes("://") ? team : `https://${team}`;
+          cfAccessLogoutUrl = new URL("/cdn-cgi/access/logout", origin).toString();
+        } catch {
+          cfAccessLogoutUrl = null;
+        }
+      }
+      return {
+        requiredForWeb: config.e2eeRequiredForWeb,
+        protocol: E2EE_PROTOCOL,
+        trustedClient: "signed-browser-extension",
+        secureClientOrigin: config.secureClientOrigin || null,
+        webE2eeReturnOrigins: [...config.webE2eeReturnOrigins],
+        csAuthTtlSeconds: config.e2eeCsAuthTtlSeconds,
+        cfAccessTeamDomain: team || null,
+        cfAccessLogoutUrl
+      };
+    });
 
     api.get("/models", async () => ({
       models: [{ id: "auto", displayName: "Auto" }, ...listModels()],
