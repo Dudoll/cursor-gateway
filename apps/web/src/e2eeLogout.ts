@@ -2,7 +2,7 @@ import { GatewayApi } from "./api.js";
 import { clearPendingCsAuth } from "./csAuth.js";
 import { CsWebKeyStore } from "./keyStore.js";
 
-/** UI copy for the quiet top-right logout / re-pair control. */
+/** UI copy for logout / re-pair (shown inside the encrypted-status badge panel). */
 export const E2EE_LOGOUT_LABEL = "退出加密";
 
 export const E2EE_LOGOUT_CONFIRM =

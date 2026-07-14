@@ -408,15 +408,6 @@ export function App() {
             <code>cg-e2ee/1</code>。
           </p>
         </div>
-        <button
-          type="button"
-          className="logout-quiet"
-          disabled={busy}
-          onClick={onLogoutE2ee}
-          title="清除本机设备密钥与配对，便于反复测试"
-        >
-          {E2EE_LOGOUT_LABEL}
-        </button>
       </header>
 
       <ol className="steps">
@@ -460,6 +451,16 @@ export function App() {
             <>
               {" "}
               · 已配对 runner：<code>{boot.device.pairedRunnerId}</code>
+              {" · "}
+              <button
+                type="button"
+                className="logout-quiet logout-in-meta"
+                disabled={busy}
+                onClick={onLogoutE2ee}
+                title="清除本机设备密钥与配对，便于反复测试"
+              >
+                {E2EE_LOGOUT_LABEL}
+              </button>
             </>
           ) : null}
         </p>

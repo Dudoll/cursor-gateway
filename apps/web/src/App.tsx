@@ -10,7 +10,6 @@ import {
   FileText,
   Home,
   LockKeyhole,
-  LogOut,
   MessageSquare,
   PanelLeftClose,
   PanelLeftOpen,
@@ -813,16 +812,6 @@ function GatewayDashboard() {
               <span>启用加密</span>
             </button>
           ) : null}
-          <button
-            className="topbar-link e2ee-logout-link"
-            disabled={loading || !e2eeKeys}
-            onClick={logoutE2ee}
-            title="清除本机设备密钥与配对，便于反复测试授权流程"
-            type="button"
-          >
-            <LogOut aria-hidden="true" size={15} strokeWidth={1.75} />
-            <span>{E2EE_LOGOUT_LABEL}</span>
-          </button>
           <a className="topbar-link" href="/trash">
             <Trash2 aria-hidden="true" size={15} strokeWidth={1.75} />
             <span>Recycle Bin</span>

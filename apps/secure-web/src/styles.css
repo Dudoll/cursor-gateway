@@ -35,10 +35,6 @@ body {
 }
 
 .app-top {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 16px;
   margin-bottom: 8px;
 }
 
@@ -47,17 +43,21 @@ body {
 }
 
 .logout-quiet {
-  flex-shrink: 0;
-  margin-top: 4px;
   border: 0;
   background: transparent;
   color: var(--muted);
   cursor: pointer;
   font: inherit;
-  font-size: 0.85rem;
+  font-size: inherit;
   text-decoration: underline;
   text-underline-offset: 3px;
   opacity: 0.75;
+  padding: 0;
+}
+
+.logout-quiet.logout-in-meta {
+  display: inline;
+  vertical-align: baseline;
 }
 
 .logout-quiet:hover:not(:disabled) {

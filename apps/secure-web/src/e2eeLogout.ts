@@ -2,6 +2,7 @@ import { GatewayApi } from "./api.js";
 import { clearPendingCsAuthRedirect } from "./csAuthReturn.js";
 import { SecureWebKeyStore } from "./keyStore.js";
 
+/** UI copy for logout / re-pair (shown in paired-device meta, not the top header). */
 export const E2EE_LOGOUT_LABEL = "退出加密";
 
 export const E2EE_LOGOUT_CONFIRM =

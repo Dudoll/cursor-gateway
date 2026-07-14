@@ -654,26 +654,6 @@ a {
   cursor: not-allowed;
 }
 
-.reports-topbar .topbar-link.e2ee-logout-link {
-  border: 0;
-  background: transparent;
-  cursor: pointer;
-  font: inherit;
-  color: var(--text-muted);
-  opacity: 0.72;
-}
-
-.reports-topbar .topbar-link.e2ee-logout-link:hover:not(:disabled) {
-  color: var(--text);
-  background: rgba(255, 255, 255, 0.06);
-  opacity: 1;
-}
-
-.reports-topbar .topbar-link.e2ee-logout-link:disabled {
-  opacity: 0.35;
-  cursor: not-allowed;
-}
-
 .e2ee-logout-in-panel {
   margin-top: 0.75rem;
   width: 100%;
