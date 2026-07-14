@@ -76,7 +76,17 @@ const envSchema = z.object({
   CURSOR_API_KEY: z.string().min(1),
   DEFAULT_MODEL: z.string().min(1).default("auto"),
   CF_ACCESS_CLIENT_ID: optionalEnvString,
-  CF_ACCESS_CLIENT_SECRET: optionalEnvString
+  CF_ACCESS_CLIENT_SECRET: optionalEnvString,
+  // Secure-web magic-link pairing
+  SECURE_CLIENT_ORIGIN: optionalEnvString,
+  PAIRING_TTL_SECONDS: z.coerce.number().int().positive().default(900),
+  PAIRING_MAIL_MODE: z.enum(["log", "smtp"]).default("log"),
+  PAIRING_MAIL_TO: optionalEnvString,
+  PAIRING_MAIL_LOG_FILE: optionalEnvString,
+  PAIRING_ALLOWED_EMAILS: z.string().default(""),
+  SMTP_URL: optionalEnvString,
+  CF_ACCESS_TEAM_DOMAIN: optionalEnvString,
+  CF_ACCESS_AUD: optionalEnvString
 });
 
 const parsed = envSchema.parse(process.env);
@@ -99,14 +109,19 @@ if (!parsed.RUNNER_E2EE_ENABLED && !parsed.RUNNER_LEGACY_ENABLED) {
 
 function resolveE2eeMasterKey(): string | undefined {
   const inline = parsed.RUNNER_E2EE_MASTER_KEY;
-  const fromFile = parsed.RUNNER_E2EE_MASTER_KEY_FILE
-    ? readFileSync(parsed.RUNNER_E2EE_MASTER_KEY_FILE, "utf8").trim()
-    : undefined;
-  const value = inline ?? (fromFile || undefined);
-  if (value !== undefined && value.length < 16) {
+  if (inline !== undefined) {
+    if (inline.length < 16) {
+      throw new Error("RUNNER_E2EE_MASTER_KEY must be at least 16 characters");
+    }
+    return inline;
+  }
+  const filePath = parsed.RUNNER_E2EE_MASTER_KEY_FILE;
+  if (!filePath) return undefined;
+  const fromFile = readFileSync(filePath, "utf8").trim();
+  if (fromFile.length < 16) {
     throw new Error("RUNNER_E2EE_MASTER_KEY must be at least 16 characters");
   }
-  return value;
+  return fromFile;
 }
 const e2eeMasterKey = resolveE2eeMasterKey();
 
@@ -130,5 +145,18 @@ export const config = {
   cursorApiKey: parsed.CURSOR_API_KEY,
   defaultModel: parsed.DEFAULT_MODEL,
   cloudflareAccessClientId: parsed.CF_ACCESS_CLIENT_ID,
-  cloudflareAccessClientSecret: parsed.CF_ACCESS_CLIENT_SECRET
+  cloudflareAccessClientSecret: parsed.CF_ACCESS_CLIENT_SECRET,
+  secureClientOrigin: parsed.SECURE_CLIENT_ORIGIN,
+  pairingTtlSeconds: parsed.PAIRING_TTL_SECONDS,
+  pairingMailMode: parsed.PAIRING_MAIL_MODE,
+  pairingMailTo: parsed.PAIRING_MAIL_TO,
+  pairingMailLogFile: parsed.PAIRING_MAIL_LOG_FILE,
+  pairingAllowedEmails: new Set(
+    parsed.PAIRING_ALLOWED_EMAILS.split(",")
+      .map((item) => item.trim().toLowerCase())
+      .filter(Boolean)
+  ),
+  smtpUrl: parsed.SMTP_URL,
+  cfAccessTeamDomain: parsed.CF_ACCESS_TEAM_DOMAIN,
+  cfAccessAud: parsed.CF_ACCESS_AUD
 };

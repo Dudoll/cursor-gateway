@@ -37,6 +37,7 @@ async function main() {
       if (
         !origin ||
         origin === config.publicOrigin ||
+        (config.secureClientOrigin && origin === config.secureClientOrigin) ||
         config.e2eeExtensionOrigins.has(origin)
       ) {
         callback(null, true);

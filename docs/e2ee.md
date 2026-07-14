@@ -2,7 +2,7 @@
 
 ## 保证范围
 
-安全端点是签名的 `Cursor Gateway Secure` 浏览器扩展与 Runner（Windows / Linux / WSL）。Prompt、会话历史、Memory、进度、结果和详细错误在离开端点前加密；Cloudflare、VPS、PostgreSQL、备份和反向代理只处理中继密文。
+安全端点是签名的 `Cursor Gateway Secure` 浏览器扩展、跨浏览器 **Secure Web PWA**（`apps/secure-web`，见 [secure-web-e2ee.md](secure-web-e2ee.md)）与 Runner（Windows / Linux / WSL）。Prompt、会话历史、Memory、进度、结果和详细错误在离开端点前加密；Cloudflare、VPS、PostgreSQL、备份和反向代理只处理中继密文。
 
 Runner 会在本机解密，然后调用 Cursor SDK。Cursor 模型服务仍会收到明文，因此本功能是“Gateway-blind E2EE”，不是模型提供商不可见的加密推理。
 
@@ -65,6 +65,8 @@ Server（VPS）：
 | --- | --- | --- |
 | `E2EE_REQUIRED_FOR_WEB` | `false` | 置 `true` 后，普通网页的明文 Web chat / Memory 写入被拒绝，只接受签名扩展的 E2EE 会话。分发扩展前保持 `false`。 |
 | `E2EE_EXTENSION_ORIGINS` | 空 | 逗号分隔的可信扩展 origin 允许表。本仓库固定旁加载 ID：`chrome-extension://oicmfijjdbjkjhnljcjhnojpeiobhefe`。 |
+| `SECURE_CLIENT_ORIGIN` | 空 | 跨浏览器 Secure Web PWA 的 HTTPS origin（CORS + 配对校验）。见 [secure-web-e2ee.md](secure-web-e2ee.md)。 |
+| `E2EE_PAIRING_TTL_SECONDS` | `900` | magic-link 配对 TTL。 |
 | `RUNNER_SHARED_SECRET` | 必填（≥32） | 只用于 Runner 接口访问控制，**不**参与内容密钥派生。 |
 
 Runner：

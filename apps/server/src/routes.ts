@@ -11,6 +11,10 @@ import {
   e2eeCreateRunRequestSchema,
   e2eeLeaseRenewalSchema,
   e2eeMemoryCreateRequestSchema,
+  e2eePairingAckSchema,
+  e2eePairingCompleteRequestSchema,
+  e2eePairingOfferSchema,
+  e2eePairingStartRequestSchema,
   e2eeProgressSubmissionSchema,
   e2eeResultSubmissionSchema,
   e2eeRunnerClaimRequestSchema,
@@ -85,6 +89,20 @@ import {
   updateE2eeProgress,
   upsertE2eeRunner
 } from "./e2eeDb.js";
+import {
+  PairingConflictError,
+  claimNextPairingComplete,
+  claimNextPairingStart,
+  createPairingStart,
+  getPairingForUser,
+  listDevicesForUser,
+  listPendingRevocations,
+  markRunnerRevoked,
+  publishPairingAck,
+  publishPairingOffer,
+  revokeDeviceForUser,
+  submitPairingComplete
+} from "./pairingDb.js";
 import { truncateConversationHistory } from "./history.js";
 import {
   buildReportQuestionPrompt,
@@ -764,6 +782,107 @@ export async function registerRoutes(app: FastifyInstance) {
             throw error;
           }
         });
+
+        secure.post("/pairings/start", async (request, reply) => {
+          const body = e2eePairingStartRequestSchema.parse(request.body);
+          if (
+            config.secureClientOrigin &&
+            body.start.secureOrigin !== config.secureClientOrigin
+          ) {
+            return reply.code(400).send({ error: "secure_origin_mismatch" });
+          }
+          try {
+            const pairing = await createPairingStart({
+              userId: request.principal!.id,
+              start: body.start,
+              ttlSeconds: config.e2eePairingTtlSeconds
+            });
+            await appendAudit({
+              actorUserId: request.principal!.id,
+              eventType: "e2ee.pairing.started",
+              details: {
+                pairId: body.start.pairId,
+                clientId: body.start.clientId,
+                secureOrigin: body.start.secureOrigin
+              }
+            });
+            return reply.code(202).send({
+              pairId: pairing.pairId,
+              status: pairing.status,
+              expiresAt: pairing.expiresAt
+            });
+          } catch (error) {
+            if (error instanceof PairingConflictError) {
+              return reply.code(409).send({ error: error.code });
+            }
+            throw error;
+          }
+        });
+
+        secure.get("/pairings/:pairId", async (request, reply) => {
+          const params = z.object({ pairId: z.string().uuid() }).parse(request.params);
+          const pairing = await getPairingForUser(params.pairId, request.principal!.id);
+          if (!pairing) return reply.code(404).send({ error: "pairing_not_found" });
+          return {
+            pairId: pairing.pairId,
+            status: pairing.status,
+            offer: pairing.offer,
+            ack: pairing.ack,
+            expiresAt: pairing.expiresAt
+          };
+        });
+
+        secure.post("/pairings/:pairId/complete", async (request, reply) => {
+          const params = z.object({ pairId: z.string().uuid() }).parse(request.params);
+          const body = e2eePairingCompleteRequestSchema.parse(request.body);
+          if (body.complete.pairId !== params.pairId) {
+            return reply.code(400).send({ error: "pair_id_mismatch" });
+          }
+          try {
+            const pairing = await submitPairingComplete({
+              userId: request.principal!.id,
+              complete: body.complete
+            });
+            await appendAudit({
+              actorUserId: request.principal!.id,
+              eventType: "e2ee.pairing.complete_submitted",
+              details: {
+                pairId: body.complete.pairId,
+                clientId: body.complete.clientId
+              }
+            });
+            return {
+              pairId: pairing.pairId,
+              status: pairing.status
+            };
+          } catch (error) {
+            if (error instanceof PairingConflictError) {
+              return reply.code(409).send({ error: error.code });
+            }
+            throw error;
+          }
+        });
+
+        secure.get("/devices", async (request) => ({
+          devices: await listDevicesForUser(request.principal!.id)
+        }));
+
+        secure.post("/devices/:clientId/revoke", async (request, reply) => {
+          const params = z
+            .object({ clientId: z.string().trim().min(8).max(128) })
+            .parse(request.params);
+          const device = await revokeDeviceForUser({
+            userId: request.principal!.id,
+            clientId: params.clientId
+          });
+          if (!device) return reply.code(404).send({ error: "device_not_found" });
+          await appendAudit({
+            actorUserId: request.principal!.id,
+            eventType: "e2ee.device.revoke_requested",
+            details: { clientId: params.clientId }
+          });
+          return { device };
+        });
       },
       { prefix: "/e2ee/v1" }
     );
@@ -1031,6 +1150,124 @@ export async function registerRoutes(app: FastifyInstance) {
         }
       });
       return { run };
+    });
+
+    runner.post("/e2ee/v1/pairings/claim-start", async (request, reply) => {
+      const body = z
+        .object({ runnerId: z.string().trim().min(1).max(128) })
+        .parse(request.body);
+      const pairing = await claimNextPairingStart({ runnerId: body.runnerId });
+      return pairing
+        ? {
+            pairing: {
+              pairId: pairing.pairId,
+              status: pairing.status,
+              start: pairing.start,
+              expiresAt: pairing.expiresAt
+            }
+          }
+        : reply.code(204).send();
+    });
+
+    runner.post("/e2ee/v1/pairings/offer", async (request, reply) => {
+      const body = z
+        .object({
+          runnerId: z.string().trim().min(1).max(128),
+          offer: e2eePairingOfferSchema
+        })
+        .parse(request.body);
+      try {
+        const pairing = await publishPairingOffer({
+          runnerId: body.runnerId,
+          offer: body.offer
+        });
+        await appendAudit({
+          eventType: "e2ee.pairing.offer_published",
+          details: {
+            pairId: body.offer.pairId,
+            runnerId: body.runnerId,
+            clientId: body.offer.clientId
+          }
+        });
+        return { status: pairing.status, expiresAt: pairing.expiresAt };
+      } catch (error) {
+        if (error instanceof PairingConflictError) {
+          return reply.code(409).send({ error: error.code });
+        }
+        throw error;
+      }
+    });
+
+    runner.post("/e2ee/v1/pairings/claim-complete", async (request, reply) => {
+      const body = z
+        .object({ runnerId: z.string().trim().min(1).max(128) })
+        .parse(request.body);
+      const pairing = await claimNextPairingComplete({ runnerId: body.runnerId });
+      return pairing
+        ? {
+            pairing: {
+              pairId: pairing.pairId,
+              status: pairing.status,
+              start: pairing.start,
+              offer: pairing.offer,
+              complete: pairing.complete,
+              expiresAt: pairing.expiresAt
+            }
+          }
+        : reply.code(204).send();
+    });
+
+    runner.post("/e2ee/v1/pairings/ack", async (request, reply) => {
+      const body = z
+        .object({
+          runnerId: z.string().trim().min(1).max(128),
+          ack: e2eePairingAckSchema
+        })
+        .parse(request.body);
+      try {
+        const pairing = await publishPairingAck({
+          runnerId: body.runnerId,
+          ack: body.ack
+        });
+        await appendAudit({
+          eventType: "e2ee.pairing.acked",
+          details: {
+            pairId: body.ack.pairId,
+            runnerId: body.runnerId,
+            clientId: body.ack.clientId,
+            status: body.ack.status
+          }
+        });
+        return { status: pairing.status };
+      } catch (error) {
+        if (error instanceof PairingConflictError) {
+          return reply.code(409).send({ error: error.code });
+        }
+        throw error;
+      }
+    });
+
+    runner.get("/e2ee/v1/devices/pending-revocations", async (request) => {
+      const query = z
+        .object({ runnerId: z.string().trim().min(1).max(128) })
+        .parse(request.query);
+      return {
+        revocations: await listPendingRevocations(query.runnerId)
+      };
+    });
+
+    runner.post("/e2ee/v1/devices/:clientId/revoked", async (request) => {
+      const params = z
+        .object({ clientId: z.string().trim().min(8).max(128) })
+        .parse(request.params);
+      const body = z
+        .object({ runnerId: z.string().trim().min(1).max(128) })
+        .parse(request.body);
+      await markRunnerRevoked({
+        runnerId: body.runnerId,
+        clientId: params.clientId
+      });
+      return { ok: true };
     });
   }, { prefix: "/api/runner" });
 

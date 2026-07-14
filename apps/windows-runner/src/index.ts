@@ -21,6 +21,7 @@ import { E2eeJobProcessor } from "./e2eeProcessor.js";
 import { RunnerE2eeState } from "./e2eeState.js";
 import { toLocalPath } from "./pathTranslation.js";
 import { writeHealthSnapshot } from "./health.js";
+import { processSecureWebPairingCycle } from "./secureWebPairing.js";
 
 const GATEWAY_REQUEST_TIMEOUT_MS = 30_000;
 const HEARTBEAT_INTERVAL_MS = 60_000;
@@ -441,6 +442,23 @@ function installProcessGuards() {
   });
 }
 
+async function pairingLoop(state: RunnerE2eeState) {
+  for (;;) {
+    try {
+      await processSecureWebPairingCycle({
+        state,
+        gatewayFetch
+      });
+    } catch (error) {
+      console.warn(
+        "Secure-web pairing cycle failed:",
+        error instanceof Error ? error.message : "unknown"
+      );
+    }
+    await sleep(Math.max(config.pollIntervalMs, 3_000));
+  }
+}
+
 async function main() {
   installProcessGuards();
   writeHealthSnapshot({
@@ -466,7 +484,14 @@ async function main() {
   console.log(
     `Starting ${workers.length} concurrent job workers (e2ee=${config.e2eeEnabled}, legacy=${config.legacyEnabled})`
   );
-  await Promise.all([heartbeatLoop(state), ...workers]);
+  const loops: Array<Promise<void>> = [heartbeatLoop(state), ...workers];
+  if (state) {
+    console.log(
+      `Secure-web pairing enabled (mail=${config.pairingMailMode}, ttl=${config.pairingTtlSeconds}s)`
+    );
+    loops.push(pairingLoop(state));
+  }
+  await Promise.all(loops);
 }
 
 main().catch((error) => {

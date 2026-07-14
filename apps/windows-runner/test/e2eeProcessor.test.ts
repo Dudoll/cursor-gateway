@@ -14,6 +14,9 @@ process.env.RUNNER_WORKSPACES = root;
 process.env.CURSOR_API_KEY = "cursor-test";
 process.env.RUNNER_E2EE_ALLOW_INSECURE_DEV_STORAGE = "true";
 process.env.RUNNER_E2EE_STATE_FILE = join(root, "runner-state.dat");
+// Isolate from developer .env master-key settings (config loadEnv uses ??=).
+process.env.RUNNER_E2EE_MASTER_KEY_FILE = "";
+delete process.env.RUNNER_E2EE_MASTER_KEY;
 
 test("runner verifies, decrypts, executes once, and encrypts the response", async () => {
   const shared = await import("@cursor-gateway/shared");

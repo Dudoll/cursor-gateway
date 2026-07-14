@@ -1,0 +1,18 @@
+{
+  "name": "Cursor Gateway Secure",
+  "short_name": "CG Secure",
+  "description": "Trusted end-to-end encrypted client for Cursor Gateway",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0f172a",
+  "theme_color": "#0f172a",
+  "lang": "zh-CN",
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}

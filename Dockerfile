@@ -7,6 +7,7 @@ COPY apps/server/package.json apps/server/package.json
 COPY apps/web/package.json apps/web/package.json
 COPY apps/browser-extension/package.json apps/browser-extension/package.json
 COPY apps/windows-runner/package.json apps/windows-runner/package.json
+COPY apps/secure-web/package.json apps/secure-web/package.json
 RUN npm install
 
 FROM deps AS build

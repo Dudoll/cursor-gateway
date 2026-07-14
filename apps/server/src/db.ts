@@ -294,6 +294,40 @@ export async function migrate() {
     create index if not exists runner_devices_seen_idx
       on runner_devices(last_seen_at desc)
       where revoked_at is null;
+
+    create table if not exists e2ee_pairings (
+      pair_id uuid primary key,
+      user_id uuid not null references app_users(id),
+      status text not null,
+      start_envelope jsonb not null,
+      offer_envelope jsonb,
+      complete_envelope jsonb,
+      ack_envelope jsonb,
+      runner_id text,
+      expires_at timestamptz not null,
+      created_at timestamptz not null default now(),
+      updated_at timestamptz not null default now()
+    );
+
+    create index if not exists e2ee_pairings_pending_idx
+      on e2ee_pairings(status, created_at)
+      where status in ('pending_start', 'complete_submitted');
+
+    create table if not exists e2ee_devices (
+      client_id text primary key,
+      user_id uuid not null references app_users(id),
+      runner_id text not null,
+      signing_key jsonb not null,
+      encryption_key jsonb,
+      label text,
+      paired_at timestamptz not null default now(),
+      revoked_at timestamptz,
+      runner_revoked_at timestamptz,
+      updated_at timestamptz not null default now()
+    );
+
+    create index if not exists e2ee_devices_user_idx
+      on e2ee_devices(user_id, paired_at desc);
   `);
 }
 

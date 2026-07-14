@@ -165,3 +165,49 @@ test("network schema is strict and never accepts a plaintext prompt", () => {
   });
   assert.equal(result.success, false);
 });
+
+test("magic-link pairing MAC authenticates the full transcript", async () => {
+  const { generateMagicLinkToken, macPairingTranscript, verifyPairingTranscriptMac, createKeyDescriptor, generateSigningKeyPair, generateHpkeKeyPair, exportE2eePublicKey } =
+    await import("../src/index.js");
+  const token = generateMagicLinkToken();
+  const [clientSign, clientEnc, runnerSign, runnerEnc] = await Promise.all([
+    generateSigningKeyPair(),
+    generateHpkeKeyPair(),
+    generateSigningKeyPair(),
+    generateHpkeKeyPair()
+  ]);
+  const [clientSigning, clientEncryption, runnerSigning, runnerEncryption] =
+    await Promise.all([
+      createKeyDescriptor(clientSign.publicKey),
+      createKeyDescriptor(clientEnc.publicKey),
+      createKeyDescriptor(runnerSign.publicKey),
+      createKeyDescriptor(runnerEnc.publicKey)
+    ]);
+  const offer = {
+    protocol: "cg-e2ee/1" as const,
+    pairingKind: "secure-web-magic-link/1" as const,
+    pairId: "11111111-1111-4111-8111-111111111111",
+    runnerId: "runner-test",
+    runnerChallenge: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+    runnerEncryptionKey: runnerEncryption,
+    runnerSigningKey: runnerSigning,
+    clientId: "client-test-1",
+    clientChallenge: "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+    clientSigningFingerprint: clientSigning.fingerprint,
+    clientEncryptionFingerprint: clientEncryption.fingerprint,
+    secureOrigin: "https://secure.example.com",
+    gatewayOrigin: "https://gateway.example.com",
+    expiresAt: new Date(Date.now() + 600_000).toISOString(),
+    createdAt: new Date().toISOString()
+  };
+  const mac = await macPairingTranscript(token, offer);
+  assert.equal(await verifyPairingTranscriptMac(token, offer, mac), true);
+  assert.equal(
+    await verifyPairingTranscriptMac(token, { ...offer, runnerId: "evil" }, mac),
+    false
+  );
+  const otherToken = generateMagicLinkToken();
+  assert.equal(await verifyPairingTranscriptMac(otherToken, offer, mac), false);
+  // Silence unused when generateHpkeKeyPair path only needs descriptors
+  assert.ok((await exportE2eePublicKey(clientEnc.publicKey)).kty === "EC");
+});

@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="CG Secure">
+  <rect width="128" height="128" rx="24" fill="#0f172a"/>
+  <path d="M40 62h48v28a8 8 0 0 1-8 8H48a8 8 0 0 1-8-8V62z" fill="#e2e8f0"/>
+  <path d="M48 62V48a16 16 0 0 1 32 0v14" fill="none" stroke="#38bdf8" stroke-width="8" stroke-linecap="round"/>
+</svg>

@@ -1,10 +1,13 @@
 import {
   E2EE_HPKE_SUITE,
+  E2EE_PAIRING_KIND,
   E2EE_PROTOCOL,
   type E2eeCiphertext,
   type E2eeHpkeEnvelope,
   type E2eeKeyDescriptor,
   type E2eeMemoryEnvelope,
+  type E2eePairingOffer,
+  type E2eePairingStart,
   type E2eeProgressEnvelope,
   type E2eePublicKey,
   type E2eeResultEnvelope,
@@ -509,5 +512,148 @@ export function memoryPayloadAad(
     scope: value.scope,
     workspaceId: value.workspaceId,
     createdAt: value.createdAt
+  };
+}
+
+/** 256-bit high-entropy magic-link token (base64url, 43 chars). */
+export function generateMagicLinkToken(): string {
+  return encodeBase64Url(globalThis.crypto.getRandomValues(new Uint8Array(32)));
+}
+
+export function generatePairingChallenge(): string {
+  return encodeBase64Url(globalThis.crypto.getRandomValues(new Uint8Array(32)));
+}
+
+/**
+ * Canonical transcript authenticated by the magic-link token.
+ * Gateway never sees the token; only public offer fields enter the relay.
+ */
+export function pairingTranscript(offer: E2eePairingOffer): JsonValue {
+  return {
+    protocol: E2EE_PROTOCOL,
+    pairingKind: E2EE_PAIRING_KIND,
+    purpose: "secure-web-magic-link-transcript",
+    pairId: offer.pairId,
+    runnerId: offer.runnerId,
+    runnerChallenge: offer.runnerChallenge,
+    runnerEncryptionFingerprint: offer.runnerEncryptionKey.fingerprint,
+    runnerSigningFingerprint: offer.runnerSigningKey.fingerprint,
+    clientId: offer.clientId,
+    clientChallenge: offer.clientChallenge,
+    clientSigningFingerprint: offer.clientSigningFingerprint,
+    clientEncryptionFingerprint: offer.clientEncryptionFingerprint,
+    secureOrigin: offer.secureOrigin,
+    gatewayOrigin: offer.gatewayOrigin,
+    expiresAt: offer.expiresAt
+  };
+}
+
+export async function derivePairingMacKey(token: string): Promise<CryptoKey> {
+  const raw = decodeBase64Url(token);
+  if (raw.length !== 32) throw new Error("invalid_magic_link_token_length");
+  const ikm = await subtle.importKey("raw", toArrayBuffer(raw), "HKDF", false, [
+    "deriveKey"
+  ]);
+  return subtle.deriveKey(
+    {
+      name: "HKDF",
+      hash: "SHA-256",
+      salt: toArrayBuffer(encoder.encode(E2EE_PROTOCOL)),
+      info: toArrayBuffer(encoder.encode("cursor-gateway:secure-web-pairing-mac"))
+    },
+    ikm,
+    { name: "HMAC", hash: "SHA-256", length: 256 },
+    false,
+    ["sign", "verify"]
+  );
+}
+
+export async function macPairingTranscript(
+  token: string,
+  offer: E2eePairingOffer
+): Promise<string> {
+  const key = await derivePairingMacKey(token);
+  const mac = new Uint8Array(
+    await subtle.sign("HMAC", key, toArrayBuffer(canonicalBytes(pairingTranscript(offer))))
+  );
+  return encodeBase64Url(mac);
+}
+
+export async function verifyPairingTranscriptMac(
+  token: string,
+  offer: E2eePairingOffer,
+  expectedMac: string
+): Promise<boolean> {
+  try {
+    const key = await derivePairingMacKey(token);
+    return subtle.verify(
+      "HMAC",
+      key,
+      toArrayBuffer(decodeBase64Url(expectedMac)),
+      toArrayBuffer(canonicalBytes(pairingTranscript(offer)))
+    );
+  } catch {
+    return false;
+  }
+}
+
+/** Generate non-extractable device signing + HPKE key pairs for secure-web. */
+export async function generateNonExtractableDeviceKeys(): Promise<{
+  signing: CryptoKeyPair;
+  encryption: CryptoKeyPair;
+}> {
+  const [signing, encryption] = await Promise.all([
+    generateSigningKeyPair(false),
+    subtle.generateKey({ name: "ECDH", namedCurve: "P-256" }, false, [
+      "deriveBits"
+    ]) as Promise<CryptoKeyPair>
+  ]);
+  return { signing, encryption };
+}
+
+export function buildPairingOffer(input: {
+  start: E2eePairingStart;
+  runnerId: string;
+  runnerChallenge: string;
+  runnerEncryptionKey: E2eeKeyDescriptor;
+  runnerSigningKey: E2eeKeyDescriptor;
+  expiresAt: string;
+  emailHint?: string;
+}): E2eePairingOffer {
+  return {
+    protocol: E2EE_PROTOCOL,
+    pairingKind: E2EE_PAIRING_KIND,
+    pairId: input.start.pairId,
+    runnerId: input.runnerId,
+    runnerChallenge: input.runnerChallenge,
+    runnerEncryptionKey: input.runnerEncryptionKey,
+    runnerSigningKey: input.runnerSigningKey,
+    clientId: input.start.clientId,
+    clientChallenge: input.start.clientChallenge,
+    clientSigningFingerprint: input.start.signingKey.fingerprint,
+    clientEncryptionFingerprint: input.start.encryptionKey.fingerprint,
+    secureOrigin: input.start.secureOrigin,
+    gatewayOrigin: input.start.gatewayOrigin,
+    ...(input.emailHint ? { emailHint: input.emailHint } : {}),
+    expiresAt: input.expiresAt,
+    createdAt: new Date().toISOString()
+  };
+}
+
+export function keyGrantContext(value: {
+  conversationId: string;
+  clientId: string;
+  runnerId: string;
+  runnerKeyId: string;
+  grantId: string;
+}): JsonValue {
+  return {
+    protocol: E2EE_PROTOCOL,
+    purpose: "conversation-key-grant",
+    conversationId: value.conversationId,
+    clientId: value.clientId,
+    runnerId: value.runnerId,
+    runnerKeyId: value.runnerKeyId,
+    grantId: value.grantId
   };
 }

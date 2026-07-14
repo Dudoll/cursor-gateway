@@ -74,16 +74,19 @@ Full deployment (DNS, Cloudflare Access, Telegram, backups):
 
 For a Gateway-blind path where the VPS, Cloudflare, Postgres, and backups only
 relay ciphertext, use the signed **Cursor Gateway Secure** browser extension
-(`apps/browser-extension`) with an E2EE-capable runner. Prompts, history,
-Memory, progress, and results are encrypted on the endpoints; the runner
-decrypts locally before calling the Cursor SDK.
+(`apps/browser-extension`) and/or the cross-browser **Secure Web PWA**
+(`apps/secure-web`, magic-link pairing — see
+[`docs/secure-web-e2ee.md`](docs/secure-web-e2ee.md)) with an E2EE-capable
+runner. Prompts, history, Memory, progress, and results are encrypted on the
+endpoints; the runner decrypts locally before calling the Cursor SDK.
 
 Setup order, server/runner environment variables (`E2EE_REQUIRED_FOR_WEB`,
-`E2EE_EXTENSION_ORIGINS`, `RUNNER_E2EE_ENABLED`, …), offline pairing, key
-rotation/revocation, the extension build + `SHA256SUMS` check, authenticated
-download of the prebuilt zip (`GET /api/extension/download`), and the security
-boundary are documented in [`docs/e2ee.md`](docs/e2ee.md). Telegram, Reports,
-Automation, and Hermes are **not** E2EE.
+`E2EE_EXTENSION_ORIGINS`, `SECURE_CLIENT_ORIGIN`, `RUNNER_E2EE_ENABLED`, …),
+offline / magic-link pairing, key rotation/revocation, the extension build +
+`SHA256SUMS` check, authenticated download of the prebuilt zip
+(`GET /api/extension/download`), and the security boundary are documented in
+[`docs/e2ee.md`](docs/e2ee.md). Telegram, Reports, Automation, and Hermes are
+**not** E2EE.
 
 ## Repository layout
 
@@ -91,9 +94,10 @@ Automation, and Hermes are **not** E2EE.
   and the `cg-e2ee/1` ciphertext relay routes.
 - `apps/web` — React dashboard (model/workspace selection, history, approvals).
 - `apps/browser-extension` — signed, trusted MV3 E2EE web client.
+- `apps/secure-web` — cross-browser E2EE PWA (Cloudflare Pages / static HTTPS).
 - `apps/windows-runner` — the runner (Linux/WSL/Windows) that executes agents.
 - `packages/shared` — shared schemas and TypeScript types.
-- `packages/e2ee` — the `cg-e2ee/1` crypto protocol shared by the extension and runner.
+- `packages/e2ee` — the `cg-e2ee/1` crypto protocol shared by clients and runner.
 - `infra` — Docker Compose and reverse-proxy config for the server.
 
 ## Local development
@@ -104,6 +108,7 @@ npm run build
 npm run dev:server      # API
 npm run dev:web         # dashboard
 npm run dev:extension   # browser extension (E2EE client)
+npm run dev:secure-web  # cross-browser E2EE PWA
 npm run dev:runner      # runner
 ```
 

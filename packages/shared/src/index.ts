@@ -569,7 +569,130 @@ export const e2eeClientPairingBundleSchema = z
     kind: z.literal("client-pairing"),
     clientId: z.string().trim().min(8).max(128),
     signingKey: e2eeKeyDescriptorSchema,
+    // Optional for legacy Chrome extension offline pairing; required for secure-web.
+    encryptionKey: e2eeKeyDescriptorSchema.optional(),
     createdAt: z.string().min(1).max(64)
   })
   .strict();
 export type E2eeClientPairingBundle = z.infer<typeof e2eeClientPairingBundleSchema>;
+
+/** Magic-link pairing protocol kinds (MVP secure-web). */
+export const E2EE_PAIRING_KIND = "secure-web-magic-link/1" as const;
+
+export const e2eePairingStartSchema = z
+  .object({
+    protocol: z.literal(E2EE_PROTOCOL),
+    pairingKind: z.literal(E2EE_PAIRING_KIND),
+    pairId: z.string().uuid(),
+    clientId: z.string().trim().min(8).max(128),
+    clientChallenge: base64UrlSchema(43).length(43),
+    signingKey: e2eeKeyDescriptorSchema,
+    encryptionKey: e2eeKeyDescriptorSchema,
+    secureOrigin: z.string().url().max(512),
+    gatewayOrigin: z.string().url().max(512),
+    createdAt: z.string().min(1).max(64)
+  })
+  .strict();
+export type E2eePairingStart = z.infer<typeof e2eePairingStartSchema>;
+
+export const e2eePairingOfferSchema = z
+  .object({
+    protocol: z.literal(E2EE_PROTOCOL),
+    pairingKind: z.literal(E2EE_PAIRING_KIND),
+    pairId: z.string().uuid(),
+    runnerId: z.string().trim().min(1).max(128),
+    runnerChallenge: base64UrlSchema(43).length(43),
+    runnerEncryptionKey: e2eeKeyDescriptorSchema,
+    runnerSigningKey: e2eeKeyDescriptorSchema,
+    clientId: z.string().trim().min(8).max(128),
+    clientChallenge: base64UrlSchema(43).length(43),
+    clientSigningFingerprint: z.string().regex(/^sha256:[A-Za-z0-9_-]{43}$/),
+    clientEncryptionFingerprint: z.string().regex(/^sha256:[A-Za-z0-9_-]{43}$/),
+    secureOrigin: z.string().url().max(512),
+    gatewayOrigin: z.string().url().max(512),
+    emailHint: z.string().email().max(320).optional(),
+    expiresAt: z.string().min(1).max(64),
+    createdAt: z.string().min(1).max(64)
+  })
+  .strict();
+export type E2eePairingOffer = z.infer<typeof e2eePairingOfferSchema>;
+
+export const e2eePairingCompleteSchema = z
+  .object({
+    protocol: z.literal(E2EE_PROTOCOL),
+    pairingKind: z.literal(E2EE_PAIRING_KIND),
+    pairId: z.string().uuid(),
+    clientId: z.string().trim().min(8).max(128),
+    transcriptMac: base64UrlSchema(43).length(43),
+    signature: e2eeSignatureSchema,
+    createdAt: z.string().min(1).max(64)
+  })
+  .strict();
+export type E2eePairingComplete = z.infer<typeof e2eePairingCompleteSchema>;
+
+export const e2eePairingAckSchema = z
+  .object({
+    protocol: z.literal(E2EE_PROTOCOL),
+    pairingKind: z.literal(E2EE_PAIRING_KIND),
+    pairId: z.string().uuid(),
+    clientId: z.string().trim().min(8).max(128),
+    runnerId: z.string().trim().min(1).max(128),
+    status: z.enum(["paired", "rejected"]),
+    runnerEncryptionKey: e2eeKeyDescriptorSchema,
+    runnerSigningKey: e2eeKeyDescriptorSchema,
+    createdAt: z.string().min(1).max(64),
+    signature: e2eeSignatureSchema
+  })
+  .strict();
+export type E2eePairingAck = z.infer<typeof e2eePairingAckSchema>;
+
+export const e2eePairingStatusSchema = z.enum([
+  "pending_start",
+  "offer_ready",
+  "complete_submitted",
+  "paired",
+  "rejected",
+  "expired"
+]);
+export type E2eePairingStatus = z.infer<typeof e2eePairingStatusSchema>;
+
+export const e2eeDeviceRecordSchema = z
+  .object({
+    clientId: z.string().trim().min(8).max(128),
+    signingKey: e2eeKeyDescriptorSchema,
+    encryptionKey: e2eeKeyDescriptorSchema.nullable(),
+    pairedAt: z.string().min(1).max(64),
+    label: z.string().max(128).nullable(),
+    revokedAt: z.string().min(1).max(64).nullable()
+  })
+  .strict();
+export type E2eeDeviceRecord = z.infer<typeof e2eeDeviceRecordSchema>;
+
+/** Runner rewraps conversation root for a newly paired device (no private-key sync). */
+export const e2eeKeyGrantSchema = z
+  .object({
+    protocol: z.literal(E2EE_PROTOCOL),
+    kind: z.literal("conversation-key-grant"),
+    grantId: z.string().uuid(),
+    conversationId: z.string().uuid(),
+    clientId: z.string().trim().min(8).max(128),
+    runnerId: z.string().trim().min(1).max(128),
+    runnerKeyId: z.string().trim().min(8).max(128),
+    wrappedConversationKey: e2eeHpkeEnvelopeSchema,
+    createdAt: z.string().min(1).max(64),
+    signature: e2eeSignatureSchema
+  })
+  .strict();
+export type E2eeKeyGrant = z.infer<typeof e2eeKeyGrantSchema>;
+
+export const e2eePairingStartRequestSchema = z
+  .object({
+    start: e2eePairingStartSchema
+  })
+  .strict();
+
+export const e2eePairingCompleteRequestSchema = z
+  .object({
+    complete: e2eePairingCompleteSchema
+  })
+  .strict();

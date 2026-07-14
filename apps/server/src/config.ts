@@ -31,6 +31,8 @@ const envSchema = z.object({
   RUNNER_MAX_CONCURRENT_JOBS: z.coerce.number().int().positive().default(3),
   E2EE_REQUIRED_FOR_WEB: booleanEnv(false),
   E2EE_EXTENSION_ORIGINS: z.string().default(""),
+  SECURE_CLIENT_ORIGIN: z.string().default(""),
+  E2EE_PAIRING_TTL_SECONDS: z.coerce.number().int().positive().default(900),
   WEB_DEFAULT_MODEL: z.string().default("auto"),
   REPORT_MODEL_ID: z.string().default(""),
   REPORT_WORKSPACE_ID: z.string().default("")
@@ -64,6 +66,8 @@ export const config = {
   runnerMaxConcurrentJobs: parsed.RUNNER_MAX_CONCURRENT_JOBS,
   e2eeRequiredForWeb: parsed.E2EE_REQUIRED_FOR_WEB,
   e2eeExtensionOrigins: new Set(splitCsv(parsed.E2EE_EXTENSION_ORIGINS)),
+  secureClientOrigin: parsed.SECURE_CLIENT_ORIGIN.trim(),
+  e2eePairingTtlSeconds: parsed.E2EE_PAIRING_TTL_SECONDS,
   webDefaultModel: parsed.WEB_DEFAULT_MODEL,
   reportModelId: parsed.REPORT_MODEL_ID,
   reportWorkspaceId: parsed.REPORT_WORKSPACE_ID
