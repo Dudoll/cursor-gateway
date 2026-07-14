@@ -80,11 +80,25 @@ const envSchema = z.object({
   // Secure-web magic-link pairing
   SECURE_CLIENT_ORIGIN: optionalEnvString,
   PAIRING_TTL_SECONDS: z.coerce.number().int().positive().default(900),
-  PAIRING_MAIL_MODE: z.enum(["log", "smtp"]).default("log"),
+  PAIRING_MAIL_MODE: z.enum(["log", "smtp", "api"]).default("log"),
   PAIRING_MAIL_TO: optionalEnvString,
   PAIRING_MAIL_LOG_FILE: optionalEnvString,
+  PAIRING_MAIL_FROM: z.string().min(3).default("no-reply@piallera.com"),
+  PAIRING_MAIL_FROM_NAME: z.string().min(1).default("Piallera Secure"),
+  PAIRING_MAIL_ALSO_LOG: booleanEnv(false),
   PAIRING_ALLOWED_EMAILS: z.string().default(""),
+  // SMTP (generic). Prefer discrete keys; SMTP_URL is also accepted.
   SMTP_URL: optionalEnvString,
+  SMTP_HOST: optionalEnvString,
+  SMTP_PORT: z.coerce.number().int().positive().default(587),
+  SMTP_USER: optionalEnvString,
+  SMTP_PASS: optionalEnvString,
+  SMTP_SECURE: booleanEnv(false),
+  SMTP_REQUIRE_TLS: booleanEnv(true),
+  // HTTP API providers (PAIRING_MAIL_MODE=api)
+  MAIL_API_PROVIDER: z.enum(["resend", "mailgun", "sendgrid"]).default("resend"),
+  MAIL_API_KEY: optionalEnvString,
+  MAILGUN_BASE_URL: optionalEnvString,
   CF_ACCESS_TEAM_DOMAIN: optionalEnvString,
   CF_ACCESS_AUD: optionalEnvString,
   // CS → Secure → CS one-time device auth grants (see docs/cs-secure-redirect-e2ee.md)
@@ -154,12 +168,24 @@ export const config = {
   pairingMailMode: parsed.PAIRING_MAIL_MODE,
   pairingMailTo: parsed.PAIRING_MAIL_TO,
   pairingMailLogFile: parsed.PAIRING_MAIL_LOG_FILE,
+  pairingMailFrom: parsed.PAIRING_MAIL_FROM,
+  pairingMailFromName: parsed.PAIRING_MAIL_FROM_NAME,
+  pairingMailAlsoLog: parsed.PAIRING_MAIL_ALSO_LOG,
   pairingAllowedEmails: new Set(
     parsed.PAIRING_ALLOWED_EMAILS.split(",")
       .map((item) => item.trim().toLowerCase())
       .filter(Boolean)
   ),
   smtpUrl: parsed.SMTP_URL,
+  smtpHost: parsed.SMTP_HOST,
+  smtpPort: parsed.SMTP_PORT,
+  smtpUser: parsed.SMTP_USER,
+  smtpPass: parsed.SMTP_PASS,
+  smtpSecure: parsed.SMTP_SECURE || parsed.SMTP_PORT === 465,
+  smtpRequireTls: parsed.SMTP_REQUIRE_TLS,
+  mailApiProvider: parsed.MAIL_API_PROVIDER,
+  mailApiKey: parsed.MAIL_API_KEY,
+  mailgunBaseUrl: parsed.MAILGUN_BASE_URL,
   cfAccessTeamDomain: parsed.CF_ACCESS_TEAM_DOMAIN,
   cfAccessAud: parsed.CF_ACCESS_AUD,
   webE2eeReturnOrigins: parsed.WEB_E2EE_RETURN_ORIGINS.split(",")

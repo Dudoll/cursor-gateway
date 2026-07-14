@@ -19,6 +19,7 @@ import {
 import { config } from "./config.js";
 import { RunnerE2eeState } from "./e2eeState.js";
 import { sendPairingEmail } from "./pairingMail.js";
+import { buildPairingMailContent } from "./mail/pairingMailTemplate.js";
 import { verifyAccessJwt } from "./accessJwt.js";
 
 type GatewayFetch = (path: string, init?: RequestInit) => Promise<Response>;
@@ -114,20 +115,19 @@ async function claimAndOffer(input: {
 
   const magicLink = `${start.secureOrigin.replace(/\/$/, "")}/#pair=${start.pairId}.${token}`;
   const mailTo = config.pairingMailTo || "operator@example.com";
+  const ttlMinutes = Math.max(1, Math.round(config.pairingTtlSeconds / 60));
+  const mail = buildPairingMailContent({
+    magicLink,
+    pairId: start.pairId,
+    runnerId: config.runnerId,
+    expiresAt,
+    ttlHint: `约 ${ttlMinutes} 分钟`
+  });
   await sendPairingEmail({
     to: mailTo,
-    subject: "Cursor Gateway Secure: device pairing link",
+    subject: mail.subject,
     magicLink,
-    text: [
-      "Open this link in the SAME browser where you started pairing.",
-      "Do not forward this link. It is single-use and expires soon.",
-      "",
-      magicLink,
-      "",
-      `pairId: ${start.pairId}`,
-      `runner: ${config.runnerId}`,
-      `expires: ${expiresAt}`
-    ].join("\n")
+    text: mail.text
   });
 
   const offerResponse = await input.gatewayFetch("/api/runner/e2ee/v1/pairings/offer", {

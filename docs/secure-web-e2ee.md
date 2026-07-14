@@ -51,11 +51,13 @@
 | --- | --- |
 | `SECURE_CLIENT_ORIGIN` | 与 PWA origin 一致时才认领配对。 |
 | `PAIRING_TTL_SECONDS` | offer 过期时间，默认 `900`。 |
-| `PAIRING_MAIL_MODE` | `log`（干跑写文件）或 `smtp`（MVP stub，未接真实 SMTP 时回退 log）。 |
+| `PAIRING_MAIL_MODE` | `log`（干跑写文件）、`smtp`（通用 SMTP）、`api`（Resend/Mailgun/SendGrid HTTP）。详见 [pairing-mail.md](./pairing-mail.md)。 |
 | `PAIRING_MAIL_TO` | 收件人；也作为 offer `emailHint`。 |
+| `PAIRING_MAIL_FROM` / `PAIRING_MAIL_FROM_NAME` | 默认 `no-reply@piallera.com` / `Piallera Secure`。 |
 | `PAIRING_MAIL_LOG_FILE` | 可选；默认 `~/.cursor-gateway/pairing-mail.log`。 |
 | `PAIRING_ALLOWED_EMAILS` | Access JWT 邮箱白名单（启用 JWT 时）。 |
-| `SMTP_URL` | 预留；当前无内置 SMTP 客户端。 |
+| `SMTP_*` / `SMTP_URL` | `smtp` 模式凭据。 |
+| `MAIL_API_PROVIDER` / `MAIL_API_KEY` | `api` 模式；默认 provider=`resend`。 |
 | `CF_ACCESS_TEAM_DOMAIN` / `CF_ACCESS_AUD` | 可选 JWT 校验。 |
 
 ## 独立 Cloudflare 静态部署
@@ -74,7 +76,7 @@ npx wrangler pages deploy apps/secure-web/dist --project-name=cursor-gateway-sec
 
 1. 记下 PWA HTTPS origin（例如 `https://secure.joelzt.org` 或 `https://cursor-gateway-secure.pages.dev`）。
 2. VPS `.env` 追加 `SECURE_CLIENT_ORIGIN=<该 HTTPS origin>`（**保留**现有密钥与 `E2EE_REQUIRED_FOR_WEB=false`），重建 app。
-3. Runner `.env` 同步 `SECURE_CLIENT_ORIGIN`，并设 `PAIRING_MAIL_MODE=log`（或接真实邮件后改 `smtp` + 自备投递）。
+3. Runner `.env` 同步 `SECURE_CLIENT_ORIGIN`，并设 `PAIRING_MAIL_MODE=log`（干跑）或按 [pairing-mail.md](./pairing-mail.md) 配置 `smtp`/`api` 真实投递。
 4. 若 Gateway 前有 Cloudflare Access：在 Access 应用上开启 **Options Preflight Bypass**，否则跨域 PWA 的 CORS 预检会被 Access 拦成 403。
 5. 若无 Cloudflare Pages 权限：用上述 nginx 静态站或任意 HTTPS 托管；文档级步骤相同。
 
@@ -95,7 +97,7 @@ CORS：Gateway 仅当 `Origin === SECURE_CLIENT_ORIGIN`（或扩展 allowlist / 
 
 ## 明确不做（MVP）
 
-- 内置生产 SMTP（需运维自接邮件或替换 `pairingMail.ts`）。
+- 依赖 Cloudflare Email Routing 发信（Routing **只能收信**；出站请用 Resend/SES 等，见 [pairing-mail.md](./pairing-mail.md)）。
 - 把 PWA 打进 Gateway 容器。
 - 私密模式持久化密钥。
 - 跨设备自动同步私钥（仅 Runner 侧未来可用 key-grant 重包会话根）。
