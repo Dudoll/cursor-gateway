@@ -10,31 +10,260 @@ import {
 import { GatewayApi } from "./api.js";
 import { SecureWebKeyStore } from "./keyStore.js";
 
-const PENDING_CS_AUTH_KEY = "cg-secure-web:pending-cs-auth";
+export const PENDING_CS_AUTH_KEY = "cg-secure-web:pending-cs-auth";
+
+/** Client-side TTL for CS→Secure return context (must outlive typical mail+pair). */
+export const CS_AUTH_RETURN_TTL_MS = 10 * 60 * 1000;
+
+export type StoredCsAuthReturn = {
+  params: CsAuthRedirectParams;
+  savedAt: number;
+  expiresAt: number;
+  /** Set once grant redirect URL is built; prevents reuse across tabs. */
+  consumed?: boolean;
+};
+
+export type CsAuthStorage = Pick<Storage, "getItem" | "setItem" | "removeItem">;
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-export function captureCsAuthRedirectParams(): CsAuthRedirectParams | null {
-  const fromSearch = parseCsAuthRedirectSearch(window.location.search);
-  if (fromSearch) {
-    sessionStorage.setItem(PENDING_CS_AUTH_KEY, JSON.stringify(fromSearch));
-    // Drop query so magic-link hash navigation does not re-parse stale params forever.
-    const url = new URL(window.location.href);
-    url.search = "";
-    window.history.replaceState(null, "", `${url.pathname}${url.hash}`);
-    return fromSearch;
-  }
+function browserSessionStorage(): CsAuthStorage | null {
   try {
-    const raw = sessionStorage.getItem(PENDING_CS_AUTH_KEY);
-    if (!raw) return null;
-    return JSON.parse(raw) as CsAuthRedirectParams;
+    return typeof sessionStorage !== "undefined" ? sessionStorage : null;
   } catch {
     return null;
   }
 }
 
-export function clearPendingCsAuthRedirect() {
-  sessionStorage.removeItem(PENDING_CS_AUTH_KEY);
+function browserLocalStorage(): CsAuthStorage | null {
+  try {
+    return typeof localStorage !== "undefined" ? localStorage : null;
+  } catch {
+    return null;
+  }
+}
+
+export function buildStoredCsAuthReturn(
+  params: CsAuthRedirectParams,
+  now = Date.now(),
+  ttlMs = CS_AUTH_RETURN_TTL_MS
+): StoredCsAuthReturn {
+  return {
+    params,
+    savedAt: now,
+    expiresAt: now + ttlMs,
+    consumed: false
+  };
+}
+
+/**
+ * Parse persisted return context. Returns null if missing, malformed, expired, or consumed.
+ * Distinguishes expiry via `reason` when provided.
+ */
+export function parseStoredCsAuthReturn(
+  raw: string | null | undefined,
+  now = Date.now()
+):
+  | { ok: true; value: StoredCsAuthReturn }
+  | { ok: false; reason: "missing" | "malformed" | "expired" | "consumed" } {
+  if (!raw) return { ok: false, reason: "missing" };
+  try {
+    const parsed = JSON.parse(raw) as StoredCsAuthReturn | CsAuthRedirectParams;
+    // Legacy: bare params object without TTL wrapper.
+    if (
+      parsed &&
+      typeof parsed === "object" &&
+      "authId" in parsed &&
+      !("params" in parsed)
+    ) {
+      const params = parsed as CsAuthRedirectParams;
+      if (!params.authId || !params.returnOrigin) {
+        return { ok: false, reason: "malformed" };
+      }
+      return {
+        ok: true,
+        value: buildStoredCsAuthReturn(params, now)
+      };
+    }
+    const stored = parsed as StoredCsAuthReturn;
+    if (!stored?.params?.authId || !stored.params.returnOrigin) {
+      return { ok: false, reason: "malformed" };
+    }
+    if (stored.consumed) return { ok: false, reason: "consumed" };
+    if (typeof stored.expiresAt === "number" && stored.expiresAt <= now) {
+      return { ok: false, reason: "expired" };
+    }
+    return { ok: true, value: stored };
+  } catch {
+    return { ok: false, reason: "malformed" };
+  }
+}
+
+function writeStored(
+  storage: CsAuthStorage | null,
+  value: StoredCsAuthReturn | null
+) {
+  if (!storage) return;
+  try {
+    if (!value) {
+      storage.removeItem(PENDING_CS_AUTH_KEY);
+      return;
+    }
+    storage.setItem(PENDING_CS_AUTH_KEY, JSON.stringify(value));
+  } catch {
+    // Quota / private mode — best-effort.
+  }
+}
+
+function readRaw(storage: CsAuthStorage | null): string | null {
+  if (!storage) return null;
+  try {
+    return storage.getItem(PENDING_CS_AUTH_KEY);
+  } catch {
+    return null;
+  }
+}
+
+/** Persist CS return intent on secure origin (session + local) so magic-link tabs can resume. */
+export function savePendingCsAuthRedirect(
+  params: CsAuthRedirectParams,
+  options?: {
+    now?: number;
+    ttlMs?: number;
+    session?: CsAuthStorage | null;
+    local?: CsAuthStorage | null;
+  }
+): StoredCsAuthReturn {
+  const stored = buildStoredCsAuthReturn(
+    params,
+    options?.now ?? Date.now(),
+    options?.ttlMs ?? CS_AUTH_RETURN_TTL_MS
+  );
+  writeStored(options?.session ?? browserSessionStorage(), stored);
+  writeStored(options?.local ?? browserLocalStorage(), stored);
+  return stored;
+}
+
+export function clearPendingCsAuthRedirect(options?: {
+  session?: CsAuthStorage | null;
+  local?: CsAuthStorage | null;
+}) {
+  writeStored(options?.session ?? browserSessionStorage(), null);
+  writeStored(options?.local ?? browserLocalStorage(), null);
+}
+
+/**
+ * Load valid (non-expired, non-consumed) CS return params.
+ * Prefers sessionStorage, then localStorage (cross-tab / Gmail→same-browser).
+ */
+export function loadPendingCsAuthRedirect(options?: {
+  now?: number;
+  session?: CsAuthStorage | null;
+  local?: CsAuthStorage | null;
+}): CsAuthRedirectParams | null {
+  const now = options?.now ?? Date.now();
+  const session = options?.session ?? browserSessionStorage();
+  const local = options?.local ?? browserLocalStorage();
+
+  for (const storage of [session, local]) {
+    const parsed = parseStoredCsAuthReturn(readRaw(storage), now);
+    if (parsed.ok) {
+      // Refresh both stores so the other tab sees the same TTL wrapper.
+      writeStored(session, parsed.value);
+      writeStored(local, parsed.value);
+      return parsed.value.params;
+    }
+    if (parsed.reason === "expired" || parsed.reason === "consumed") {
+      writeStored(storage, null);
+    }
+  }
+  return null;
+}
+
+/**
+ * Capture from URL query (CS→Secure) and/or restore from secure-origin storage.
+ * Query params are stripped after capture so magic-link hash navigation stays clean.
+ */
+export function captureCsAuthRedirectParams(options?: {
+  search?: string;
+  now?: number;
+  session?: CsAuthStorage | null;
+  local?: CsAuthStorage | null;
+  replaceUrl?: (pathWithHash: string) => void;
+}): CsAuthRedirectParams | null {
+  const search =
+    options?.search ??
+    (typeof window !== "undefined" ? window.location.search : "");
+  const fromSearch = parseCsAuthRedirectSearch(search);
+  if (fromSearch) {
+    savePendingCsAuthRedirect(fromSearch, options);
+    // Strip cs_auth query so magic-link hash navigation stays clean.
+    if (options?.replaceUrl) {
+      if (typeof window !== "undefined") {
+        const url = new URL(window.location.href);
+        url.search = "";
+        options.replaceUrl(`${url.pathname}${url.hash}`);
+      } else {
+        options.replaceUrl("/");
+      }
+    } else if (typeof window !== "undefined") {
+      const url = new URL(window.location.href);
+      url.search = "";
+      window.history.replaceState(null, "", `${url.pathname}${url.hash}`);
+    }
+    return fromSearch;
+  }
+  return loadPendingCsAuthRedirect(options);
+}
+
+/** Mark return context consumed (single-use) before navigating back to CS. */
+export function markPendingCsAuthRedirectConsumed(options?: {
+  now?: number;
+  session?: CsAuthStorage | null;
+  local?: CsAuthStorage | null;
+}): void {
+  const now = options?.now ?? Date.now();
+  const session = options?.session ?? browserSessionStorage();
+  const local = options?.local ?? browserLocalStorage();
+  for (const storage of [session, local]) {
+    const parsed = parseStoredCsAuthReturn(readRaw(storage), now);
+    if (!parsed.ok) continue;
+    writeStored(storage, { ...parsed.value, consumed: true });
+  }
+  // Fully clear so a second tab does not reuse.
+  clearPendingCsAuthRedirect({ session, local });
+}
+
+export function formatCsAuthReturnError(error: unknown): string {
+  const code =
+    error instanceof Error
+      ? error.message
+      : typeof error === "string"
+        ? error
+        : "unknown_error";
+  switch (code) {
+    case "cs_auth_return_context_missing":
+      return "缺少 CS 回跳上下文（可能在其他浏览器打开了邮件链接）。请回到 CS 重新点「启用加密」。";
+    case "cs_auth_return_context_expired":
+    case "cs_auth_expired":
+      return "CS 授权已过期。请回到 CS 重新点「启用加密」。";
+    case "cs_auth_consumed":
+      return "该次 CS 授权已使用。请回到 CS 重新点「启用加密」。";
+    case "cs_auth_rejected":
+    case "cs_auth_grant_rejected":
+      return "CS 授权被拒绝。请回到 CS 重新点「启用加密」。";
+    case "cs_auth_grant_timeout":
+      return "等待 Runner 签发授权超时。请回到 CS 重新点「启用加密」。";
+    case "secure_not_paired":
+      return "Secure 尚未完成配对，无法签发 CS 授权。请先完成 magic-link 配对。";
+    case "return_origin_not_allowed":
+      return "回跳 origin 不在白名单。请确认从正确的 CS 站点发起授权。";
+    default:
+      if (code.startsWith("cs_auth_")) {
+        return `CS 授权失败（${code}）。请回到 CS 重新点「启用加密」。`;
+      }
+      return `CS 授权失败：${code}。请回到 CS 重新点「启用加密」。`;
+  }
 }
 
 /**
@@ -92,6 +321,6 @@ export async function completeCsAuthReturn(input: {
 
   const fragment = encodeCsAuthGrantFragment(grant);
   const returnUrl = `${input.params.returnOrigin.replace(/\/$/, "")}/${fragment}`;
-  clearPendingCsAuthRedirect();
+  markPendingCsAuthRedirectConsumed();
   return { grant, returnUrl };
 }

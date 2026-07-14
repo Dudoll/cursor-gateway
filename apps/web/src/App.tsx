@@ -55,6 +55,12 @@ import {
   buildCfAccessLogoutUrl,
   clearLocalE2eeAuthorization
 } from "./e2eeLogout.js";
+import {
+  HISTORICAL_PLAINTEXT_LABEL,
+  buildMergedTimeline,
+  mergeConversationLists,
+  type MergedConversationItem
+} from "./mergedChat.js";
 
 type ReportSummary = ReportDefinition & {
   runCount: number;
@@ -358,9 +364,11 @@ function GatewayDashboard() {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const promptRef = useAutosizeTextarea(prompt);
   const e2eeEvidenceRef = useRef<HTMLDivElement>(null);
+  const autoAuthStartedRef = useRef(false);
   const gatewayApi = useMemo(() => new GatewayApi(window.location.origin), []);
   const e2eePaired = Boolean(e2eeDevice?.pairedRunnerId);
-  const useE2eeChat = e2eeRequired || e2eePaired;
+  /** New messages always use E2EE once paired; required mode forces pairing first. */
+  const useE2eeChat = e2eePaired;
 
   useEffect(() => {
     let cancelled = false;
@@ -430,9 +438,12 @@ function GatewayDashboard() {
         cfAccessLogoutUrl?: string | null;
         cfAccessTeamDomain?: string | null;
       }>("/api/e2ee-policy"),
-      conversationId && !useE2eeChat
-        ? api<{ runs: RunRecord[] }>(`/api/conversations/${conversationId}/runs`)
-        : Promise.resolve({ runs: [] })
+      // Historical plaintext runs stay readable; e2ee ids return 404 → empty.
+      conversationId
+        ? api<{ runs: RunRecord[] }>(`/api/conversations/${conversationId}/runs`).catch(() => ({
+            runs: [] as RunRecord[]
+          }))
+        : Promise.resolve({ runs: [] as RunRecord[] })
       ]);
     setE2eeRequired(policy.requiredForWeb);
     if (policy.secureClientOrigin) {
@@ -470,15 +481,22 @@ function GatewayDashboard() {
           titles[conversation.id] = await client.title(conversation);
         }
         setE2eeTitles(titles);
-        if (conversationId && useE2eeChat) {
-          const decrypted = await client.runs(conversationId);
-          setE2eeRuns(decrypted);
-        } else if (!conversationId) {
+        if (conversationId) {
+          try {
+            const decrypted = await client.runs(conversationId);
+            setE2eeRuns(decrypted);
+          } catch {
+            setE2eeRuns([]);
+          }
+        } else {
           setE2eeRuns([]);
         }
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err));
       }
+    } else {
+      setE2eeConversations([]);
+      setE2eeRuns([]);
     }
 
     const selected = conversations.conversations.find((item) => item.id === conversationId);
@@ -513,6 +531,25 @@ function GatewayDashboard() {
     }, 4000);
     return () => window.clearInterval(timer);
   }, [selectedConversationId, e2eeKeys, e2eePaired]);
+
+  /** When E2EE is required, auto-enter Secure authorization after login (no manual「启用加密」). */
+  useEffect(() => {
+    if (!e2eeRequired) {
+      autoAuthStartedRef.current = false;
+      return;
+    }
+    if (e2eePaired) {
+      autoAuthStartedRef.current = false;
+      return;
+    }
+    if (!e2eeKeys) return;
+    if (window.location.hash.includes("cs_auth=")) return;
+    if (autoAuthStartedRef.current) return;
+    autoAuthStartedRef.current = true;
+    void authorizeE2ee();
+    // authorizeE2ee is stable enough via closure; intentional one-shot.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [e2eeRequired, e2eePaired, e2eeKeys, secureClientOrigin]);
 
   async function authorizeE2ee() {
     if (!e2eeKeys) {
@@ -577,10 +614,32 @@ function GatewayDashboard() {
     () => state.workspaces.find((workspace) => workspace.id === workspaceId),
     [state.workspaces, workspaceId]
   );
+  const mergedConversations = useMemo(
+    () =>
+      mergeConversationLists({
+        plaintext: state.conversations,
+        e2ee: e2eeConversations,
+        e2eeTitles
+      }),
+    [state.conversations, e2eeConversations, e2eeTitles]
+  );
+  const selectedMerged: MergedConversationItem | undefined = useMemo(
+    () => mergedConversations.find((conversation) => conversation.id === selectedConversationId),
+    [mergedConversations, selectedConversationId]
+  );
   const selectedConversation = useMemo(
     () => state.conversations.find((conversation) => conversation.id === selectedConversationId),
     [state.conversations, selectedConversationId]
   );
+  const timeline = useMemo(
+    () =>
+      buildMergedTimeline({
+        plaintextRuns: state.conversationRuns,
+        e2eeRuns
+      }),
+    [state.conversationRuns, e2eeRuns]
+  );
+  const viewingHistoricalPlaintext = selectedMerged?.kind === "plaintext";
   const selectedHermesModel = model.startsWith("hermes:");
   const hasOnlineRunner = state.runners.some((runner) => runner.online);
   const selectedModelName =
@@ -608,7 +667,8 @@ function GatewayDashboard() {
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ block: "end" });
   }, [
-    state.conversationRuns.length,
+    timeline.length,
+    timeline.map((turn) => turn.id).join(","),
     state.conversationRuns.map((run) => run.status).join(",")
   ]);
 
@@ -629,21 +689,30 @@ function GatewayDashboard() {
   async function submitRun(event: FormEvent) {
     event.preventDefault();
     if (e2eeRequired && !e2eePaired) {
-      setError("此 Gateway 要求 E2EE：请先完成本页设备授权。");
+      setError("此 Gateway 要求加密聊天：正在引导完成设备授权…");
+      if (!autoAuthStartedRef.current && e2eeKeys) {
+        autoAuthStartedRef.current = true;
+        void authorizeE2ee();
+      }
       return;
     }
     setLoading(true);
     setError("");
     try {
-      if (useE2eeChat && e2eeKeys && e2eeDevice?.pairedRunnerId) {
+      if (e2eePaired && e2eeKeys && e2eeDevice?.pairedRunnerId) {
         const client = new SecureGatewayClient(gatewayApi, e2eeKeys);
+        // Historical plaintext threads are read-only; replies open a new E2EE conversation.
+        const continueE2eeId =
+          selectedConversationId && selectedMerged?.kind === "e2ee"
+            ? selectedConversationId
+            : undefined;
         const run = await client.submitRun({
           runnerId: e2eeDevice.pairedRunnerId,
           workspaceId,
           model,
           prompt,
           allowWrites,
-          ...(selectedConversationId ? { conversationId: selectedConversationId } : {})
+          ...(continueE2eeId ? { conversationId: continueE2eeId } : {})
         });
         setLastE2eeRunId(run.id);
         setPrompt("");
@@ -655,7 +724,9 @@ function GatewayDashboard() {
           body: JSON.stringify({
             origin: "web",
             prompt,
-            ...(selectedConversationId ? { conversationId: selectedConversationId } : {}),
+            ...(selectedConversationId && selectedMerged?.kind === "plaintext"
+              ? { conversationId: selectedConversationId }
+              : {}),
             model,
             workspaceId,
             memoryEnabled: true,
@@ -675,12 +746,12 @@ function GatewayDashboard() {
 
   async function addMemory(event: FormEvent) {
     event.preventDefault();
-    if (e2eeRequired && !e2eePaired) {
-      setError("Memory writes require E2EE device authorization on this page.");
-      return;
-    }
-    if (useE2eeChat) {
-      setError("E2EE memory writes from CS web are not enabled in this MVP; use Secure Web or plaintext mode.");
+    if (e2eeRequired || useE2eeChat) {
+      setError(
+        e2eeRequired && !e2eePaired
+          ? "Memory 写入需先完成加密授权。"
+          : "本页 Memory 明文写入已关闭；请使用 Secure Web 或仅浏览历史。"
+      );
       return;
     }
     setError("");
@@ -719,7 +790,7 @@ function GatewayDashboard() {
   }
 
   async function deleteConversation() {
-    if (!selectedConversation) return;
+    if (!selectedConversation || selectedMerged?.kind === "e2ee") return;
     if (
       !window.confirm(
         `Move “${selectedConversation.title ?? selectedConversation.id}” and all of its runs to the recycle bin?`
@@ -800,7 +871,18 @@ function GatewayDashboard() {
                 </div>
               ) : null}
             </div>
-          ) : !e2eeRequired ? (
+          ) : e2eeRequired ? (
+            <button
+              className="topbar-link e2ee-enable-link"
+              disabled={loading || !e2eeKeys}
+              onClick={authorizeE2ee}
+              title="必须完成加密授权后才能聊天"
+              type="button"
+            >
+              <LockKeyhole aria-hidden="true" size={15} strokeWidth={1.75} />
+              <span>{loading ? "授权中…" : "完成加密授权"}</span>
+            </button>
+          ) : (
             <button
               className="topbar-link e2ee-enable-link"
               disabled={loading || !e2eeKeys}
@@ -811,7 +893,7 @@ function GatewayDashboard() {
               <LockKeyhole aria-hidden="true" size={15} strokeWidth={1.75} />
               <span>启用加密</span>
             </button>
-          ) : null}
+          )}
           <a className="topbar-link" href="/trash">
             <Trash2 aria-hidden="true" size={15} strokeWidth={1.75} />
             <span>Recycle Bin</span>
@@ -838,52 +920,40 @@ function GatewayDashboard() {
           </div>
 
           <div className="conversation-list">
-            {useE2eeChat
-              ? e2eeConversations.map((conversation, index) => (
-                  <button
-                    className={conversation.id === selectedConversationId ? "active" : ""}
-                    key={conversation.id}
-                    onClick={() => {
-                      setSelectedConversationId(conversation.id);
-                      setWorkspaceId(conversation.workspaceId);
-                    }}
-                    style={{ ["--i" as string]: index } as CSSProperties}
-                    title={e2eeTitles[conversation.id] ?? "Encrypted conversation"}
-                    type="button"
-                  >
-                    <span className="conversation-glyph">
-                      <LockKeyhole aria-hidden="true" size={15} strokeWidth={1.75} />
-                    </span>
-                    <span>
-                      <strong>{e2eeTitles[conversation.id] ?? "Encrypted conversation"}</strong>
-                      <small>E2EE · {conversation.workspaceId}</small>
-                    </span>
-                  </button>
-                ))
-              : state.conversations.map((conversation, index) => (
-                  <button
-                    className={conversation.id === selectedConversationId ? "active" : ""}
-                    key={conversation.id}
-                    onClick={() => {
-                      setSelectedConversationId(conversation.id);
-                      setWorkspaceId(conversation.workspaceId);
-                    }}
-                    style={{ ["--i" as string]: index } as CSSProperties}
-                    title={conversation.title ?? "Untitled conversation"}
-                    type="button"
-                  >
-                    <span className="conversation-glyph">
-                      <MessageSquare aria-hidden="true" size={15} strokeWidth={1.75} />
-                    </span>
-                    <span>
-                      <strong>{conversation.title ?? "Untitled conversation"}</strong>
-                      <small>{conversation.runCount} message pair(s)</small>
-                    </span>
-                  </button>
-                ))}
-            {(useE2eeChat ? e2eeConversations.length : state.conversations.length) === 0 ? (
+            {mergedConversations.map((conversation, index) => (
+              <button
+                className={conversation.id === selectedConversationId ? "active" : ""}
+                key={conversation.id}
+                onClick={() => {
+                  setSelectedConversationId(conversation.id);
+                  setWorkspaceId(conversation.workspaceId);
+                }}
+                style={{ ["--i" as string]: index } as CSSProperties}
+                title={conversation.title}
+                type="button"
+              >
+                <span className="conversation-glyph">
+                  {conversation.kind === "e2ee" ? (
+                    <LockKeyhole aria-hidden="true" size={15} strokeWidth={1.75} />
+                  ) : (
+                    <MessageSquare aria-hidden="true" size={15} strokeWidth={1.75} />
+                  )}
+                </span>
+                <span>
+                  <strong>{conversation.title}</strong>
+                  <small>
+                    {conversation.kind === "e2ee"
+                      ? `加密 · ${conversation.workspaceId}`
+                      : `${HISTORICAL_PLAINTEXT_LABEL} · ${conversation.runCount ?? 0} 组`}
+                  </small>
+                </span>
+              </button>
+            ))}
+            {mergedConversations.length === 0 ? (
               <p className="sidebar-empty">
-                {useE2eeChat ? "Start an encrypted chat." : "Start a chat to pin context here."}
+                {e2eeRequired && !e2eePaired
+                  ? "完成加密授权后开始聊天。"
+                  : "新建加密会话后会出现在这里。"}
               </p>
             ) : null}
           </div>
@@ -917,10 +987,11 @@ function GatewayDashboard() {
         <section className="home-chat">
           <header className="home-chat-header">
             <div>
-              <h1>{selectedConversation?.title ?? "New conversation"}</h1>
+              <h1>{selectedMerged?.title ?? "新加密会话"}</h1>
               <p>
                 <span className={`runner-dot ${selectedModelOnline ? "online" : ""}`} />
                 {selectedModelOnline ? "Ready" : "Will queue"} · {selectedModelName}
+                {viewingHistoricalPlaintext ? ` · ${HISTORICAL_PLAINTEXT_LABEL}` : null}
               </p>
             </div>
             <div className="home-header-actions">
@@ -936,7 +1007,7 @@ function GatewayDashboard() {
                   </option>
                 ))}
               </select>
-              {selectedConversation ? (
+              {selectedConversation && selectedMerged?.kind === "plaintext" ? (
                 <button
                   aria-label="Move conversation to recycle bin"
                   className="icon-danger-button"
@@ -956,56 +1027,42 @@ function GatewayDashboard() {
               <section className="e2ee-required" aria-live="polite">
                 <LockKeyhole aria-hidden="true" size={22} />
                 <div>
-                  <h2>此 Gateway 要求本页 E2EE</h2>
+                  <h2>必须完成加密授权才能使用</h2>
                   <p>
-                    请先授权本浏览器，再继续聊天。私钥只留本页，经{" "}
+                    登录后会自动跳转授权。私钥只留本页，经{" "}
                     <a href={secureClientOrigin || SECURE_WEB_ORIGIN} rel="noreferrer">
                       Secure Web
                     </a>{" "}
-                    一次性授权后返回。
+                    配对后返回并带上授权。手机请尽量用同一浏览器打开邮件链接。
                   </p>
                   <p>
                     <button disabled={loading || !e2eeKeys} onClick={authorizeE2ee} type="button">
-                      {loading ? "跳转中…" : "授权本浏览器"}
+                      {loading ? "跳转中…" : "立即授权本浏览器"}
                     </button>
                   </p>
                 </div>
               </section>
             ) : null}
-            {useE2eeChat
-              ? e2eeRuns.length === 0 && e2eePaired
-                ? (
-                    <div className="home-welcome">
-                      <div className="welcome-mark">
-                        <LockKeyhole aria-hidden="true" size={21} strokeWidth={1.75} />
-                      </div>
-                      <h2>Encrypted chat</h2>
-                      <p className="welcome-copy">
-                        Prompts and answers stay sealed end-to-end with the paired runner.
-                      </p>
-                    </div>
-                  )
-                : null
-              : state.conversationRuns.length === 0 && !e2eeRequired
-                ? (
-                    <div className="home-welcome">
-                      <div className="welcome-mark">
-                        <Sparkles aria-hidden="true" size={21} strokeWidth={1.75} />
-                      </div>
-                      <h2>Ask the runner</h2>
-                      <p className="welcome-copy">
-                        Hermes answers on the VPS host. Switch to a Cursor runner model when you need
-                        workspace-aware reads or writes.
-                      </p>
-                    </div>
-                  )
-                : null}
+            {timeline.length === 0 && !(e2eeRequired && !e2eePaired) ? (
+              <div className="home-welcome">
+                <div className="welcome-mark">
+                  <LockKeyhole aria-hidden="true" size={21} strokeWidth={1.75} />
+                </div>
+                <h2>加密聊天</h2>
+                <p className="welcome-copy">
+                  新消息一律端到端加密。历史明文会话仍可在侧栏打开查看，并标为「
+                  {HISTORICAL_PLAINTEXT_LABEL}」。
+                </p>
+              </div>
+            ) : null}
 
-            {useE2eeChat
-              ? e2eeRuns.map((run, index) => (
+            {timeline.map((turn, index) => {
+              if (turn.kind === "e2ee") {
+                const run = turn.run as (typeof e2eeRuns)[number];
+                return (
                   <div
                     className="chat-turn"
-                    key={run.record.id}
+                    key={`e2ee:${run.record.id}`}
                     style={{ ["--i" as string]: index } as CSSProperties}
                   >
                     <div className="chat-message user-message">
@@ -1039,54 +1096,68 @@ function GatewayDashboard() {
                       </div>
                     </div>
                   </div>
-                ))
-              : state.conversationRuns.map((run, index) => (
-              <div className="chat-turn" key={run.id} style={{ ["--i" as string]: index } as CSSProperties}>
-                <div className="chat-message user-message">
-                  <div className="message-body">{run.prompt}</div>
-                  <div className="user-message-meta">
-                    <time dateTime={run.createdAt}>Sent {formatMessageTime(run.createdAt)}</time>
-                  </div>
-                </div>
-                <div className="chat-message assistant-message">
-                  <div className="message-avatar">{run.model.startsWith("hermes:") ? "H" : "AI"}</div>
-                  <div className="message-main">
-                    <div className="message-meta">
-                      <strong>{run.model.startsWith("hermes:") ? "Hermes" : "Cursor"}</strong>
-                      <span className="message-model">{run.model}</span>
-                      {run.finishedAt ? (
-                        <time dateTime={run.finishedAt}>Answered {formatMessageTime(run.finishedAt)}</time>
-                      ) : null}
-                      <button
-                        className="message-delete"
-                        disabled={run.status === "running"}
-                        onClick={() => deleteRun(run)}
-                        title="Recycle this message pair"
-                        type="button"
-                      >
-                        <Trash2 aria-hidden="true" size={15} strokeWidth={1.75} />
-                      </button>
+                );
+              }
+
+              const run = turn.run as RunRecord;
+              return (
+                <div
+                  className="chat-turn"
+                  key={`plain:${run.id}`}
+                  style={{ ["--i" as string]: index } as CSSProperties}
+                >
+                  <div className="chat-message user-message">
+                    <div className="message-body">{run.prompt}</div>
+                    <div className="user-message-meta">
+                      <time dateTime={run.createdAt}>Sent {formatMessageTime(run.createdAt)}</time>
+                      <span className="historical-plain-tag">{HISTORICAL_PLAINTEXT_LABEL}</span>
                     </div>
-                    {run.status === "waiting_approval" ? (
-                      <button onClick={() => approveRun(run.id)}>Approve write access</button>
-                    ) : null}
-                    {run.response ? <Markdown>{run.response}</Markdown> : null}
-                    {run.error ? <pre className="error-pre">{run.error}</pre> : null}
-                    <RunProgressPanel run={run} />
-                    {run.finishedAt ? (
-                      <div className="message-metrics">
-                        <span>Latency {formatLatency(run.createdAt, run.finishedAt)}</span>
-                        <span>Input {run.inputTokens?.toLocaleString() ?? "—"} tokens</span>
-                        <span>Output {run.outputTokens?.toLocaleString() ?? "—"} tokens</span>
-                        {run.inputTokens !== null && run.outputTokens !== null ? (
-                          <span>Total {(run.inputTokens + run.outputTokens).toLocaleString()} tokens</span>
+                  </div>
+                  <div className="chat-message assistant-message">
+                    <div className="message-avatar">{run.model.startsWith("hermes:") ? "H" : "AI"}</div>
+                    <div className="message-main">
+                      <div className="message-meta">
+                        <strong>{run.model.startsWith("hermes:") ? "Hermes" : "Cursor"}</strong>
+                        <span className="message-model">{run.model}</span>
+                        <span className="historical-plain-tag">{HISTORICAL_PLAINTEXT_LABEL}</span>
+                        {run.finishedAt ? (
+                          <time dateTime={run.finishedAt}>
+                            Answered {formatMessageTime(run.finishedAt)}
+                          </time>
                         ) : null}
+                        <button
+                          className="message-delete"
+                          disabled={run.status === "running"}
+                          onClick={() => deleteRun(run)}
+                          title="Recycle this message pair"
+                          type="button"
+                        >
+                          <Trash2 aria-hidden="true" size={15} strokeWidth={1.75} />
+                        </button>
                       </div>
-                    ) : null}
+                      {run.status === "waiting_approval" ? (
+                        <button onClick={() => approveRun(run.id)}>Approve write access</button>
+                      ) : null}
+                      {run.response ? <Markdown>{run.response}</Markdown> : null}
+                      {run.error ? <pre className="error-pre">{run.error}</pre> : null}
+                      <RunProgressPanel run={run} />
+                      {run.finishedAt ? (
+                        <div className="message-metrics">
+                          <span>Latency {formatLatency(run.createdAt, run.finishedAt)}</span>
+                          <span>Input {run.inputTokens?.toLocaleString() ?? "—"} tokens</span>
+                          <span>Output {run.outputTokens?.toLocaleString() ?? "—"} tokens</span>
+                          {run.inputTokens !== null && run.outputTokens !== null ? (
+                            <span>
+                              Total {(run.inputTokens + run.outputTokens).toLocaleString()} tokens
+                            </span>
+                          ) : null}
+                        </div>
+                      ) : null}
+                    </div>
                   </div>
                 </div>
-              </div>
-            ))}
+              );
+            })}
             <div ref={messagesEndRef} />
           </div>
 
@@ -1100,12 +1171,10 @@ function GatewayDashboard() {
                   onKeyDown={submitOnEnter}
                   placeholder={
                     e2eeRequired && !e2eePaired
-                      ? "先点击「授权本浏览器」完成 E2EE"
-                      : useE2eeChat
-                        ? "E2EE message to the paired runner"
-                        : selectedHermesModel
-                          ? "Message Hermes on the VPS"
-                          : "Message Cursor about your workspace"
+                      ? "先完成加密授权…"
+                      : viewingHistoricalPlaintext
+                        ? "历史明文只读；发送将开启新的加密会话"
+                        : "加密消息发给已配对 Runner"
                   }
                   rows={1}
                   disabled={e2eeRequired && !e2eePaired}
@@ -1127,7 +1196,7 @@ function GatewayDashboard() {
                   <span>Workspace</span>
                   <select
                     value={workspaceId}
-                    disabled={Boolean(selectedConversation)}
+                    disabled={Boolean(selectedMerged?.kind === "e2ee" && selectedConversationId)}
                     onChange={(event) => setWorkspaceId(event.target.value)}
                   >
                     {state.workspaces.map((workspace) => (
@@ -1151,11 +1220,13 @@ function GatewayDashboard() {
                   Allow writes
                 </label>
                 <span className="composer-hint">
-                  {selectedHermesModel
-                    ? "Hermes is Q&A-only"
-                    : selectedConversation
-                      ? "Workspace fixed for this conversation"
-                      : "Enter to send · Shift+Enter for newline"}
+                  {viewingHistoricalPlaintext
+                    ? "历史明文可查看；回复会新建加密会话"
+                    : selectedHermesModel
+                      ? "Hermes is Q&A-only"
+                      : selectedMerged?.kind === "e2ee"
+                        ? "Workspace fixed for this conversation"
+                        : "Enter to send · Shift+Enter for newline"}
                 </span>
               </div>
             </form>

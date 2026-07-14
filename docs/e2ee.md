@@ -63,7 +63,7 @@ Server（VPS）：
 
 | 变量 | 默认值 | 说明 |
 | --- | --- | --- |
-| `E2EE_REQUIRED_FOR_WEB` | `false` | 置 `true` 后，普通网页的明文 Web chat / Memory 写入被拒绝，只接受签名扩展的 E2EE 会话。分发扩展前保持 `false`。 |
+| `E2EE_REQUIRED_FOR_WEB` | `true` | 置 `true` 后，普通网页的明文 Web chat / Memory 写入被拒绝（426），CS 登录后自动引导设备授权。回退：改 `false` 并重建。 |
 | `E2EE_EXTENSION_ORIGINS` | 空 | 逗号分隔的可信扩展 origin 允许表。本仓库固定旁加载 ID：`chrome-extension://oicmfijjdbjkjhnljcjhnojpeiobhefe`。 |
 | `SECURE_CLIENT_ORIGIN` | 空 | 跨浏览器 Secure Web PWA 的 HTTPS origin（CORS + 配对校验）。见 [secure-web-e2ee.md](secure-web-e2ee.md)。 |
 | `E2EE_PAIRING_TTL_SECONDS` | `900` | magic-link 配对 TTL。 |

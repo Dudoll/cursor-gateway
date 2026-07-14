@@ -20,7 +20,9 @@ import {
 } from "./pairing.js";
 import {
   captureCsAuthRedirectParams,
-  completeCsAuthReturn
+  completeCsAuthReturn,
+  formatCsAuthReturnError,
+  loadPendingCsAuthRedirect
 } from "./csAuthReturn.js";
 import type { CsAuthRedirectParams } from "@cursor-gateway/e2ee";
 import { SecureGatewayClient, progressLabel, type DecryptedRun } from "./secureClient.js";
@@ -127,7 +129,7 @@ export function App() {
     clientApi: GatewayApi,
     keys: SecureWebKeyStore,
     params: CsAuthRedirectParams
-  ) {
+  ): Promise<boolean> {
     setBusy(true);
     setStatus({ tone: "info", text: "正在向 Runner 请求 CS 设备授权包…" });
     try {
@@ -138,11 +140,30 @@ export function App() {
       });
       setCsAuthPending(null);
       setStatus({ tone: "ok", text: "授权已签发，正在返回 CS…" });
-      window.location.assign(returnUrl);
+      // replace：避免用户再按返回键停在 Secure 聊天页。
+      window.location.replace(returnUrl);
+      return true;
     } catch (error) {
-      setStatus({ tone: "error", text: `CS 授权失败：${errorText(error)}` });
+      setStatus({ tone: "error", text: formatCsAuthReturnError(error) });
       setBusy(false);
+      return false;
     }
+  }
+
+  /** After pairing: if CS return context exists, must grant+redirect (never stay on Secure chat). */
+  async function finishPairingThenMaybeReturnToCs(
+    clientApi: GatewayApi,
+    keys: SecureWebKeyStore,
+    runnerIdValue: string
+  ) {
+    setStatus({ tone: "ok", text: `已与 Runner ${runnerIdValue} 配对` });
+    setRunnerId(runnerIdValue);
+    setStep(3);
+    await refreshDirectory(clientApi, keys);
+    const pending = csAuthPending ?? loadPendingCsAuthRedirect();
+    if (!pending) return;
+    setCsAuthPending(pending);
+    await tryFinishCsAuth(clientApi, keys, pending);
   }
 
   useEffect(() => {
@@ -154,15 +175,7 @@ export function App() {
     tryConsumeMagicLink({ api, keys: boot.keys })
       .then(async (result) => {
         if (cancelled || !result) return;
-        setStatus({ tone: "ok", text: `已与 Runner ${result.runnerId} 配对` });
-        setRunnerId(result.runnerId);
-        setStep(3);
-        await refreshDirectory(api, boot.keys);
-        const pending = csAuthPending ?? captureCsAuthRedirectParams();
-        if (pending) {
-          setCsAuthPending(pending);
-          await tryFinishCsAuth(api, boot.keys, pending);
-        }
+        await finishPairingThenMaybeReturnToCs(api, boot.keys, result.runnerId);
       })
       .catch((error) => {
         if (!cancelled) {
@@ -286,8 +299,9 @@ export function App() {
         tone: "warn",
         text:
           `配对已开始（${started.pairId}）。\n` +
-          `请查收邮件（开发环境可看 Runner 的 pairing-mail.log）中的 magic link。\n` +
-          `请在本浏览器打开该链接。过期时间：${started.expiresAt}。`
+          `请查收邮件中的 magic link，并尽量用**本浏览器**打开（勿仅用 Gmail App 内置浏览器，以免设备密钥不一致）。\n` +
+          `回跳 CS 的上下文已保存在本站；同浏览器其它标签完成配对后也会自动返回 CS。\n` +
+          `过期时间：${started.expiresAt}。`
       });
       setStep(2);
     } catch (error) {
@@ -302,16 +316,7 @@ export function App() {
     setBusy(true);
     try {
       const result = await completePairingFromFragment({ api, keys: boot.keys });
-      setStatus({ tone: "ok", text: `已与 Runner ${result.runnerId} 配对` });
-      setRunnerId(result.runnerId);
-      setStep(3);
-      await refreshDirectory(api, boot.keys);
-      const pending = csAuthPending ?? captureCsAuthRedirectParams();
-      if (pending) {
-        setCsAuthPending(pending);
-        await tryFinishCsAuth(api, boot.keys, pending);
-        return;
-      }
+      await finishPairingThenMaybeReturnToCs(api, boot.keys, result.runnerId);
     } catch (error) {
       setStatus({ tone: "error", text: `完成配对失败：${errorText(error)}` });
     } finally {
@@ -469,7 +474,8 @@ export function App() {
       <section className="panel">
         <h2>2. Magic-link 配对</h2>
         <p className="meta">
-          Token 不会离开 URL fragment / Runner 邮件路径。Gateway 仅存储公开配对元数据。
+          Token 不会离开 URL fragment / Runner 邮件路径。Gateway 仅存储公开配对元数据。手机请尽量用同一浏览器打开邮件链接；Gmail App
+          可能另开标签，但 CS 回跳上下文已持久化到本站存储。
         </p>
         <div className="row">
           <button type="button" disabled={busy || !api} onClick={onStartPairing}>

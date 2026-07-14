@@ -12,7 +12,7 @@
 2. **开始配对 → 打开邮件 magic link**  
    点击「Start pairing」。Runner 认领 `pending_start`、生成 256-bit token，把  
    `{SECURE_ORIGIN}/#pair={pairId}.{token}`  
-   写入邮件（生产）或 `~/.cursor-gateway/pairing-mail.log`（`PAIRING_MAIL_MODE=log` 干跑）。**必须在启动配对的同一浏览器**打开链接；fragment 不会发给服务器。
+   写入邮件（生产）或 `~/.cursor-gateway/pairing-mail.log`（`PAIRING_MAIL_MODE=log` 干跑）。**必须在启动配对的同一浏览器**打开链接；fragment 不会发给服务器。手机上请尽量用同一浏览器打开邮件链接；Gmail App 可能导致额外标签，但若从 CS 跳入，回跳上下文已持久化到 Secure origin 存储。
 
 3. **加密聊天**  
    客户端用 token 对 offer transcript 做 HMAC，提交 `complete`；Runner 校验 MAC + 客户端签名后 ack，并把 Runner 公钥 fingerprint 固定到本地 IndexedDB。之后提交/读取 run 与扩展走同一套 E2EE API。
