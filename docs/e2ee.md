@@ -2,9 +2,9 @@
 
 ## 保证范围
 
-安全端点是签名的 `Cursor Gateway Secure` 浏览器扩展与 Windows Runner。Prompt、会话历史、Memory、进度、结果和详细错误在离开端点前加密；Cloudflare、VPS、PostgreSQL、备份和反向代理只处理中继密文。
+安全端点是签名的 `Cursor Gateway Secure` 浏览器扩展与 Runner（Windows / Linux / WSL）。Prompt、会话历史、Memory、进度、结果和详细错误在离开端点前加密；Cloudflare、VPS、PostgreSQL、备份和反向代理只处理中继密文。
 
-Runner 会在 Windows 本地解密，然后调用 Cursor SDK。Cursor 模型服务仍会收到明文，因此本功能是“Gateway-blind E2EE”，不是模型提供商不可见的加密推理。
+Runner 会在本机解密，然后调用 Cursor SDK。Cursor 模型服务仍会收到明文，因此本功能是“Gateway-blind E2EE”，不是模型提供商不可见的加密推理。
 
 VPS 仍可看到登录身份、时间、状态、模型、workspace ID、目标 Runner 和密文长度，也能丢弃、延迟或重放网络包。签名、消息链、持久化重放账本和 AEAD 会阻止被篡改或重复的内容被执行，但不能保证可用性。
 
@@ -20,12 +20,16 @@ VPS 仍可看到登录身份、时间、状态、模型、workspace ID、目标 
 ## 部署顺序
 
 1. 部署数据库迁移和 Server，但暂时保留 `E2EE_REQUIRED_FOR_WEB=false`。
-2. 在 Windows 部署新版 Runner，设置：
+2. 在 Runner 宿主机部署新版 Runner，设置：
 
    ```text
    RUNNER_E2EE_ENABLED=true
    RUNNER_LEGACY_ENABLED=false
    ```
+
+   Linux/WSL 还需配置 `RUNNER_E2EE_MASTER_KEY` 或 `RUNNER_E2EE_MASTER_KEY_FILE`
+   （见下文与 `scripts/e2ee/`），不要启用
+   `RUNNER_E2EE_ALLOW_INSECURE_DEV_STORAGE`。
 
 3. 生成 Runner 离线配对 bundle：
 
@@ -62,7 +66,7 @@ Server（VPS）：
 | `E2EE_EXTENSION_ORIGINS` | 空 | 逗号分隔的可信扩展 origin 允许表，例如 `chrome-extension://<extension-id>`。 |
 | `RUNNER_SHARED_SECRET` | 必填（≥32） | 只用于 Runner 接口访问控制，**不**参与内容密钥派生。 |
 
-Runner（Windows）：
+Runner：
 
 | 变量 | 默认值 | 说明 |
 | --- | --- | --- |
@@ -70,15 +74,17 @@ Runner（Windows）：
 | `RUNNER_LEGACY_ENABLED` | `false` | 是否继续领取旧明文任务；全量切换 E2EE 后置 `false`。 |
 | `RUNNER_ID` | `windows-main` | Runner 标识；主密钥轮换时使用新的 `RUNNER_ID` 作为新安全 epoch。 |
 | `RUNNER_WORKSPACES` | 必填 | 本地 workspace 白名单，`;` 分隔的绝对路径；心跳只上报派生的 workspace ID 与可写策略，不上报绝对路径。 |
-| `RUNNER_E2EE_STATE_FILE` | `%USERPROFILE%\.cursor-gateway\runner-e2ee-state.dat` | DPAPI 保护的密钥 / 配对 / 重放状态文件路径。 |
+| `RUNNER_E2EE_STATE_FILE` | `~/.cursor-gateway/runner-e2ee-state.dat` | 密钥 / 配对 / 重放状态文件路径（Windows 上由 DPAPI 保护）。 |
+| `RUNNER_E2EE_MASTER_KEY` / `RUNNER_E2EE_MASTER_KEY_FILE` | 空 | Linux/WSL：用 scrypt→AES-GCM 封存 state；推荐把可用主密钥放在 tmpfs，口令封存见 `scripts/e2ee/`。 |
 | `RUNNER_E2EE_ALLOW_INSECURE_DEV_STORAGE` | `false` | 仅限一次性非 Windows 开发测试；生产必须为 `false`。 |
 
 ## 密钥
 
-- Runner 的 HPKE 与签名私钥、配对客户端、Cursor Agent 映射和重放状态保存在 `%USERPROFILE%\.cursor-gateway\runner-e2ee-state.dat`，由当前 Windows 用户的 DPAPI 保护。
+- Runner 的 HPKE 与签名私钥、配对客户端、Cursor Agent 映射和重放状态保存在本地 `runner-e2ee-state.dat`：Windows 用当前用户 DPAPI；Linux/WSL 用 `RUNNER_E2EE_MASTER_KEY(_FILE)`（可用主密钥宜放 `/dev/shm`，持久盘只存口令密封的 `*.enc`）。
 - 扩展的不可导出 `CryptoKey` 保存在扩展 origin 的 IndexedDB。
 - 清除浏览器扩展数据会导致历史不可解密。配对完成后应立即用至少 12 字符的高强度口令导出加密备份。
 - VPS 上的 `RUNNER_SHARED_SECRET` 只负责接口访问控制，不能派生内容密钥。
+- 不要把 state 文件、主密钥、`*.enc`、client 私钥或 CF token 提交到仓库 / 复制到 VPS。
 
 撤销浏览器设备：
 

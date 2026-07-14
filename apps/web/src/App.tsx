@@ -644,7 +644,7 @@ function GatewayDashboard() {
                   <h2>Encrypted chat requires Cursor Gateway Secure</h2>
                   <p>
                     Open the signed browser extension, authenticate this Gateway origin, and
-                    verify the Runner fingerprints shown locally on Windows. This VPS-hosted
+                    verify the Runner fingerprints shown locally on the runner. This VPS-hosted
                     page never receives E2EE prompt or response plaintext.
                   </p>
                 </div>
@@ -655,7 +655,7 @@ function GatewayDashboard() {
                 <div className="welcome-mark"><Sparkles aria-hidden="true" size={21} strokeWidth={1.75} /></div>
                 <h2>Ask the runner</h2>
                 <p className="welcome-copy">
-                  Hermes answers on the VPS host. Switch to a Windows Cursor model when you need
+                  Hermes answers on the VPS host. Switch to a Cursor runner model when you need
                   workspace-aware reads or writes.
                 </p>
               </div>

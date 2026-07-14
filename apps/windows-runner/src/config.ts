@@ -66,6 +66,13 @@ const envSchema = z.object({
   RUNNER_LEGACY_ENABLED: booleanEnv(false),
   RUNNER_E2EE_STATE_FILE: optionalEnvString,
   RUNNER_E2EE_ALLOW_INSECURE_DEV_STORAGE: booleanEnv(false),
+  // Non-Windows at-rest protection: when set, the runner E2EE state file is
+  // sealed with AES-256-GCM using a scrypt-derived key from this master secret
+  // (or the contents of RUNNER_E2EE_MASTER_KEY_FILE). This replaces the
+  // insecure plaintext dev mode on Linux/WSL. The master secret must be
+  // supplied at runtime and kept off the gateway.
+  RUNNER_E2EE_MASTER_KEY: optionalEnvString,
+  RUNNER_E2EE_MASTER_KEY_FILE: optionalEnvString,
   CURSOR_API_KEY: z.string().min(1),
   DEFAULT_MODEL: z.string().min(1).default("auto"),
   CF_ACCESS_CLIENT_ID: optionalEnvString,
@@ -90,6 +97,19 @@ if (!parsed.RUNNER_E2EE_ENABLED && !parsed.RUNNER_LEGACY_ENABLED) {
   throw new Error("At least one of RUNNER_E2EE_ENABLED or RUNNER_LEGACY_ENABLED must be enabled");
 }
 
+function resolveE2eeMasterKey(): string | undefined {
+  const inline = parsed.RUNNER_E2EE_MASTER_KEY;
+  const fromFile = parsed.RUNNER_E2EE_MASTER_KEY_FILE
+    ? readFileSync(parsed.RUNNER_E2EE_MASTER_KEY_FILE, "utf8").trim()
+    : undefined;
+  const value = inline ?? (fromFile || undefined);
+  if (value !== undefined && value.length < 16) {
+    throw new Error("RUNNER_E2EE_MASTER_KEY must be at least 16 characters");
+  }
+  return value;
+}
+const e2eeMasterKey = resolveE2eeMasterKey();
+
 export const config = {
   gatewayUrl: gatewayUrl.origin,
   runnerId: parsed.RUNNER_ID,
@@ -106,6 +126,7 @@ export const config = {
     parsed.RUNNER_E2EE_STATE_FILE ??
     join(homedir(), ".cursor-gateway", "runner-e2ee-state.dat"),
   e2eeAllowInsecureDevStorage: parsed.RUNNER_E2EE_ALLOW_INSECURE_DEV_STORAGE,
+  e2eeMasterKey,
   cursorApiKey: parsed.CURSOR_API_KEY,
   defaultModel: parsed.DEFAULT_MODEL,
   cloudflareAccessClientId: parsed.CF_ACCESS_CLIENT_ID,

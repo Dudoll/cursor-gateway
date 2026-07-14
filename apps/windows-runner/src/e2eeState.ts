@@ -1,5 +1,11 @@
 import { spawnSync } from "node:child_process";
 import {
+  createCipheriv,
+  createDecipheriv,
+  randomBytes,
+  scryptSync
+} from "node:crypto";
+import {
   chmodSync,
   existsSync,
   mkdirSync,
@@ -109,11 +115,64 @@ function runDpapi(operation: "Protect" | "Unprotect", input: Uint8Array): Uint8A
   }
 }
 
+// Non-Windows at-rest protection: AES-256-GCM with a scrypt-derived key from a
+// runtime master secret (config.e2eeMasterKey). This keeps the runner's private
+// keys encrypted on disk without Windows DPAPI. The master secret is supplied
+// at process start and is never written by this app; on the gateway-blind
+// threat model the gateway still never sees keys or plaintext regardless.
+const MASTER_MAGIC = "CG-E2EE-SCRYPT-AESGCM-v1";
+const SCRYPT_PARAMS = { N: 16_384, r: 8, p: 1, maxmem: 64 * 1024 * 1024 } as const;
+
+function deriveMasterKey(salt: Buffer): Buffer {
+  if (!config.e2eeMasterKey) throw new Error("e2ee_master_key_not_configured");
+  return scryptSync(Buffer.from(config.e2eeMasterKey, "utf8"), salt, 32, SCRYPT_PARAMS);
+}
+
+function sealWithMasterKey(plaintext: Uint8Array): Uint8Array {
+  const salt = randomBytes(16);
+  const iv = randomBytes(12);
+  const key = deriveMasterKey(salt);
+  const cipher = createCipheriv("aes-256-gcm", key, iv);
+  const ciphertext = Buffer.concat([cipher.update(Buffer.from(plaintext)), cipher.final()]);
+  const tag = cipher.getAuthTag();
+  key.fill(0);
+  const payload = [
+    MASTER_MAGIC,
+    salt.toString("base64"),
+    iv.toString("base64"),
+    Buffer.concat([ciphertext, tag]).toString("base64")
+  ].join("\n");
+  return new TextEncoder().encode(payload);
+}
+
+function openWithMasterKey(stored: Uint8Array): Uint8Array {
+  const [magic, saltB64, ivB64, blobB64] = new TextDecoder().decode(stored).split("\n");
+  if (magic !== MASTER_MAGIC || !saltB64 || !ivB64 || !blobB64) {
+    throw new Error("invalid_master_key_state");
+  }
+  const salt = Buffer.from(saltB64, "base64");
+  const iv = Buffer.from(ivB64, "base64");
+  const blob = Buffer.from(blobB64, "base64");
+  const ciphertext = blob.subarray(0, blob.length - 16);
+  const tag = blob.subarray(blob.length - 16);
+  const key = deriveMasterKey(salt);
+  const decipher = createDecipheriv("aes-256-gcm", key, iv);
+  decipher.setAuthTag(tag);
+  try {
+    return new Uint8Array(Buffer.concat([decipher.update(ciphertext), decipher.final()]));
+  } catch {
+    throw new Error("e2ee_master_key_decrypt_failed");
+  } finally {
+    key.fill(0);
+  }
+}
+
 function protectState(plaintext: Uint8Array): Uint8Array {
   if (process.platform === "win32") return runDpapi("Protect", plaintext);
+  if (config.e2eeMasterKey) return sealWithMasterKey(plaintext);
   if (!config.e2eeAllowInsecureDevStorage) {
     throw new Error(
-      "Runner E2EE private state requires Windows DPAPI; set " +
+      "Runner E2EE private state requires Windows DPAPI or RUNNER_E2EE_MASTER_KEY; set " +
         "RUNNER_E2EE_ALLOW_INSECURE_DEV_STORAGE=true only for local tests"
     );
   }
@@ -122,8 +181,10 @@ function protectState(plaintext: Uint8Array): Uint8Array {
 
 function unprotectState(stored: Uint8Array): Uint8Array {
   if (process.platform === "win32") return runDpapi("Unprotect", stored);
+  const preview = new TextDecoder().decode(stored.subarray(0, MASTER_MAGIC.length));
+  if (preview === MASTER_MAGIC) return openWithMasterKey(stored);
   if (!config.e2eeAllowInsecureDevStorage) {
-    throw new Error("Refusing to load E2EE state without Windows DPAPI");
+    throw new Error("Refusing to load E2EE state without Windows DPAPI or RUNNER_E2EE_MASTER_KEY");
   }
   const value = new TextDecoder().decode(stored);
   if (!value.startsWith(DEV_PREFIX)) throw new Error("invalid_insecure_dev_state");

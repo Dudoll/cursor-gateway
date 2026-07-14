@@ -29,7 +29,12 @@ apps/*/vite.config.d.ts.map
 *.sqlite
 *.sqlite3
 *.db
+*.enc
 runner-e2ee-state.dat
+*-e2ee-state.dat
+*e2ee-state*.dat
+e2ee-client-state.json
+e2ee-unseal.status
 
 data/
 logs/
