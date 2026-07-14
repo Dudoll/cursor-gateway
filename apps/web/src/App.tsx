@@ -455,20 +455,30 @@ function GatewayDashboard() {
       setCfAccessLogoutUrl(buildCfAccessLogoutUrl(policy.cfAccessTeamDomain));
     }
 
-    setState({
-      principal: me.principal,
-      models: models.models,
-      workspaces: workspaces.workspaces,
-      runners: runners.runners,
-      conversations: conversations.conversations,
-      conversationRuns: conversationRuns.runs,
-      memory: memory.facts
-    });
-
+    // When E2EE is paired, the run routes to that runner's advertised workspaces
+    // (path-less public entries). Legacy `/api/workspaces` only returns rows with
+    // path IS NOT NULL — often a historical Windows id not on wsl-e2ee — which
+    // causes workspace_not_available_on_runner. Prefer the paired runner list.
+    let availableWorkspaces = workspaces.workspaces;
+    let e2eeConversationWorkspaceId: string | undefined;
     if (e2eeKeys && e2eePaired) {
       try {
         const client = new SecureGatewayClient(gatewayApi, e2eeKeys);
+        const pairedRunnerId = e2eeDevice?.pairedRunnerId;
+        if (pairedRunnerId) {
+          const directory = await client.runners();
+          const paired = directory.find((runner) => runner.runnerId === pairedRunnerId);
+          if (paired?.workspaces.length) {
+            availableWorkspaces = paired.workspaces.map((item) => ({
+              id: item.id,
+              label: item.label,
+              path: "",
+              writable: item.writable
+            }));
+          }
+        }
         const list = await client.conversations();
+        e2eeConversationWorkspaceId = list.find((item) => item.id === conversationId)?.workspaceId;
         setE2eeConversations(
           list.map((item) => ({
             id: item.id,
@@ -499,13 +509,24 @@ function GatewayDashboard() {
       setE2eeRuns([]);
     }
 
+    setState({
+      principal: me.principal,
+      models: models.models,
+      workspaces: availableWorkspaces,
+      runners: runners.runners,
+      conversations: conversations.conversations,
+      conversationRuns: conversationRuns.runs,
+      memory: memory.facts
+    });
+
     const selected = conversations.conversations.find((item) => item.id === conversationId);
     if (selected) setWorkspaceId(selected.workspaceId);
+    else if (e2eeConversationWorkspaceId) setWorkspaceId(e2eeConversationWorkspaceId);
     else {
       setWorkspaceId((current) =>
-        workspaces.workspaces.some((item) => item.id === current)
+        availableWorkspaces.some((item) => item.id === current)
           ? current
-          : workspaces.workspaces[0]?.id || ""
+          : availableWorkspaces[0]?.id || ""
       );
     }
     const preferredDefault = models.defaultModelId || "auto";

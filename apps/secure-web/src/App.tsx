@@ -216,11 +216,17 @@ export function App() {
     }
     setTitles(nextTitles);
     const device = await keys.device();
-    if (device.pairedRunnerId) {
-      setRunnerId(device.pairedRunnerId);
-      setStep(3);
-    } else if (directory[0]) {
-      setRunnerId(directory[0].runnerId);
+    const preferredRunnerId = device.pairedRunnerId ?? directory[0]?.runnerId;
+    if (preferredRunnerId) {
+      setRunnerId(preferredRunnerId);
+      if (device.pairedRunnerId) setStep(3);
+      const preferred = directory.find((runner) => runner.runnerId === preferredRunnerId);
+      const firstWorkspace = preferred?.workspaces[0]?.id;
+      if (firstWorkspace && preferred) {
+        setWorkspaceId((current) =>
+          preferred.workspaces.some((item) => item.id === current) ? current : firstWorkspace
+        );
+      }
     }
   }
 

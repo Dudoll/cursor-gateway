@@ -135,6 +135,9 @@ export async function upsertE2eeRunner(input: E2eeRunnerHeartbeat) {
     );
 
     for (const workspace of input.workspaces) {
+      // E2EE heartbeats intentionally omit filesystem paths (gateway never learns
+      // them). Do not wipe a path previously registered by a legacy runner for the
+      // same workspace id — CS `/api/workspaces` still filters on path IS NOT NULL.
       await client.query(
         `
           insert into workspaces (id, label, path, writable, runner_id)
@@ -142,7 +145,7 @@ export async function upsertE2eeRunner(input: E2eeRunnerHeartbeat) {
           on conflict (id)
           do update set
             label = excluded.label,
-            path = null,
+            path = workspaces.path,
             writable = excluded.writable,
             runner_id = excluded.runner_id,
             enabled = true
