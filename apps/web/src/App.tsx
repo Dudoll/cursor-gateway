@@ -41,6 +41,12 @@ import {
   type DeviceRecord
 } from "./keyStore.js";
 import { SecureGatewayClient, type DecryptedRun } from "./secureClient.js";
+import {
+  E2EE_ENCRYPTED_BADGE,
+  e2eeEncryptedTooltip,
+  e2eeRunEvidenceLabel,
+  e2eeRunEvidenceTitle
+} from "./e2eeStatusUi.js";
 
 type ReportSummary = ReportDefinition & {
   runCount: number;
@@ -335,12 +341,14 @@ function GatewayDashboard() {
   const [e2eeConversations, setE2eeConversations] = useState<
     Array<{ id: string; workspaceId: string; updatedAt: string }>
   >([]);
-  const [e2eeStatus, setE2eeStatus] = useState<string | null>(null);
+  const [lastE2eeRunId, setLastE2eeRunId] = useState<string | null>(null);
+  const [e2eeEvidenceOpen, setE2eeEvidenceOpen] = useState(false);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useSidebarCollapsed();
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const promptRef = useAutosizeTextarea(prompt);
+  const e2eeEvidenceRef = useRef<HTMLDivElement>(null);
   const gatewayApi = useMemo(() => new GatewayApi(window.location.origin), []);
   const e2eePaired = Boolean(e2eeDevice?.pairedRunnerId);
   const useE2eeChat = e2eeRequired || e2eePaired;
@@ -351,7 +359,7 @@ function GatewayDashboard() {
       const blocked = await detectIncompatibleStorage();
       if (cancelled) return;
       if (blocked) {
-        setE2eeStatus(`本浏览器无法保存设备密钥：${blocked}`);
+        setError(`本浏览器无法保存设备密钥：${blocked}`);
         return;
       }
       await requestPersistentStorage();
@@ -359,30 +367,44 @@ function GatewayDashboard() {
       if (cancelled) return;
       setE2eeKeys(keys);
       if (window.location.hash.includes("cs_auth=")) {
-        setE2eeStatus("正在验证 Runner 授权包…");
         try {
-          const result = await completeCsDeviceAuthFromFragment({
+          await completeCsDeviceAuthFromFragment({
             api: gatewayApi,
             keys
           });
-          if (result) {
-            setE2eeStatus(`已授权 Runner ${result.runnerId}（本页 E2EE 可用）`);
-          }
         } catch (err) {
-          setE2eeStatus(err instanceof Error ? err.message : String(err));
+          setError(err instanceof Error ? err.message : String(err));
         }
       }
       const device = await keys.device();
       if (!cancelled) setE2eeDevice(device);
     })().catch((err) => {
       if (!cancelled) {
-        setE2eeStatus(err instanceof Error ? err.message : String(err));
+        setError(err instanceof Error ? err.message : String(err));
       }
     });
     return () => {
       cancelled = true;
     };
   }, [gatewayApi]);
+
+  useEffect(() => {
+    if (!e2eeEvidenceOpen) return;
+    function onPointerDown(event: MouseEvent) {
+      if (!e2eeEvidenceRef.current?.contains(event.target as Node)) {
+        setE2eeEvidenceOpen(false);
+      }
+    }
+    function onKeyDown(event: globalThis.KeyboardEvent) {
+      if (event.key === "Escape") setE2eeEvidenceOpen(false);
+    }
+    document.addEventListener("mousedown", onPointerDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("mousedown", onPointerDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [e2eeEvidenceOpen]);
 
   async function refresh(conversationId = selectedConversationId) {
     const [me, models, workspaces, runners, conversations, memory, policy, conversationRuns] =
@@ -439,7 +461,7 @@ function GatewayDashboard() {
           setE2eeRuns([]);
         }
       } catch (err) {
-        setE2eeStatus(err instanceof Error ? err.message : String(err));
+        setError(err instanceof Error ? err.message : String(err));
       }
     }
 
@@ -567,6 +589,7 @@ function GatewayDashboard() {
           allowWrites,
           ...(selectedConversationId ? { conversationId: selectedConversationId } : {})
         });
+        setLastE2eeRunId(run.id);
         setPrompt("");
         setSelectedConversationId(run.conversationId);
         await refresh(run.conversationId);
@@ -664,6 +687,67 @@ function GatewayDashboard() {
         <BrandMark />
         <TopTabs active="home" />
         <div className="topbar-actions">
+          {e2eePaired ? (
+            <div className="e2ee-status-slot" ref={e2eeEvidenceRef}>
+              <button
+                aria-expanded={e2eeEvidenceOpen}
+                aria-label={E2EE_ENCRYPTED_BADGE}
+                className="e2ee-status-badge"
+                onClick={() => setE2eeEvidenceOpen((open) => !open)}
+                title={e2eeEncryptedTooltip({
+                  ...(e2eeDevice?.pairedRunnerId
+                    ? { runnerId: e2eeDevice.pairedRunnerId }
+                    : {}),
+                  ...(lastE2eeRunId ? { lastRunId: lastE2eeRunId } : {})
+                })}
+                type="button"
+              >
+                <LockKeyhole aria-hidden="true" size={14} strokeWidth={2} />
+                <span>{E2EE_ENCRYPTED_BADGE}</span>
+                {lastE2eeRunId ? (
+                  <span className="e2ee-status-run">{e2eeRunEvidenceLabel(lastE2eeRunId)}</span>
+                ) : null}
+              </button>
+              {e2eeEvidenceOpen ? (
+                <div className="e2ee-evidence-panel" role="dialog" aria-label="加密证据">
+                  <p className="e2ee-evidence-note">
+                    此徽章仅为 UI 状态，不是密码学证明。请结合 Network / 审计 / DB 自证。
+                  </p>
+                  <dl>
+                    <div>
+                      <dt>协议</dt>
+                      <dd>cg-e2ee/1</dd>
+                    </div>
+                    <div>
+                      <dt>content_mode</dt>
+                      <dd>e2ee-v1</dd>
+                    </div>
+                    <div>
+                      <dt>Runner</dt>
+                      <dd>{e2eeDevice?.pairedRunnerId ?? "—"}</dd>
+                    </div>
+                    <div>
+                      <dt>最近 runId</dt>
+                      <dd title={lastE2eeRunId ?? undefined}>
+                        {lastE2eeRunId ?? "发送一条加密消息后显示"}
+                      </dd>
+                    </div>
+                  </dl>
+                </div>
+              ) : null}
+            </div>
+          ) : !e2eeRequired ? (
+            <button
+              className="topbar-link e2ee-enable-link"
+              disabled={loading || !e2eeKeys}
+              onClick={authorizeE2ee}
+              title="可选：经 Secure 一次性授权后，本页用 cg-e2ee/1 加密"
+              type="button"
+            >
+              <LockKeyhole aria-hidden="true" size={15} strokeWidth={1.75} />
+              <span>启用加密</span>
+            </button>
+          ) : null}
           <a className="topbar-link" href="/trash">
             <Trash2 aria-hidden="true" size={15} strokeWidth={1.75} />
             <span>Recycle Bin</span>
@@ -803,56 +887,23 @@ function GatewayDashboard() {
           </header>
 
           {error ? <div className="error chat-error">{error}</div> : null}
-          {e2eeStatus ? (
-            <div className="error chat-error" style={{ background: "transparent", borderColor: "transparent" }}>
-              {e2eeStatus}
-            </div>
-          ) : null}
           <div className="home-messages">
             {e2eeRequired && !e2eePaired ? (
               <section className="e2ee-required" aria-live="polite">
                 <LockKeyhole aria-hidden="true" size={22} />
                 <div>
-                  <h2>此 Gateway 要求本页 E2EE 加密聊天</h2>
+                  <h2>此 Gateway 要求本页 E2EE</h2>
                   <p>
-                    设备私钥仅留在本页（不可导出）。将跳转{" "}
+                    请先授权本浏览器，再继续聊天。私钥只留本页，经{" "}
                     <a href={secureClientOrigin || SECURE_WEB_ORIGIN} rel="noreferrer">
                       Secure Web
                     </a>{" "}
-                    完成身份配对后，Runner 签发一次性授权包经 URL fragment 返回本页。
+                    一次性授权后返回。
                   </p>
                   <p>
                     <button disabled={loading || !e2eeKeys} onClick={authorizeE2ee} type="button">
                       {loading ? "跳转中…" : "授权本浏览器"}
                     </button>
-                  </p>
-                </div>
-              </section>
-            ) : null}
-            {!e2eeRequired && !e2eePaired ? (
-              <section className="e2ee-required" aria-live="polite">
-                <LockKeyhole aria-hidden="true" size={22} />
-                <div>
-                  <h2>可选：为本浏览器启用 E2EE</h2>
-                  <p>
-                    不启用时仍可明文聊天。启用后私钥不离开本页，经 Secure 一次性授权后在本页用
-                    cg-e2ee/1 加密。
-                  </p>
-                  <p>
-                    <button disabled={loading || !e2eeKeys} onClick={authorizeE2ee} type="button">
-                      {loading ? "跳转中…" : "授权本浏览器"}
-                    </button>
-                  </p>
-                </div>
-              </section>
-            ) : null}
-            {e2eePaired ? (
-              <section className="e2ee-required" aria-live="polite">
-                <LockKeyhole aria-hidden="true" size={22} />
-                <div>
-                  <h2>本页 E2EE 已启用（cg-e2ee/1）</h2>
-                  <p>
-                    Runner {e2eeDevice?.pairedRunnerId} 公钥已钉住。Gateway 只中继密文。
                   </p>
                 </div>
               </section>
@@ -915,6 +966,12 @@ function GatewayDashboard() {
                             {run.progress.message || run.progress.progressKind}
                           </pre>
                         ) : null}
+                        <div
+                          className="e2ee-run-meta"
+                          title={e2eeRunEvidenceTitle(run.record.id)}
+                        >
+                          e2ee-v1 · {run.record.id.slice(0, 8)}
+                        </div>
                       </div>
                     </div>
                   </div>

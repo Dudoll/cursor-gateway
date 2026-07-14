@@ -9,9 +9,9 @@ Gateway 只中继密文与公开元数据；不持有设备私钥，也不持久
 1. **CS 生成本地不可导出设备密钥**（IndexedDB + WebCrypto，`non-extractable`）。  
 2. 未配对时点击「授权本浏览器」→ 跳转 Secure，query 仅带公钥 fingerprint、`challenge`、`state`、`return_origin`、`auth_id`（无私钥）。  
 3. Secure 完成（或复用）magic-link 配对后，向 Gateway 标记 `pending_runner`；Runner 认领、登记 CS 公钥、签发授权；Secure 轮询到 grant 后 `location` 回 CS：`#cs_auth=<base64url JSON>`。  
-4. CS 校验 Runner 签名与绑定字段 → 钉住 Runner 公钥 → `POST .../consume`（防重放）→ 在 CS 内用 `cg-e2ee/1` 加密聊天。
+4. CS 校验 Runner 签名与绑定字段 → 钉住 Runner 公钥 → `POST .../consume`（防重放）→ 在 CS 内用 `cg-e2ee/1` 加密聊天；**右上角**出现「本次聊天已加密」徽章（可展开见 `runId` / `content_mode`；徽章本身不是密码学证明）。
 
-`E2EE_REQUIRED_FOR_WEB` **保持 `false`**，直到本流程在生产验收通过。未授权时 CS 仍可明文聊天；开启策略后强制先走本页授权。
+`E2EE_REQUIRED_FOR_WEB` **保持 `false`**，直到本流程在生产验收通过。未授权时 CS 仍可明文聊天（顶栏仅安静的「启用加密」，无大块恐吓提示）；开启策略后强制先走本页授权。
 
 ## 协议要点
 
@@ -65,10 +65,65 @@ Gateway 只中继密文与公开元数据；不持有设备私钥，也不持久
 ```bash
 npm run test -w @cursor-gateway/e2ee          # 含 cs-auth grant / redirect
 npm run test -w @cursor-gateway/secure-web
+npm run test -w @cursor-gateway/web           # 含 e2eeStatusUi 文案/证据标签
 npm run typecheck
 ```
 
-手工：CS「授权本浏览器」→ Secure 配对（`PAIRING_MAIL_MODE=log` + `scripts/e2ee/read-pairing-mail.sh`）→ 自动回 CS fragment → 加密发送。
+手工：CS「启用加密」→ Secure 配对（`PAIRING_MAIL_MODE=log` + `scripts/e2ee/read-pairing-mail.sh`）→ 自动回 CS fragment → 右上角出现「本次聊天已加密」→ 加密发送。
+
+## 如何验证真加密
+
+UI 右上角「本次聊天已加密」徽章**只是状态提示**，不是密码学证明。点开徽章可看到 `content_mode` / 最近 `runId`（发送成功后），同样不能单独当作证明。请按下面三步自证。
+
+### 1. 浏览器 Network：路径与 body 无明文
+
+1. 打开 DevTools → Network，过滤 `e2ee`。  
+2. 发送一条加密消息后，应看到 `POST /api/e2ee/v1/runs`（**不是**明文 `POST /api/runs`）。  
+3. 请求 JSON 含 `request.payload.ciphertext` 等信封字段；**不应**出现明文 `prompt` 字符串。  
+4. 对比：未启用加密时走 `/api/runs`，body 里有明文 `prompt`。
+
+### 2. VPS 审计日志 + DB
+
+加密 run 创建成功时 Gateway 写审计事件 `e2ee.run.created`（details 含 `runId`、`ciphertextBytes` 等，**无明文**）。
+
+```sql
+-- 审计：最近 E2EE run
+select created_at, event_type, details
+from audit_logs
+where event_type = 'e2ee.run.created'
+order by created_at desc
+limit 20;
+
+-- DB：content_mode=e2ee-v1，prompt/response 必须为 NULL
+select id, content_mode, protocol_version, prompt, response,
+       (request_envelope is not null) as has_envelope,
+       length(request_envelope::text) as envelope_chars
+from runs
+where content_mode = 'e2ee-v1'
+order by created_at desc
+limit 20;
+```
+
+期望：`content_mode = 'e2ee-v1'`，`prompt` / `response` 为 `NULL`，`request_envelope` 有密文信封。明文模式 `content_mode = 'plaintext'` 且 `prompt` 非空。
+
+在 VPS 上也可：
+
+```bash
+docker compose exec postgres psql -U cursor_gateway -d cursor_gateway -c \
+  "select id, content_mode, prompt is null as prompt_null, response is null as response_null from runs where content_mode='e2ee-v1' order by created_at desc limit 5;"
+```
+
+### 3. 对比明文模式
+
+| 检查项 | 加密（本页已授权） | 明文（未启用加密） |
+| --- | --- | --- |
+| UI | 右上角「本次聊天已加密」；徽章可展开见 runId | 无加密徽章；顶栏「启用加密」可选 |
+| Network | `POST /api/e2ee/v1/runs`，body 为密文信封 | `POST /api/runs`，body 含明文 prompt |
+| DB `runs.content_mode` | `e2ee-v1` | `plaintext` |
+| DB `prompt` / `response` | `NULL` | 有明文 |
+| 审计 | `e2ee.run.created` | 普通 run 审计（非 e2ee 事件） |
+
+若 Network 仍是 `/api/runs` 或 DB 里 `prompt` 非空，则**不是**本页 E2EE，即便某处文案写了「加密」。
 
 ## 明确不做（本 MVP）
 
