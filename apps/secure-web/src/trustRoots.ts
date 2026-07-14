@@ -18,7 +18,22 @@ import type { GatewayApi } from "./api.js";
  * client trust requires hosting Secure Web on Cloudflare Pages (immutable
  * deploy + Access) — see docs/trust-root-rotation.md.
  */
-export const PINNED_TRUST_ROOTS: E2eeTrustRootPublic[] = [];
+export const PINNED_TRUST_ROOTS: E2eeTrustRootPublic[] = [
+  {
+    protocol: "cg-e2ee/1",
+    kind: "trust-root-public/1",
+    keyId: "p256-wMuD5PIQsA3H9vQupggwmB",
+    fingerprint: "sha256:wMuD5PIQsA3H9vQupggwmBGHzrdLIix2T77R12zDJMM",
+    publicKey: {
+      kty: "EC",
+      crv: "P-256",
+      x: "AVeiOWxUSi21MNra5pVDbODYNf7T5S68l-tuZUbOmuI",
+      y: "YwfjlRa_-4JrDAu03wRKIuyDxjFIsPjFjjQhHAlNqkY"
+    },
+    epoch: 1,
+    createdAt: "2026-07-14T12:47:31.093Z"
+  }
+];
 
 export async function loadTrustRoots(api: GatewayApi): Promise<E2eeTrustRootPublic[]> {
   const byFingerprint = new Map<string, E2eeTrustRootPublic>();
