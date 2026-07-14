@@ -1,8 +1,12 @@
 import {
+  E2EE_CS_AUTH_KIND,
   E2EE_HPKE_SUITE,
   E2EE_PAIRING_KIND,
   E2EE_PROTOCOL,
+  e2eeCsAuthGrantSchema,
   type E2eeCiphertext,
+  type E2eeCsAuthGrant,
+  type E2eeCsAuthIntent,
   type E2eeHpkeEnvelope,
   type E2eeKeyDescriptor,
   type E2eeMemoryEnvelope,
@@ -656,4 +660,236 @@ export function keyGrantContext(value: {
     runnerKeyId: value.runnerKeyId,
     grantId: value.grantId
   };
+}
+
+/** Canonical fields bound by the Runner signature on a CS device auth grant. */
+export function csAuthGrantTranscript(
+  grant: Omit<E2eeCsAuthGrant, "signature">
+): JsonValue {
+  return {
+    protocol: E2EE_PROTOCOL,
+    authKind: E2EE_CS_AUTH_KIND,
+    purpose: "cs-web-device-auth-grant",
+    authId: grant.authId,
+    clientId: grant.clientId,
+    challenge: grant.challenge,
+    state: grant.state,
+    signingFingerprint: grant.signingFingerprint,
+    encryptionFingerprint: grant.encryptionFingerprint,
+    returnOrigin: grant.returnOrigin,
+    gatewayOrigin: grant.gatewayOrigin,
+    runnerId: grant.runnerId,
+    runnerEncryptionFingerprint: grant.runnerEncryptionKey.fingerprint,
+    runnerSigningFingerprint: grant.runnerSigningKey.fingerprint,
+    status: grant.status,
+    expiresAt: grant.expiresAt,
+    createdAt: grant.createdAt
+  };
+}
+
+export function buildCsAuthGrantUnsigned(input: {
+  intent: E2eeCsAuthIntent;
+  runnerId: string;
+  runnerEncryptionKey: E2eeKeyDescriptor;
+  runnerSigningKey: E2eeKeyDescriptor;
+  status: "authorized" | "rejected";
+  expiresAt: string;
+  createdAt?: string;
+}): Omit<E2eeCsAuthGrant, "signature"> {
+  return {
+    protocol: E2EE_PROTOCOL,
+    authKind: E2EE_CS_AUTH_KIND,
+    authId: input.intent.authId,
+    clientId: input.intent.clientId,
+    challenge: input.intent.challenge,
+    state: input.intent.state,
+    signingFingerprint: input.intent.signingKey.fingerprint,
+    encryptionFingerprint: input.intent.encryptionKey.fingerprint,
+    returnOrigin: input.intent.returnOrigin,
+    gatewayOrigin: input.intent.gatewayOrigin,
+    runnerId: input.runnerId,
+    runnerEncryptionKey: input.runnerEncryptionKey,
+    runnerSigningKey: input.runnerSigningKey,
+    status: input.status,
+    expiresAt: input.expiresAt,
+    createdAt: input.createdAt ?? new Date().toISOString()
+  };
+}
+
+export async function signCsAuthGrant(
+  unsigned: Omit<E2eeCsAuthGrant, "signature">,
+  runnerSigningPrivateKey: CryptoKey,
+  runnerSigningKeyId: string
+): Promise<E2eeCsAuthGrant> {
+  return {
+    ...unsigned,
+    signature: await signValue(
+      csAuthGrantTranscript(unsigned),
+      runnerSigningPrivateKey,
+      runnerSigningKeyId
+    )
+  };
+}
+
+export async function verifyCsAuthGrant(
+  grant: E2eeCsAuthGrant,
+  runnerSigningPublicKey: CryptoKey
+): Promise<boolean> {
+  if (grant.signature.keyId !== grant.runnerSigningKey.keyId) return false;
+  return verifyValue(
+    csAuthGrantTranscript(unsignedEnvelope(grant)),
+    grant.signature,
+    runnerSigningPublicKey
+  );
+}
+
+export type CsAuthRedirectParams = {
+  authId: string;
+  challenge: string;
+  state: string;
+  returnOrigin: string;
+  signingFingerprint: string;
+  encryptionFingerprint: string;
+  clientId: string;
+};
+
+export function buildCsAuthRedirectUrl(
+  secureOrigin: string,
+  params: CsAuthRedirectParams
+): string {
+  const url = new URL(secureOrigin.replace(/\/$/, "") + "/");
+  url.searchParams.set("cs_auth", "1");
+  url.searchParams.set("auth_id", params.authId);
+  url.searchParams.set("client_id", params.clientId);
+  url.searchParams.set("challenge", params.challenge);
+  url.searchParams.set("state", params.state);
+  url.searchParams.set("return_origin", params.returnOrigin);
+  url.searchParams.set("signing_fp", params.signingFingerprint);
+  url.searchParams.set("encryption_fp", params.encryptionFingerprint);
+  return url.toString();
+}
+
+export function parseCsAuthRedirectSearch(search: string): CsAuthRedirectParams | null {
+  const params = new URLSearchParams(
+    search.startsWith("?") ? search.slice(1) : search
+  );
+  if (params.get("cs_auth") !== "1") return null;
+  const authId = params.get("auth_id") ?? "";
+  const clientId = params.get("client_id") ?? "";
+  const challenge = params.get("challenge") ?? "";
+  const state = params.get("state") ?? "";
+  const returnOriginRaw = params.get("return_origin") ?? "";
+  const signingFingerprint = params.get("signing_fp") ?? "";
+  const encryptionFingerprint = params.get("encryption_fp") ?? "";
+  if (!/^[0-9a-f-]{36}$/i.test(authId)) return null;
+  if (clientId.length < 8 || clientId.length > 128) return null;
+  if (!/^[A-Za-z0-9_-]{43}$/.test(challenge)) return null;
+  if (!/^[A-Za-z0-9_-]{43}$/.test(state)) return null;
+  if (!/^sha256:[A-Za-z0-9_-]{43}$/.test(signingFingerprint)) return null;
+  if (!/^sha256:[A-Za-z0-9_-]{43}$/.test(encryptionFingerprint)) return null;
+  let returnOrigin: string;
+  try {
+    const parsed = new URL(returnOriginRaw);
+    if (parsed.username || parsed.password || parsed.search || parsed.hash) return null;
+    if (parsed.pathname !== "/" && parsed.pathname !== "") return null;
+    if (parsed.protocol !== "https:" && parsed.protocol !== "http:") return null;
+    returnOrigin = parsed.origin;
+  } catch {
+    return null;
+  }
+  return {
+    authId,
+    clientId,
+    challenge,
+    state,
+    returnOrigin,
+    signingFingerprint,
+    encryptionFingerprint
+  };
+}
+
+export function encodeCsAuthGrantFragment(grant: E2eeCsAuthGrant): string {
+  return `#cs_auth=${encodeBase64Url(canonicalBytes(grant))}`;
+}
+
+export function parseCsAuthGrantFragment(hash: string): E2eeCsAuthGrant | null {
+  const raw = hash.startsWith("#") ? hash.slice(1) : hash;
+  const params = new URLSearchParams(raw.includes("=") ? raw : `cs_auth=${raw}`);
+  const value = params.get("cs_auth");
+  if (!value) return null;
+  try {
+    const decoded = JSON.parse(decodeUtf8(decodeBase64Url(value))) as unknown;
+    return e2eeCsAuthGrantSchema.parse(decoded);
+  } catch {
+    return null;
+  }
+}
+
+export function clearCsAuthFragment() {
+  if (typeof window === "undefined") return;
+  const url = new URL(window.location.href);
+  if (!url.hash.includes("cs_auth=")) return;
+  url.hash = "";
+  window.history.replaceState(null, "", `${url.pathname}${url.search}`);
+}
+
+/**
+ * Validate a grant against the pending CS redirect session and Runner signature.
+ * Does not mark replay; caller must consume via Gateway.
+ */
+export async function validateCsAuthGrant(input: {
+  grant: E2eeCsAuthGrant;
+  expected: {
+    authId: string;
+    clientId: string;
+    challenge: string;
+    state: string;
+    returnOrigin: string;
+    signingFingerprint: string;
+    encryptionFingerprint: string;
+    gatewayOrigin?: string;
+  };
+  nowMs?: number;
+  /** When set, signature must verify under this pinned Runner key (Secure path). */
+  pinnedRunnerSigningKey?: CryptoKey;
+}): Promise<{ ok: true } | { ok: false; reason: string }> {
+  const grant = input.grant;
+  const expected = input.expected;
+  const now = input.nowMs ?? Date.now();
+  if (grant.protocol !== E2EE_PROTOCOL || grant.authKind !== E2EE_CS_AUTH_KIND) {
+    return { ok: false, reason: "auth_kind_mismatch" };
+  }
+  if (grant.status !== "authorized") return { ok: false, reason: "grant_rejected" };
+  if (grant.authId !== expected.authId) return { ok: false, reason: "auth_id_mismatch" };
+  if (grant.clientId !== expected.clientId) return { ok: false, reason: "client_id_mismatch" };
+  if (grant.challenge !== expected.challenge) return { ok: false, reason: "challenge_mismatch" };
+  if (grant.state !== expected.state) return { ok: false, reason: "state_mismatch" };
+  if (grant.returnOrigin !== expected.returnOrigin) {
+    return { ok: false, reason: "return_origin_mismatch" };
+  }
+  if (grant.signingFingerprint !== expected.signingFingerprint) {
+    return { ok: false, reason: "signing_fingerprint_mismatch" };
+  }
+  if (grant.encryptionFingerprint !== expected.encryptionFingerprint) {
+    return { ok: false, reason: "encryption_fingerprint_mismatch" };
+  }
+  if (
+    expected.gatewayOrigin &&
+    grant.gatewayOrigin !== expected.gatewayOrigin
+  ) {
+    return { ok: false, reason: "gateway_origin_mismatch" };
+  }
+  if (Date.parse(grant.expiresAt) <= now) return { ok: false, reason: "grant_expired" };
+
+  const verifyKey =
+    input.pinnedRunnerSigningKey ??
+    (await importSigningPublicKey(grant.runnerSigningKey.publicKey));
+  if (input.pinnedRunnerSigningKey) {
+    // Pin continuity: grant must advertise the same key id / fingerprint as pin.
+    // Fingerprint check is done by caller comparing descriptors when available.
+  }
+  if (!(await verifyCsAuthGrant(grant, verifyKey))) {
+    return { ok: false, reason: "grant_signature_invalid" };
+  }
+  return { ok: true };
 }

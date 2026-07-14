@@ -86,7 +86,10 @@ const envSchema = z.object({
   PAIRING_ALLOWED_EMAILS: z.string().default(""),
   SMTP_URL: optionalEnvString,
   CF_ACCESS_TEAM_DOMAIN: optionalEnvString,
-  CF_ACCESS_AUD: optionalEnvString
+  CF_ACCESS_AUD: optionalEnvString,
+  // CS → Secure → CS one-time device auth grants (see docs/cs-secure-redirect-e2ee.md)
+  WEB_E2EE_RETURN_ORIGINS: z.string().default(""),
+  E2EE_CS_AUTH_GRANT_TTL_SECONDS: z.coerce.number().int().positive().default(120)
 });
 
 const parsed = envSchema.parse(process.env);
@@ -158,5 +161,9 @@ export const config = {
   ),
   smtpUrl: parsed.SMTP_URL,
   cfAccessTeamDomain: parsed.CF_ACCESS_TEAM_DOMAIN,
-  cfAccessAud: parsed.CF_ACCESS_AUD
+  cfAccessAud: parsed.CF_ACCESS_AUD,
+  webE2eeReturnOrigins: parsed.WEB_E2EE_RETURN_ORIGINS.split(",")
+    .map((item) => item.trim())
+    .filter(Boolean),
+  csAuthGrantTtlSeconds: parsed.E2EE_CS_AUTH_GRANT_TTL_SECONDS
 };

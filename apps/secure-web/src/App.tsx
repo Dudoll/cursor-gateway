@@ -18,6 +18,11 @@ import {
   startPairing,
   tryConsumeMagicLink
 } from "./pairing.js";
+import {
+  captureCsAuthRedirectParams,
+  completeCsAuthReturn
+} from "./csAuthReturn.js";
+import type { CsAuthRedirectParams } from "@cursor-gateway/e2ee";
 import { SecureGatewayClient, progressLabel, type DecryptedRun } from "./secureClient.js";
 import type { E2eeConversationRecord, E2eeRunnerDirectoryEntry } from "@cursor-gateway/shared";
 
@@ -53,6 +58,7 @@ export function App() {
   const [prompt, setPrompt] = useState("");
   const [allowWrites, setAllowWrites] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [csAuthPending, setCsAuthPending] = useState<CsAuthRedirectParams | null>(null);
 
   const api = useMemo(() => {
     try {
@@ -72,6 +78,14 @@ export function App() {
         return;
       }
       await requestPersistentStorage();
+      const pendingCs = captureCsAuthRedirectParams();
+      if (pendingCs && !cancelled) {
+        setCsAuthPending(pendingCs);
+        setStatus({
+          tone: "info",
+          text: "检测到 CS 设备授权请求。完成 Secure 配对后将签发一次性授权并返回 CS。"
+        });
+      }
       const keys = await SecureWebKeyStore.open();
       const device = await keys.device();
       if (cancelled) return;
@@ -87,6 +101,28 @@ export function App() {
     };
   }, []);
 
+  async function tryFinishCsAuth(
+    clientApi: GatewayApi,
+    keys: SecureWebKeyStore,
+    params: CsAuthRedirectParams
+  ) {
+    setBusy(true);
+    setStatus({ tone: "info", text: "正在向 Runner 请求 CS 设备授权包…" });
+    try {
+      const { returnUrl } = await completeCsAuthReturn({
+        api: clientApi,
+        keys,
+        params
+      });
+      setCsAuthPending(null);
+      setStatus({ tone: "ok", text: "授权已签发，正在返回 CS…" });
+      window.location.assign(returnUrl);
+    } catch (error) {
+      setStatus({ tone: "error", text: `CS 授权失败：${errorText(error)}` });
+      setBusy(false);
+    }
+  }
+
   useEffect(() => {
     if (boot.kind !== "ready" || !api) return;
     if (!parseMagicLinkFragment(window.location.hash)) return;
@@ -100,6 +136,11 @@ export function App() {
         setRunnerId(result.runnerId);
         setStep(3);
         await refreshDirectory(api, boot.keys);
+        const pending = csAuthPending ?? captureCsAuthRedirectParams();
+        if (pending) {
+          setCsAuthPending(pending);
+          await tryFinishCsAuth(api, boot.keys, pending);
+        }
       })
       .catch((error) => {
         if (!cancelled) {
@@ -113,6 +154,21 @@ export function App() {
       cancelled = true;
     };
   }, [boot, api]);
+
+  // Already paired + pending CS auth (e.g. return from a prior session).
+  useEffect(() => {
+    if (boot.kind !== "ready" || !api || !csAuthPending) return;
+    if (!boot.device.pairedRunnerId) return;
+    if (parseMagicLinkFragment(window.location.hash)) return;
+    let cancelled = false;
+    (async () => {
+      if (cancelled) return;
+      await tryFinishCsAuth(api, boot.keys, csAuthPending);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [boot, api, csAuthPending]);
 
   async function refreshDirectory(clientApi: GatewayApi, keys: SecureWebKeyStore) {
     const client = new SecureGatewayClient(clientApi, keys);
@@ -179,6 +235,12 @@ export function App() {
       setRunnerId(result.runnerId);
       setStep(3);
       await refreshDirectory(api, boot.keys);
+      const pending = csAuthPending ?? captureCsAuthRedirectParams();
+      if (pending) {
+        setCsAuthPending(pending);
+        await tryFinishCsAuth(api, boot.keys, pending);
+        return;
+      }
     } catch (error) {
       setStatus({ tone: "error", text: `完成配对失败：${errorText(error)}` });
     } finally {

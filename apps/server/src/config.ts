@@ -32,7 +32,9 @@ const envSchema = z.object({
   E2EE_REQUIRED_FOR_WEB: booleanEnv(false),
   E2EE_EXTENSION_ORIGINS: z.string().default(""),
   SECURE_CLIENT_ORIGIN: z.string().default(""),
+  WEB_E2EE_RETURN_ORIGINS: z.string().default(""),
   E2EE_PAIRING_TTL_SECONDS: z.coerce.number().int().positive().default(900),
+  E2EE_CS_AUTH_TTL_SECONDS: z.coerce.number().int().positive().default(300),
   WEB_DEFAULT_MODEL: z.string().default("auto"),
   REPORT_MODEL_ID: z.string().default(""),
   REPORT_WORKSPACE_ID: z.string().default("")
@@ -67,7 +69,9 @@ export const config = {
   e2eeRequiredForWeb: parsed.E2EE_REQUIRED_FOR_WEB,
   e2eeExtensionOrigins: new Set(splitCsv(parsed.E2EE_EXTENSION_ORIGINS)),
   secureClientOrigin: parsed.SECURE_CLIENT_ORIGIN.trim(),
+  webE2eeReturnOrigins: new Set(splitCsv(parsed.WEB_E2EE_RETURN_ORIGINS)),
   e2eePairingTtlSeconds: parsed.E2EE_PAIRING_TTL_SECONDS,
+  e2eeCsAuthTtlSeconds: parsed.E2EE_CS_AUTH_TTL_SECONDS,
   webDefaultModel: parsed.WEB_DEFAULT_MODEL,
   reportModelId: parsed.REPORT_MODEL_ID,
   reportWorkspaceId: parsed.REPORT_WORKSPACE_ID

@@ -328,6 +328,23 @@ export async function migrate() {
 
     create index if not exists e2ee_devices_user_idx
       on e2ee_devices(user_id, paired_at desc);
+
+    create table if not exists e2ee_cs_auth (
+      auth_id uuid primary key,
+      user_id uuid not null references app_users(id),
+      status text not null,
+      intent_envelope jsonb not null,
+      grant_envelope jsonb,
+      runner_id text,
+      secure_client_id text,
+      expires_at timestamptz not null,
+      created_at timestamptz not null default now(),
+      updated_at timestamptz not null default now()
+    );
+
+    create index if not exists e2ee_cs_auth_pending_idx
+      on e2ee_cs_auth(status, created_at)
+      where status = 'pending_runner';
   `);
 }
 

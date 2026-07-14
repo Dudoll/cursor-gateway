@@ -685,6 +685,68 @@ export const e2eeKeyGrantSchema = z
   .strict();
 export type E2eeKeyGrant = z.infer<typeof e2eeKeyGrantSchema>;
 
+/**
+ * CS → Secure redirect authorization: Runner signs a one-time grant for a CS
+ * device public key (private key never leaves cs origin).
+ */
+export const E2EE_CS_AUTH_KIND = "cs-web-device-auth/1" as const;
+
+export const e2eeCsAuthStatusSchema = z.enum([
+  "intent_ready",
+  "pending_runner",
+  "granted",
+  "rejected",
+  "consumed",
+  "expired"
+]);
+export type E2eeCsAuthStatus = z.infer<typeof e2eeCsAuthStatusSchema>;
+
+export const e2eeCsAuthIntentSchema = z
+  .object({
+    protocol: z.literal(E2EE_PROTOCOL),
+    authKind: z.literal(E2EE_CS_AUTH_KIND),
+    authId: z.string().uuid(),
+    clientId: z.string().trim().min(8).max(128),
+    challenge: base64UrlSchema(43).length(43),
+    state: base64UrlSchema(43).length(43),
+    signingKey: e2eeKeyDescriptorSchema,
+    encryptionKey: e2eeKeyDescriptorSchema,
+    returnOrigin: z.string().url().max(512),
+    gatewayOrigin: z.string().url().max(512),
+    createdAt: z.string().min(1).max(64)
+  })
+  .strict();
+export type E2eeCsAuthIntent = z.infer<typeof e2eeCsAuthIntentSchema>;
+
+export const e2eeCsAuthGrantSchema = z
+  .object({
+    protocol: z.literal(E2EE_PROTOCOL),
+    authKind: z.literal(E2EE_CS_AUTH_KIND),
+    authId: z.string().uuid(),
+    clientId: z.string().trim().min(8).max(128),
+    challenge: base64UrlSchema(43).length(43),
+    state: base64UrlSchema(43).length(43),
+    signingFingerprint: z.string().regex(/^sha256:[A-Za-z0-9_-]{43}$/),
+    encryptionFingerprint: z.string().regex(/^sha256:[A-Za-z0-9_-]{43}$/),
+    returnOrigin: z.string().url().max(512),
+    gatewayOrigin: z.string().url().max(512),
+    runnerId: z.string().trim().min(1).max(128),
+    runnerEncryptionKey: e2eeKeyDescriptorSchema,
+    runnerSigningKey: e2eeKeyDescriptorSchema,
+    status: z.enum(["authorized", "rejected"]),
+    expiresAt: z.string().min(1).max(64),
+    createdAt: z.string().min(1).max(64),
+    signature: e2eeSignatureSchema
+  })
+  .strict();
+export type E2eeCsAuthGrant = z.infer<typeof e2eeCsAuthGrantSchema>;
+
+export const e2eeCsAuthIntentRequestSchema = z
+  .object({
+    intent: e2eeCsAuthIntentSchema
+  })
+  .strict();
+
 export const e2eePairingStartRequestSchema = z
   .object({
     start: e2eePairingStartSchema

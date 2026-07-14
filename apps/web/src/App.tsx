@@ -29,6 +29,18 @@ import type {
   Workspace
 } from "@cursor-gateway/shared";
 import { Markdown } from "./Markdown.js";
+import { GatewayApi } from "./api.js";
+import {
+  beginCsDeviceAuth,
+  completeCsDeviceAuthFromFragment
+} from "./csAuth.js";
+import {
+  CsWebKeyStore,
+  detectIncompatibleStorage,
+  requestPersistentStorage,
+  type DeviceRecord
+} from "./keyStore.js";
+import { SecureGatewayClient, type DecryptedRun } from "./secureClient.js";
 
 type ReportSummary = ReportDefinition & {
   runCount: number;
@@ -315,11 +327,62 @@ function GatewayDashboard() {
   const [allowWrites, setAllowWrites] = useState(false);
   const [memoryText, setMemoryText] = useState("");
   const [e2eeRequired, setE2eeRequired] = useState(false);
+  const [secureClientOrigin, setSecureClientOrigin] = useState(SECURE_WEB_ORIGIN);
+  const [e2eeKeys, setE2eeKeys] = useState<CsWebKeyStore | null>(null);
+  const [e2eeDevice, setE2eeDevice] = useState<DeviceRecord | null>(null);
+  const [e2eeRuns, setE2eeRuns] = useState<DecryptedRun[]>([]);
+  const [e2eeTitles, setE2eeTitles] = useState<Record<string, string>>({});
+  const [e2eeConversations, setE2eeConversations] = useState<
+    Array<{ id: string; workspaceId: string; updatedAt: string }>
+  >([]);
+  const [e2eeStatus, setE2eeStatus] = useState<string | null>(null);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useSidebarCollapsed();
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const promptRef = useAutosizeTextarea(prompt);
+  const gatewayApi = useMemo(() => new GatewayApi(window.location.origin), []);
+  const e2eePaired = Boolean(e2eeDevice?.pairedRunnerId);
+  const useE2eeChat = e2eeRequired || e2eePaired;
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const blocked = await detectIncompatibleStorage();
+      if (cancelled) return;
+      if (blocked) {
+        setE2eeStatus(`本浏览器无法保存设备密钥：${blocked}`);
+        return;
+      }
+      await requestPersistentStorage();
+      const keys = await CsWebKeyStore.open();
+      if (cancelled) return;
+      setE2eeKeys(keys);
+      if (window.location.hash.includes("cs_auth=")) {
+        setE2eeStatus("正在验证 Runner 授权包…");
+        try {
+          const result = await completeCsDeviceAuthFromFragment({
+            api: gatewayApi,
+            keys
+          });
+          if (result) {
+            setE2eeStatus(`已授权 Runner ${result.runnerId}（本页 E2EE 可用）`);
+          }
+        } catch (err) {
+          setE2eeStatus(err instanceof Error ? err.message : String(err));
+        }
+      }
+      const device = await keys.device();
+      if (!cancelled) setE2eeDevice(device);
+    })().catch((err) => {
+      if (!cancelled) {
+        setE2eeStatus(err instanceof Error ? err.message : String(err));
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [gatewayApi]);
 
   async function refresh(conversationId = selectedConversationId) {
     const [me, models, workspaces, runners, conversations, memory, policy, conversationRuns] =
@@ -330,12 +393,18 @@ function GatewayDashboard() {
       api<{ runners: ApiState["runners"] }>("/api/dashboard-runners"),
       api<{ conversations: Conversation[] }>("/api/conversations"),
       api<{ facts: MemoryFact[] }>("/api/memory"),
-      api<{ requiredForWeb: boolean }>("/api/e2ee-policy"),
-      conversationId
+      api<{
+        requiredForWeb: boolean;
+        secureClientOrigin?: string | null;
+      }>("/api/e2ee-policy"),
+      conversationId && !useE2eeChat
         ? api<{ runs: RunRecord[] }>(`/api/conversations/${conversationId}/runs`)
         : Promise.resolve({ runs: [] })
       ]);
     setE2eeRequired(policy.requiredForWeb);
+    if (policy.secureClientOrigin) {
+      setSecureClientOrigin(policy.secureClientOrigin);
+    }
 
     setState({
       principal: me.principal,
@@ -346,6 +415,33 @@ function GatewayDashboard() {
       conversationRuns: conversationRuns.runs,
       memory: memory.facts
     });
+
+    if (e2eeKeys && e2eePaired) {
+      try {
+        const client = new SecureGatewayClient(gatewayApi, e2eeKeys);
+        const list = await client.conversations();
+        setE2eeConversations(
+          list.map((item) => ({
+            id: item.id,
+            workspaceId: item.workspaceId,
+            updatedAt: item.updatedAt
+          }))
+        );
+        const titles: Record<string, string> = {};
+        for (const conversation of list) {
+          titles[conversation.id] = await client.title(conversation);
+        }
+        setE2eeTitles(titles);
+        if (conversationId && useE2eeChat) {
+          const decrypted = await client.runs(conversationId);
+          setE2eeRuns(decrypted);
+        } else if (!conversationId) {
+          setE2eeRuns([]);
+        }
+      } catch (err) {
+        setE2eeStatus(err instanceof Error ? err.message : String(err));
+      }
+    }
 
     const selected = conversations.conversations.find((item) => item.id === conversationId);
     if (selected) setWorkspaceId(selected.workspaceId);
@@ -378,7 +474,26 @@ function GatewayDashboard() {
       refresh(selectedConversationId).catch(() => undefined);
     }, 4000);
     return () => window.clearInterval(timer);
-  }, [selectedConversationId]);
+  }, [selectedConversationId, e2eeKeys, e2eePaired]);
+
+  async function authorizeE2ee() {
+    if (!e2eeKeys) {
+      setError("设备密钥尚未就绪");
+      return;
+    }
+    setLoading(true);
+    setError("");
+    try {
+      await beginCsDeviceAuth({
+        api: gatewayApi,
+        keys: e2eeKeys,
+        secureOrigin: secureClientOrigin || SECURE_WEB_ORIGIN
+      });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+      setLoading(false);
+    }
+  }
 
   const selectedWorkspace = useMemo(
     () => state.workspaces.find((workspace) => workspace.id === workspaceId),
@@ -435,28 +550,43 @@ function GatewayDashboard() {
 
   async function submitRun(event: FormEvent) {
     event.preventDefault();
-    if (e2eeRequired) {
-      setError("Web chat requires the signed Cursor Gateway Secure extension.");
+    if (e2eeRequired && !e2eePaired) {
+      setError("此 Gateway 要求 E2EE：请先完成本页设备授权。");
       return;
     }
     setLoading(true);
     setError("");
     try {
-      const result = await api<{ run: RunRecord }>("/api/runs", {
-        method: "POST",
-        body: JSON.stringify({
-          origin: "web",
-          prompt,
-          ...(selectedConversationId ? { conversationId: selectedConversationId } : {}),
-          model,
+      if (useE2eeChat && e2eeKeys && e2eeDevice?.pairedRunnerId) {
+        const client = new SecureGatewayClient(gatewayApi, e2eeKeys);
+        const run = await client.submitRun({
+          runnerId: e2eeDevice.pairedRunnerId,
           workspaceId,
-          memoryEnabled: true,
-          allowWrites
-        })
-      });
-      setPrompt("");
-      setSelectedConversationId(result.run.conversationId);
-      await refresh(result.run.conversationId);
+          model,
+          prompt,
+          allowWrites,
+          ...(selectedConversationId ? { conversationId: selectedConversationId } : {})
+        });
+        setPrompt("");
+        setSelectedConversationId(run.conversationId);
+        await refresh(run.conversationId);
+      } else {
+        const result = await api<{ run: RunRecord }>("/api/runs", {
+          method: "POST",
+          body: JSON.stringify({
+            origin: "web",
+            prompt,
+            ...(selectedConversationId ? { conversationId: selectedConversationId } : {}),
+            model,
+            workspaceId,
+            memoryEnabled: true,
+            allowWrites
+          })
+        });
+        setPrompt("");
+        setSelectedConversationId(result.run.conversationId);
+        await refresh(result.run.conversationId);
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -466,8 +596,12 @@ function GatewayDashboard() {
 
   async function addMemory(event: FormEvent) {
     event.preventDefault();
-    if (e2eeRequired) {
-      setError("Memory writes require the signed Cursor Gateway Secure extension.");
+    if (e2eeRequired && !e2eePaired) {
+      setError("Memory writes require E2EE device authorization on this page.");
+      return;
+    }
+    if (useE2eeChat) {
+      setError("E2EE memory writes from CS web are not enabled in this MVP; use Secure Web or plaintext mode.");
       return;
     }
     setError("");
@@ -556,27 +690,53 @@ function GatewayDashboard() {
           </div>
 
           <div className="conversation-list">
-            {state.conversations.map((conversation, index) => (
-              <button
-                className={conversation.id === selectedConversationId ? "active" : ""}
-                key={conversation.id}
-                onClick={() => {
-                  setSelectedConversationId(conversation.id);
-                  setWorkspaceId(conversation.workspaceId);
-                }}
-                style={{ ["--i" as string]: index } as CSSProperties}
-                title={conversation.title ?? "Untitled conversation"}
-                type="button"
-              >
-                <span className="conversation-glyph"><MessageSquare aria-hidden="true" size={15} strokeWidth={1.75} /></span>
-                <span>
-                  <strong>{conversation.title ?? "Untitled conversation"}</strong>
-                  <small>{conversation.runCount} message pair(s)</small>
-                </span>
-              </button>
-            ))}
-            {state.conversations.length === 0 ? (
-              <p className="sidebar-empty">Start a chat to pin context here.</p>
+            {useE2eeChat
+              ? e2eeConversations.map((conversation, index) => (
+                  <button
+                    className={conversation.id === selectedConversationId ? "active" : ""}
+                    key={conversation.id}
+                    onClick={() => {
+                      setSelectedConversationId(conversation.id);
+                      setWorkspaceId(conversation.workspaceId);
+                    }}
+                    style={{ ["--i" as string]: index } as CSSProperties}
+                    title={e2eeTitles[conversation.id] ?? "Encrypted conversation"}
+                    type="button"
+                  >
+                    <span className="conversation-glyph">
+                      <LockKeyhole aria-hidden="true" size={15} strokeWidth={1.75} />
+                    </span>
+                    <span>
+                      <strong>{e2eeTitles[conversation.id] ?? "Encrypted conversation"}</strong>
+                      <small>E2EE · {conversation.workspaceId}</small>
+                    </span>
+                  </button>
+                ))
+              : state.conversations.map((conversation, index) => (
+                  <button
+                    className={conversation.id === selectedConversationId ? "active" : ""}
+                    key={conversation.id}
+                    onClick={() => {
+                      setSelectedConversationId(conversation.id);
+                      setWorkspaceId(conversation.workspaceId);
+                    }}
+                    style={{ ["--i" as string]: index } as CSSProperties}
+                    title={conversation.title ?? "Untitled conversation"}
+                    type="button"
+                  >
+                    <span className="conversation-glyph">
+                      <MessageSquare aria-hidden="true" size={15} strokeWidth={1.75} />
+                    </span>
+                    <span>
+                      <strong>{conversation.title ?? "Untitled conversation"}</strong>
+                      <small>{conversation.runCount} message pair(s)</small>
+                    </span>
+                  </button>
+                ))}
+            {(useE2eeChat ? e2eeConversations.length : state.conversations.length) === 0 ? (
+              <p className="sidebar-empty">
+                {useE2eeChat ? "Start an encrypted chat." : "Start a chat to pin context here."}
+              </p>
             ) : null}
           </div>
 
@@ -587,12 +747,14 @@ function GatewayDashboard() {
                 value={memoryText}
                 onChange={(event) => setMemoryText(event.target.value)}
                 placeholder={
-                  e2eeRequired
-                    ? "Use Cursor Gateway Secure for encrypted Memory"
-                    : "Add a durable preference…"
+                  e2eeRequired && !e2eePaired
+                    ? "Authorize this browser for E2EE first"
+                    : useE2eeChat
+                      ? "E2EE memory: use Secure Web for now"
+                      : "Add a durable preference…"
                 }
                 rows={2}
-                disabled={e2eeRequired}
+                disabled={e2eeRequired || useE2eeChat}
               />
               <button disabled={e2eeRequired || !memoryText.trim()}>Save memory</button>
             </form>
@@ -641,34 +803,123 @@ function GatewayDashboard() {
           </header>
 
           {error ? <div className="error chat-error">{error}</div> : null}
+          {e2eeStatus ? (
+            <div className="error chat-error" style={{ background: "transparent", borderColor: "transparent" }}>
+              {e2eeStatus}
+            </div>
+          ) : null}
           <div className="home-messages">
-            {e2eeRequired ? (
+            {e2eeRequired && !e2eePaired ? (
               <section className="e2ee-required" aria-live="polite">
                 <LockKeyhole aria-hidden="true" size={22} />
                 <div>
-                  <h2>此 Gateway 要求 E2EE 加密聊天</h2>
+                  <h2>此 Gateway 要求本页 E2EE 加密聊天</h2>
                   <p>
-                    请使用{" "}
-                    <a href={SECURE_WEB_ORIGIN} rel="noreferrer" target="_blank">
+                    设备私钥仅留在本页（不可导出）。将跳转{" "}
+                    <a href={secureClientOrigin || SECURE_WEB_ORIGIN} rel="noreferrer">
                       Secure Web
-                    </a>
-                    （{SECURE_WEB_ORIGIN}）完成配对后发送密文。本页不会接收 E2EE 明文。
+                    </a>{" "}
+                    完成身份配对后，Runner 签发一次性授权包经 URL fragment 返回本页。
+                  </p>
+                  <p>
+                    <button disabled={loading || !e2eeKeys} onClick={authorizeE2ee} type="button">
+                      {loading ? "跳转中…" : "授权本浏览器"}
+                    </button>
                   </p>
                 </div>
               </section>
             ) : null}
-            {state.conversationRuns.length === 0 && !e2eeRequired ? (
-              <div className="home-welcome">
-                <div className="welcome-mark"><Sparkles aria-hidden="true" size={21} strokeWidth={1.75} /></div>
-                <h2>Ask the runner</h2>
-                <p className="welcome-copy">
-                  Hermes answers on the VPS host. Switch to a Cursor runner model when you need
-                  workspace-aware reads or writes.
-                </p>
-              </div>
+            {!e2eeRequired && !e2eePaired ? (
+              <section className="e2ee-required" aria-live="polite">
+                <LockKeyhole aria-hidden="true" size={22} />
+                <div>
+                  <h2>可选：为本浏览器启用 E2EE</h2>
+                  <p>
+                    不启用时仍可明文聊天。启用后私钥不离开本页，经 Secure 一次性授权后在本页用
+                    cg-e2ee/1 加密。
+                  </p>
+                  <p>
+                    <button disabled={loading || !e2eeKeys} onClick={authorizeE2ee} type="button">
+                      {loading ? "跳转中…" : "授权本浏览器"}
+                    </button>
+                  </p>
+                </div>
+              </section>
             ) : null}
+            {e2eePaired ? (
+              <section className="e2ee-required" aria-live="polite">
+                <LockKeyhole aria-hidden="true" size={22} />
+                <div>
+                  <h2>本页 E2EE 已启用（cg-e2ee/1）</h2>
+                  <p>
+                    Runner {e2eeDevice?.pairedRunnerId} 公钥已钉住。Gateway 只中继密文。
+                  </p>
+                </div>
+              </section>
+            ) : null}
+            {useE2eeChat
+              ? e2eeRuns.length === 0 && e2eePaired
+                ? (
+                    <div className="home-welcome">
+                      <div className="welcome-mark">
+                        <LockKeyhole aria-hidden="true" size={21} strokeWidth={1.75} />
+                      </div>
+                      <h2>Encrypted chat</h2>
+                      <p className="welcome-copy">
+                        Prompts and answers stay sealed end-to-end with the paired runner.
+                      </p>
+                    </div>
+                  )
+                : null
+              : state.conversationRuns.length === 0 && !e2eeRequired
+                ? (
+                    <div className="home-welcome">
+                      <div className="welcome-mark">
+                        <Sparkles aria-hidden="true" size={21} strokeWidth={1.75} />
+                      </div>
+                      <h2>Ask the runner</h2>
+                      <p className="welcome-copy">
+                        Hermes answers on the VPS host. Switch to a Cursor runner model when you need
+                        workspace-aware reads or writes.
+                      </p>
+                    </div>
+                  )
+                : null}
 
-            {state.conversationRuns.map((run, index) => (
+            {useE2eeChat
+              ? e2eeRuns.map((run, index) => (
+                  <div
+                    className="chat-turn"
+                    key={run.record.id}
+                    style={{ ["--i" as string]: index } as CSSProperties}
+                  >
+                    <div className="chat-message user-message">
+                      <div className="message-body">{run.request.prompt}</div>
+                      <div className="user-message-meta">
+                        <time dateTime={run.record.createdAt}>
+                          Sent {formatMessageTime(run.record.createdAt)}
+                        </time>
+                      </div>
+                    </div>
+                    <div className="chat-message assistant-message">
+                      <div className="message-avatar">AI</div>
+                      <div className="message-main">
+                        <div className="message-meta">
+                          <strong>Cursor</strong>
+                          <span className="message-model">{run.request.routing.model}</span>
+                        </div>
+                        {run.result?.response ? <Markdown>{run.result.response}</Markdown> : null}
+                        {run.result?.error ? <pre className="error-pre">{run.result.error}</pre> : null}
+                        {run.progress && !run.result ? (
+                          <pre className="run-progress-body">
+                            {run.progress.message || run.progress.progressKind}
+                          </pre>
+                        ) : null}
+                      </div>
+                    </div>
+                  </div>
+                ))
+              : state.conversationRuns.map((run, index) => (
               <div className="chat-turn" key={run.id} style={{ ["--i" as string]: index } as CSSProperties}>
                 <div className="chat-message user-message">
                   <div className="message-body">{run.prompt}</div>
@@ -727,18 +978,25 @@ function GatewayDashboard() {
                   onChange={(event) => setPrompt(event.target.value)}
                   onKeyDown={submitOnEnter}
                   placeholder={
-                    e2eeRequired
-                      ? "Open the signed Cursor Gateway Secure extension"
-                      : selectedHermesModel
-                      ? "Message Hermes on the VPS"
-                      : "Message Cursor about your workspace"
+                    e2eeRequired && !e2eePaired
+                      ? "先点击「授权本浏览器」完成 E2EE"
+                      : useE2eeChat
+                        ? "E2EE message to the paired runner"
+                        : selectedHermesModel
+                          ? "Message Hermes on the VPS"
+                          : "Message Cursor about your workspace"
                   }
                   rows={1}
-                  disabled={e2eeRequired}
+                  disabled={e2eeRequired && !e2eePaired}
                 />
                 <button
                   aria-label="Send message"
-                  disabled={e2eeRequired || loading || !prompt.trim() || !workspaceId}
+                  disabled={
+                    (e2eeRequired && !e2eePaired) ||
+                    loading ||
+                    !prompt.trim() ||
+                    !workspaceId
+                  }
                 >
                   {loading ? <SendBusy /> : <ArrowUp aria-hidden="true" size={18} strokeWidth={2} />}
                 </button>
@@ -763,7 +1021,9 @@ function GatewayDashboard() {
                     type="checkbox"
                     checked={allowWrites}
                     disabled={
-                      e2eeRequired || selectedHermesModel || !selectedWorkspace?.writable
+                      (e2eeRequired && !e2eePaired) ||
+                      selectedHermesModel ||
+                      !selectedWorkspace?.writable
                     }
                     onChange={(event) => setAllowWrites(event.target.checked)}
                   />

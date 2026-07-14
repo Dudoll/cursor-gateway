@@ -21,6 +21,7 @@ import { E2eeJobProcessor } from "./e2eeProcessor.js";
 import { RunnerE2eeState } from "./e2eeState.js";
 import { toLocalPath } from "./pathTranslation.js";
 import { writeHealthSnapshot } from "./health.js";
+import { processCsAuthCycle } from "./csAuth.js";
 import { processSecureWebPairingCycle } from "./secureWebPairing.js";
 
 const GATEWAY_REQUEST_TIMEOUT_MS = 30_000;
@@ -452,6 +453,17 @@ async function pairingLoop(state: RunnerE2eeState) {
     } catch (error) {
       console.warn(
         "Secure-web pairing cycle failed:",
+        error instanceof Error ? error.message : "unknown"
+      );
+    }
+    try {
+      await processCsAuthCycle({
+        state,
+        gatewayFetch
+      });
+    } catch (error) {
+      console.warn(
+        "CS device auth cycle failed:",
         error instanceof Error ? error.message : "unknown"
       );
     }

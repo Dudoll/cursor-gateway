@@ -15,6 +15,8 @@ import {
   e2eePairingCompleteRequestSchema,
   e2eePairingOfferSchema,
   e2eePairingStartRequestSchema,
+  e2eeCsAuthGrantSchema,
+  e2eeCsAuthIntentRequestSchema,
   e2eeProgressSubmissionSchema,
   e2eeResultSubmissionSchema,
   e2eeRunnerClaimRequestSchema,
@@ -103,6 +105,15 @@ import {
   revokeDeviceForUser,
   submitPairingComplete
 } from "./pairingDb.js";
+import {
+  CsAuthConflictError,
+  claimNextCsAuth,
+  consumeCsAuthGrant,
+  createCsAuthIntent,
+  getCsAuthForUser,
+  markCsAuthPendingRunner,
+  publishCsAuthGrant
+} from "./csAuthDb.js";
 import { truncateConversationHistory } from "./history.js";
 import {
   buildReportQuestionPrompt,
@@ -229,7 +240,10 @@ export async function registerRoutes(app: FastifyInstance) {
     api.get("/e2ee-policy", async () => ({
       requiredForWeb: config.e2eeRequiredForWeb,
       protocol: E2EE_PROTOCOL,
-      trustedClient: "signed-browser-extension"
+      trustedClient: "signed-browser-extension",
+      secureClientOrigin: config.secureClientOrigin || null,
+      webE2eeReturnOrigins: [...config.webE2eeReturnOrigins],
+      csAuthTtlSeconds: config.e2eeCsAuthTtlSeconds
     }));
 
     api.get("/models", async () => ({
@@ -867,6 +881,144 @@ export async function registerRoutes(app: FastifyInstance) {
           devices: await listDevicesForUser(request.principal!.id)
         }));
 
+        secure.post("/cs-auth/intent", async (request, reply) => {
+          const body = e2eeCsAuthIntentRequestSchema.parse(request.body);
+          const intent = body.intent;
+          if (intent.gatewayOrigin !== config.publicOrigin) {
+            return reply.code(400).send({ error: "gateway_origin_mismatch" });
+          }
+          if (
+            config.webE2eeReturnOrigins.size > 0 &&
+            !config.webE2eeReturnOrigins.has(intent.returnOrigin)
+          ) {
+            return reply.code(400).send({ error: "return_origin_not_allowed" });
+          }
+          if (
+            intent.signingKey.fingerprint === intent.encryptionKey.fingerprint
+          ) {
+            // Allowed but unusual; no hard fail.
+          }
+          try {
+            const row = await createCsAuthIntent({
+              userId: request.principal!.id,
+              intent,
+              ttlSeconds: config.e2eeCsAuthTtlSeconds
+            });
+            await appendAudit({
+              actorUserId: request.principal!.id,
+              eventType: "e2ee.cs_auth.intent",
+              details: {
+                authId: intent.authId,
+                clientId: intent.clientId,
+                returnOrigin: intent.returnOrigin,
+                signingFingerprint: intent.signingKey.fingerprint
+              }
+            });
+            return reply.code(202).send({
+              authId: row.authId,
+              status: row.status,
+              expiresAt: row.expiresAt
+            });
+          } catch (error) {
+            if (error instanceof CsAuthConflictError) {
+              return reply.code(409).send({ error: error.code });
+            }
+            throw error;
+          }
+        });
+
+        secure.post("/cs-auth/:authId/request", async (request, reply) => {
+          const params = z.object({ authId: z.string().uuid() }).parse(request.params);
+          const body = z
+            .object({
+              secureClientId: z.string().trim().min(8).max(128),
+              challenge: z.string().regex(/^[A-Za-z0-9_-]{43}$/),
+              state: z.string().regex(/^[A-Za-z0-9_-]{43}$/),
+              returnOrigin: z.string().url().max(512),
+              clientId: z.string().trim().min(8).max(128),
+              signingFingerprint: z.string().regex(/^sha256:[A-Za-z0-9_-]{43}$/),
+              encryptionFingerprint: z.string().regex(/^sha256:[A-Za-z0-9_-]{43}$/)
+            })
+            .strict()
+            .parse(request.body);
+          if (
+            config.webE2eeReturnOrigins.size > 0 &&
+            !config.webE2eeReturnOrigins.has(body.returnOrigin)
+          ) {
+            return reply.code(400).send({ error: "return_origin_not_allowed" });
+          }
+          try {
+            const row = await markCsAuthPendingRunner({
+              authId: params.authId,
+              userId: request.principal!.id,
+              secureClientId: body.secureClientId,
+              expected: body
+            });
+            await appendAudit({
+              actorUserId: request.principal!.id,
+              eventType: "e2ee.cs_auth.requested",
+              details: {
+                authId: params.authId,
+                secureClientId: body.secureClientId,
+                clientId: body.clientId
+              }
+            });
+            return {
+              authId: row.authId,
+              status: row.status,
+              expiresAt: row.expiresAt
+            };
+          } catch (error) {
+            if (error instanceof CsAuthConflictError) {
+              return reply.code(409).send({ error: error.code });
+            }
+            throw error;
+          }
+        });
+
+        secure.get("/cs-auth/:authId", async (request, reply) => {
+          const params = z.object({ authId: z.string().uuid() }).parse(request.params);
+          const row = await getCsAuthForUser(params.authId, request.principal!.id);
+          if (!row) return reply.code(404).send({ error: "auth_not_found" });
+          return {
+            authId: row.authId,
+            status: row.status,
+            grant: row.grant,
+            expiresAt: row.expiresAt
+          };
+        });
+
+        secure.post("/cs-auth/:authId/consume", async (request, reply) => {
+          const params = z.object({ authId: z.string().uuid() }).parse(request.params);
+          const body = z
+            .object({
+              challenge: z.string().regex(/^[A-Za-z0-9_-]{43}$/),
+              state: z.string().regex(/^[A-Za-z0-9_-]{43}$/)
+            })
+            .strict()
+            .parse(request.body);
+          try {
+            const row = await consumeCsAuthGrant({
+              authId: params.authId,
+              userId: request.principal!.id,
+              challenge: body.challenge,
+              state: body.state
+            });
+            await appendAudit({
+              actorUserId: request.principal!.id,
+              eventType: "e2ee.cs_auth.consumed",
+              details: { authId: params.authId }
+            });
+            return { authId: row.authId, status: row.status };
+          } catch (error) {
+            if (error instanceof CsAuthConflictError) {
+              const code = error.code === "auth_already_consumed" ? 409 : 409;
+              return reply.code(code).send({ error: error.code });
+            }
+            throw error;
+          }
+        });
+
         secure.post("/devices/:clientId/revoke", async (request, reply) => {
           const params = z
             .object({ clientId: z.string().trim().min(8).max(128) })
@@ -1241,6 +1393,54 @@ export async function registerRoutes(app: FastifyInstance) {
         return { status: pairing.status };
       } catch (error) {
         if (error instanceof PairingConflictError) {
+          return reply.code(409).send({ error: error.code });
+        }
+        throw error;
+      }
+    });
+
+    runner.post("/e2ee/v1/cs-auth/claim", async (request, reply) => {
+      const body = z
+        .object({ runnerId: z.string().trim().min(1).max(128) })
+        .parse(request.body);
+      const row = await claimNextCsAuth({ runnerId: body.runnerId });
+      return row
+        ? {
+            auth: {
+              authId: row.authId,
+              status: row.status,
+              intent: row.intent,
+              secureClientId: row.secureClientId,
+              expiresAt: row.expiresAt
+            }
+          }
+        : reply.code(204).send();
+    });
+
+    runner.post("/e2ee/v1/cs-auth/grant", async (request, reply) => {
+      const body = z
+        .object({
+          runnerId: z.string().trim().min(1).max(128),
+          grant: e2eeCsAuthGrantSchema
+        })
+        .parse(request.body);
+      try {
+        const row = await publishCsAuthGrant({
+          runnerId: body.runnerId,
+          grant: body.grant
+        });
+        await appendAudit({
+          eventType: "e2ee.cs_auth.granted",
+          details: {
+            authId: body.grant.authId,
+            runnerId: body.runnerId,
+            clientId: body.grant.clientId,
+            status: body.grant.status
+          }
+        });
+        return { status: row.status, expiresAt: row.expiresAt };
+      } catch (error) {
+        if (error instanceof CsAuthConflictError) {
           return reply.code(409).send({ error: error.code });
         }
         throw error;
