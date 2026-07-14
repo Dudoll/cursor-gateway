@@ -1,0 +1,224 @@
+:root {
+  --bg0: #0f1419;
+  --bg1: #1a2332;
+  --ink: #e8eef6;
+  --muted: #9aabbd;
+  --accent: #3d9b8f;
+  --accent-2: #c4a35a;
+  --danger: #d9776c;
+  --line: rgba(232, 238, 246, 0.12);
+  --font-display: "Iowan Old Style", "Palatino Linotype", Palatino, "Book Antiqua", Georgia, serif;
+  --font-body: "Segoe UI", "Helvetica Neue", sans-serif;
+  --font-mono: "Cascadia Code", "Fira Code", ui-monospace, monospace;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  color: var(--ink);
+  font-family: var(--font-body);
+  background:
+    radial-gradient(1200px 600px at 10% -10%, rgba(61, 155, 143, 0.28), transparent 55%),
+    radial-gradient(900px 500px at 100% 0%, rgba(196, 163, 90, 0.18), transparent 50%),
+    linear-gradient(165deg, var(--bg0), var(--bg1) 55%, #121820);
+}
+
+.shell {
+  max-width: 42rem;
+  margin: 0 auto;
+  padding: 2.5rem 1.25rem 4rem;
+}
+
+.brand .eyebrow {
+  margin: 0;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  font-size: 0.75rem;
+  color: var(--accent);
+}
+
+.brand h1 {
+  margin: 0.35rem 0 0.6rem;
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: clamp(2rem, 5vw, 2.6rem);
+  line-height: 1.15;
+}
+
+.lede {
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.55;
+}
+
+.panel {
+  margin-top: 1.75rem;
+  padding: 1.25rem 1.2rem 1.4rem;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: rgba(15, 20, 25, 0.55);
+  backdrop-filter: blur(8px);
+}
+
+.panel h2 {
+  margin: 0 0 0.75rem;
+  font-size: 1.15rem;
+  font-family: var(--font-display);
+}
+
+.hint,
+.limits {
+  color: var(--muted);
+  font-size: 0.92rem;
+  line-height: 1.5;
+}
+
+label {
+  display: block;
+  margin: 0.85rem 0;
+  font-size: 0.88rem;
+  color: var(--muted);
+}
+
+input[type="password"],
+input[type="url"],
+input[type="text"] {
+  display: block;
+  width: 100%;
+  margin-top: 0.35rem;
+  padding: 0.65rem 0.75rem;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: rgba(0, 0, 0, 0.35);
+  color: var(--ink);
+  font-family: var(--font-mono);
+  font-size: 0.9rem;
+}
+
+.check {
+  display: flex;
+  gap: 0.55rem;
+  align-items: flex-start;
+  margin: 0.55rem 0;
+  color: var(--ink);
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.55rem;
+  margin-top: 1rem;
+}
+
+button {
+  appearance: none;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--ink);
+  border-radius: 8px;
+  padding: 0.55rem 0.9rem;
+  font-size: 0.92rem;
+  cursor: pointer;
+}
+
+button.primary {
+  background: var(--accent);
+  border-color: transparent;
+  color: #041311;
+  font-weight: 600;
+}
+
+button.ghost {
+  background: transparent;
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.row.between {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.status {
+  margin-bottom: 1rem;
+  padding: 0.75rem 0.85rem;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.28);
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.result {
+  margin-top: 1rem;
+  padding: 0.85rem;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.4);
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  line-height: 1.45;
+  overflow: auto;
+  max-height: 22rem;
+}
+
+.download {
+  margin-top: 1rem;
+  padding: 0.9rem;
+  border: 1px dashed var(--accent-2);
+  border-radius: 8px;
+}
+
+.download a {
+  color: var(--accent-2);
+  font-weight: 600;
+}
+
+.error {
+  color: var(--danger);
+  margin-top: 0.75rem;
+}
+
+.advanced {
+  margin-top: 0.75rem;
+  border-top: 1px solid var(--line);
+  padding-top: 0.75rem;
+}
+
+.advanced summary {
+  cursor: pointer;
+  color: var(--muted);
+  margin-bottom: 0.5rem;
+}
+
+.limits {
+  margin-top: 1.25rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--line);
+}
+
+.limits h3 {
+  margin: 0 0 0.4rem;
+  font-size: 0.95rem;
+  color: var(--ink);
+}
+
+.limits ul {
+  margin: 0;
+  padding-left: 1.1rem;
+}
+
+code {
+  font-family: var(--font-mono);
+  font-size: 0.85em;
+}

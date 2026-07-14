@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="referrer" content="no-referrer" />
+    <title>Cursor Gateway · 傻瓜式部署</title>
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <header class="brand">
+        <p class="eyebrow">Cursor Gateway</p>
+        <h1>傻瓜式部署</h1>
+        <p class="lede">
+          鉴权后一点初始化：密钥、UUID、配对材料由系统生成并写入安全位置。页面只显示指纹与一次性下载包，不回显完整私钥。
+        </p>
+      </header>
+
+      <section id="login-panel" class="panel">
+        <h2>1. 鉴权</h2>
+        <p class="hint">
+          优先使用 Cloudflare Access（反代已注入身份头时自动放行）。否则粘贴主机上的一次性 bootstrap token（
+          <code>~/.cursor-gateway/deploy-bootstrap.token</code>）。
+        </p>
+        <label>
+          Bootstrap token
+          <input id="bootstrap-token" type="password" autocomplete="off" spellcheck="false" />
+        </label>
+        <div class="actions">
+          <button type="button" id="btn-login">登录</button>
+        </div>
+        <p id="login-error" class="error" hidden></p>
+      </section>
+
+      <section id="wizard-panel" class="panel" hidden>
+        <div class="row between">
+          <h2>2. 初始化 / 同步</h2>
+          <button type="button" id="btn-logout" class="ghost">退出</button>
+        </div>
+        <div id="status-box" class="status"></div>
+
+        <label>
+          PUBLIC_ORIGIN（网关 HTTPS 地址）
+          <input id="public-origin" type="url" placeholder="https://gateway.example.com" />
+        </label>
+        <label>
+          ALLOWED_EMAILS（逗号分隔；留空则信任 Access 已放行身份）
+          <input id="allowed-emails" type="text" placeholder="you@example.com" />
+        </label>
+        <label>
+          Runner 工作区路径（写入下载包；可稍后改）
+          <input id="workspaces" type="text" placeholder="/home/you/projects" />
+        </label>
+
+        <details class="advanced">
+          <summary>高级选项</summary>
+          <label class="check">
+            <input id="dry-run" type="checkbox" checked />
+            Dry-run（只预览，不写盘 / 不重启）
+          </label>
+          <label class="check">
+            <input id="force" type="checkbox" />
+            强制重新生成密钥（会断开现有 Runner，危险）
+          </label>
+          <label class="check">
+            <input id="include-reality" type="checkbox" />
+            一并生成 Reality UUID / shortId（仅写入下载包指纹材料）
+          </label>
+          <label class="check">
+            <input id="insecure-dev" type="checkbox" />
+            开发态：无 tmpfs 时把主密钥写到持久盘（有风险，勿用于生产）
+          </label>
+        </details>
+
+        <div class="actions">
+          <button type="button" id="btn-init" class="primary">部署 / 初始化</button>
+          <button type="button" id="btn-sync-dry" class="ghost">同步预览（dry-run）</button>
+          <button type="button" id="btn-sync-apply">同步并重启 compose</button>
+        </div>
+
+        <pre id="result" class="result" hidden></pre>
+        <div id="download-box" class="download" hidden>
+          <p>一次性 Runner 配置包已就绪（10 分钟内有效，下载后即失效）：</p>
+          <a id="download-link" href="#">下载 runner pack</a>
+        </div>
+
+        <aside class="limits">
+          <h3>仍需人工的边界</h3>
+          <ul>
+            <li>Cloudflare DNS / Access 策略</li>
+            <li><code>CURSOR_API_KEY</code>（写入 Runner，不经过本页）</li>
+            <li>Linux/WSL 主密钥：重启后口令解封（<code>scripts/e2ee/e2ee-up.sh</code>）</li>
+            <li>浏览器扩展签名分发与离线指纹核对</li>
+          </ul>
+        </aside>
+      </section>
+    </main>
+    <script src="app.js" type="module"></script>
+  </body>
+</html>

@@ -16,6 +16,28 @@
 
 ## 2. VPS 安装
 
+### 推荐：傻瓜式网页向导
+
+在仓库根目录启动宿主机向导（默认只监听本机），浏览器完成鉴权后一点「初始化」即可生成全部密钥并写入 `.env`（`0600`）：
+
+```bash
+cd /opt/cursor-gateway
+./scripts/foolproof-deploy/start.sh
+# 打开 http://127.0.0.1:19090/ 或经 Access 保护的 https://gateway.example.com/deploy/
+```
+
+说明见 [`foolproof-deploy.md`](foolproof-deploy.md)。然后：
+
+```bash
+cd /opt/cursor-gateway/infra
+docker compose up -d --build
+docker compose logs -f app
+```
+
+（向导里也可直接点「同步并重启 compose」。）
+
+### 手工编辑 `.env`
+
 ```bash
 cd /opt/cursor-gateway
 cp .env.example .env

@@ -45,7 +45,16 @@ Details and troubleshooting: [`docs/windows-runner.md`](docs/windows-runner.md).
 
 ## Quick start: the server
 
-Host once on a VPS with Docker:
+Host once on a VPS with Docker. **Recommended:** use the foolproof web wizard so you never hand-edit secrets:
+
+```bash
+git clone https://github.com/Dudoll/cursor-gateway.git
+cd cursor-gateway
+./scripts/foolproof-deploy/start.sh
+# open http://127.0.0.1:19090/ → authenticate → Initialize (uncheck dry-run) → optional Sync
+```
+
+Manual path (same end state):
 
 ```bash
 git clone https://github.com/Dudoll/cursor-gateway.git
@@ -54,6 +63,9 @@ cp .env.example .env
 nano .env                       # set secrets, domain, allowed users
 cd infra && docker compose up -d --build
 ```
+
+Wizard details (bootstrap token, CSRF, rollback, human boundaries):
+[`docs/foolproof-deploy.md`](docs/foolproof-deploy.md).
 
 Full deployment (DNS, Cloudflare Access, Telegram, backups):
 [`docs/deploy.md`](docs/deploy.md).
