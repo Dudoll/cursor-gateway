@@ -561,14 +561,19 @@ export async function registerRoutes(app: FastifyInstance) {
     });
 
     api.post("/runs", async (request, reply) => {
-      if (config.e2eeRequiredForWeb) {
+      const body = createRunSchema.parse(request.body);
+      const principal = request.principal!;
+
+      // Hermes is a plaintext Q&A-only sidecar that cannot participate in E2EE
+      // (the encrypted submit path rejects it). Allow it through even when web
+      // E2EE is required; every other model must use the E2EE `/api/e2ee/v1`
+      // path so the plaintext gate stays closed.
+      if (config.e2eeRequiredForWeb && !modelIsHermes(body.model)) {
         return reply.code(426).send({
           error: "e2ee_required_for_web",
           protocol: E2EE_PROTOCOL
         });
       }
-      const body = createRunSchema.parse(request.body);
-      const principal = request.principal!;
 
       if (!modelIsKnown(body.model)) {
         return reply.code(400).send({ error: "model_not_available" });

@@ -17,6 +17,41 @@ test("buildPairedModelCatalog prepends auto and drops default/hermes aliases", (
   assert.equal(catalog[0]?.displayName, "Auto");
 });
 
+test("buildPairedModelCatalog appends Hermes sidecar models after the paired catalog", () => {
+  const catalog = buildPairedModelCatalog(
+    [
+      { id: "auto", displayName: "Auto" },
+      { id: "grok-4.5", displayName: "Cursor Grok 4.5" }
+    ],
+    [
+      { id: "hermes:default", displayName: "Hermes · vps-dmit (default)" },
+      { id: "gpt-5.6-sol", displayName: "Not Hermes — ignored" }
+    ]
+  );
+  assert.deepEqual(
+    catalog.map((item) => item.id),
+    ["auto", "grok-4.5", "hermes:default"]
+  );
+  assert.equal(
+    catalog.find((item) => item.id === "hermes:default")?.displayName,
+    "Hermes · vps-dmit (default)"
+  );
+});
+
+test("buildPairedModelCatalog de-dupes Hermes ids already advertised", () => {
+  const catalog = buildPairedModelCatalog(
+    [{ id: "auto", displayName: "Auto" }],
+    [
+      { id: "hermes:default", displayName: "Hermes" },
+      { id: "hermes:default", displayName: "Hermes dup" }
+    ]
+  );
+  assert.deepEqual(
+    catalog.map((item) => item.id),
+    ["auto", "hermes:default"]
+  );
+});
+
 test("buildPairedModelCatalog still returns Auto when runner catalog is empty", () => {
   assert.deepEqual(buildPairedModelCatalog([]), [{ id: "auto", displayName: "Auto" }]);
 });

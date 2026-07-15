@@ -541,7 +541,25 @@ function GatewayDashboard() {
           const directory = await client.runners();
           const paired = directory.find((runner) => runner.runnerId === pairedRunnerId);
           if (paired) {
-            availableModels = buildPairedModelCatalog(paired.models);
+            // Hermes is a plaintext Q&A-only sidecar that lives on the legacy
+            // heartbeat registry (`/api/models` / `/api/dashboard-runners`), not
+            // on the E2EE paired runner. Merge it in so E2EE web users can still
+            // pick Hermes; its runs go over the plaintext `/api/runs` path.
+            const hermesModels = models.models.filter((item) =>
+              item.id.startsWith("hermes:")
+            );
+            // Legacy heartbeat entries have no `online` flag; derive it from
+            // heartbeat freshness (Hermes beats every ~60s) so the header reads
+            // "Ready" instead of "Will queue" for a live sidecar.
+            const hermesRunners = runners.runners
+              .filter((runner) => runner.models.some((item) => item.id.startsWith("hermes:")))
+              .map((runner) => ({
+                ...runner,
+                online:
+                  runner.online ??
+                  Date.now() - Date.parse(runner.lastSeenAt) < 120_000
+              }));
+            availableModels = buildPairedModelCatalog(paired.models, hermesModels);
             availableRunners = [
               {
                 runnerId: paired.runnerId,
@@ -554,7 +572,8 @@ function GatewayDashboard() {
                   writable: item.writable
                 })),
                 models: paired.models
-              }
+              },
+              ...hermesRunners
             ];
             if (paired.workspaces.length) {
               availableWorkspaces = paired.workspaces.map((item) => ({
@@ -861,7 +880,11 @@ function GatewayDashboard() {
     setLoading(true);
     setError("");
     try {
-      if (e2eePaired && e2eeKeys && e2eeDevice?.pairedRunnerId) {
+      // Hermes is a plaintext Q&A-only sidecar and cannot run over E2EE (the
+      // encrypted submit path rejects it). Route it through the plaintext
+      // `/api/runs` path even while this browser is E2EE-paired.
+      const useHermesPlaintext = model.startsWith("hermes:");
+      if (e2eePaired && e2eeKeys && e2eeDevice?.pairedRunnerId && !useHermesPlaintext) {
         const client = new SecureGatewayClient(gatewayApi, e2eeKeys);
         // Historical plaintext threads are read-only; replies open a new E2EE conversation.
         const continueE2eeId =
@@ -1354,9 +1377,11 @@ function GatewayDashboard() {
                   placeholder={
                     e2eeRequired && !e2eePaired
                       ? "先完成加密授权…"
-                      : viewingHistoricalPlaintext
-                        ? "历史明文只读；发送将开启新的加密会话"
-                        : "加密消息发给已配对 Runner"
+                      : selectedHermesModel
+                        ? "Hermes 明文问答（不加密、只读）"
+                        : viewingHistoricalPlaintext
+                          ? "历史明文只读；发送将开启新的加密会话"
+                          : "加密消息发给已配对 Runner"
                   }
                   rows={1}
                   disabled={e2eeRequired && !e2eePaired}
@@ -1402,10 +1427,10 @@ function GatewayDashboard() {
                   Allow writes
                 </label>
                 <span className="composer-hint">
-                  {viewingHistoricalPlaintext
-                    ? "历史明文可查看；回复会新建加密会话"
-                    : selectedHermesModel
-                      ? "Hermes is Q&A-only"
+                  {selectedHermesModel
+                    ? "Hermes 明文问答（不加密、只读）"
+                    : viewingHistoricalPlaintext
+                      ? "历史明文可查看；回复会新建加密会话"
                       : selectedMerged?.kind === "e2ee"
                         ? "Workspace fixed for this conversation"
                         : "Enter to send · Shift+Enter for newline"}
