@@ -10,6 +10,7 @@ import {
   FileText,
   Home,
   LockKeyhole,
+  LockKeyholeOpen,
   MessageSquare,
   PanelLeftClose,
   PanelLeftOpen,
@@ -1035,7 +1036,7 @@ function GatewayDashboard() {
               title="必须完成加密授权后才能聊天"
               type="button"
             >
-              <LockKeyhole aria-hidden="true" size={15} strokeWidth={1.75} />
+              <LockKeyholeOpen aria-hidden="true" size={15} strokeWidth={1.75} />
               <span>{loading ? "授权中…" : "完成加密授权"}</span>
             </button>
           ) : (
@@ -1046,7 +1047,7 @@ function GatewayDashboard() {
               title="可选：经 Secure 一次性授权后，本页用 cg-e2ee/1 加密"
               type="button"
             >
-              <LockKeyhole aria-hidden="true" size={15} strokeWidth={1.75} />
+              <LockKeyholeOpen aria-hidden="true" size={15} strokeWidth={1.75} />
               <span>启用加密</span>
             </button>
           )}
