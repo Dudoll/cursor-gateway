@@ -19,6 +19,7 @@ import {
   tryConsumeMagicLink
 } from "./pairing.js";
 import { pairWithPasskey } from "./passkeyPairing.js";
+import { formatPasskeyError } from "./passkeyErrors.js";
 import {
   decideDeviceApproval,
   listPendingApprovals,
@@ -363,7 +364,7 @@ export function App() {
       });
       await finishPairingThenMaybeReturnToCs(api, boot.keys, result.runnerId);
     } catch (error) {
-      setStatus({ tone: "error", text: `Passkey 配对失败：${errorText(error)}` });
+      setStatus({ tone: "error", text: formatPasskeyError(error) });
     } finally {
       setBusy(false);
     }
@@ -684,10 +685,13 @@ export function App() {
 
         {pairingPanel === "passkey" ? (
           <>
-            <p className="meta">支持 Chrome 桌面、Android Chrome、iOS Safari 的系统 Passkey / Face ID / 指纹。</p>
+            <p className="meta">
+              优先使用本机平台认证器（Windows Hello PIN、Face ID、指纹）。请确认地址栏为{" "}
+              <code>https://secure.joelzt.org</code>，并已设置 Windows Hello。
+            </p>
             <div className="row">
               <button type="button" disabled={busy || !api} onClick={onPasskeyPair}>
-                使用 Passkey / Face ID / 指纹继续
+                使用 Passkey / Windows Hello 继续
               </button>
             </div>
           </>
@@ -748,8 +752,16 @@ export function App() {
         {pairingPanel === "recovery" ? (
           <>
             <p className="meta">
-              在 Runner 本机生成高熵二维码 / 恢复码（Gateway 看不到明文）。扫描 QR 或分别输入
-              recoveryId 与代码。
+              在 Runner 本机（WSL）生成一次性高熵二维码 / 恢复码（Gateway 看不到明文）。最短步骤：
+            </p>
+            <pre className="meta" style={{ whiteSpace: "pre-wrap", margin: "8px 0" }}>
+              {`cd ~/cursor-e2ee
+# 在已配置 RUNNER_* / GATEWAY_URL 的环境中执行（会自动发布 public handle）
+npx tsx scripts/e2ee/trust-root-cli.ts recovery-code --runner-id wsl-e2ee`}
+            </pre>
+            <p className="meta">
+              终端会打印带 <code>#recover=...</code> 的 URL 与分组恢复码。用同一浏览器打开该
+              URL，或在下方粘贴 recoveryId 与恢复码。
             </p>
             <label htmlFor="recoveryId">recoveryId</label>
             <input
@@ -769,7 +781,7 @@ export function App() {
             />
             <div className="row">
               <button type="button" disabled={busy || !api} onClick={onRecoveryPair}>
-                扫描 Runner 二维码 / 输入恢复码
+                使用恢复码完成配对
               </button>
             </div>
           </>

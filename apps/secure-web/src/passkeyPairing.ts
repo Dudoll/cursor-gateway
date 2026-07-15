@@ -23,6 +23,7 @@ import {
 } from "@cursor-gateway/e2ee";
 import { GatewayApi } from "./api.js";
 import { SecureWebKeyStore } from "./keyStore.js";
+import { classifyWebauthnError } from "./passkeyErrors.js";
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -90,16 +91,6 @@ export async function pollUntilPasskeyOptions(
     await sleep(intervalMs);
   }
   throw new Error("passkey_options_timeout");
-}
-
-/** Maps a handful of common WebAuthn ceremony failures to stable codes. */
-function classifyWebauthnError(error: unknown): string {
-  const name = error instanceof Error ? error.name : "";
-  if (name === "NotAllowedError") return "passkey_user_cancelled";
-  if (name === "InvalidStateError") return "passkey_credential_already_registered_locally";
-  if (name === "SecurityError") return "passkey_security_error";
-  if (name === "AbortError") return "passkey_aborted";
-  return "passkey_ceremony_failed";
 }
 
 export async function completePasskeyPairing(input: {
@@ -175,7 +166,9 @@ export async function completePasskeyPairing(input: {
       if (!(await verifyValue(unsignedEnvelope(ack), ack.signature, runnerKey))) {
         throw new Error("passkey_ack_signature_invalid");
       }
-      if (ack.status !== "paired") throw new Error("passkey_rejected_by_runner");
+      if (ack.status !== "paired") {
+        throw new Error(ack.reason ?? "passkey_rejected_by_runner");
+      }
       const bundle: E2eeRunnerPairingBundle = {
         protocol: E2EE_PROTOCOL,
         kind: "runner-pairing",
@@ -210,8 +203,8 @@ export async function pairWithPasskey(input: {
   const options = await pollUntilPasskeyOptions(input.api, started.pairId);
   input.onStatus?.(
     options.mode === "registration"
-      ? "请在系统弹窗中创建 Passkey / Face ID / 指纹…"
-      : "请使用已注册的 Passkey / Face ID / 指纹验证…"
+      ? "请在系统弹窗中使用 Windows Hello PIN / Face ID / 指纹创建 Passkey…"
+      : "请使用已注册的 Windows Hello PIN / Face ID / 指纹验证…"
   );
   return completePasskeyPairing({ api: input.api, keys: input.keys, options });
 }

@@ -881,6 +881,12 @@ export const e2eePasskeyPairingAckSchema = z
     clientId: z.string().trim().min(8).max(128),
     runnerId: z.string().trim().min(1).max(128),
     status: z.enum(["paired", "rejected"]),
+    /** Safe machine-readable reject code (no secrets); omitted on success. */
+    reason: z
+      .string()
+      .trim()
+      .regex(/^[a-z][a-z0-9_]{1,127}$/)
+      .optional(),
     runnerEncryptionKey: e2eeKeyDescriptorSchema,
     runnerSigningKey: e2eeKeyDescriptorSchema,
     runnerCertificate: e2eeRunnerIdentityCertSchema,

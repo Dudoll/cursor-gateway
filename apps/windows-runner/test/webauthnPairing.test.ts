@@ -10,7 +10,7 @@ import {
 import { PasskeyStore } from "../src/passkeyStore.js";
 import { PendingRecordStore } from "../src/pendingRecordStore.js";
 
-test("WebAuthn registration options require UV and bind rpId", async () => {
+test("WebAuthn registration options prefer platform / localDevice for Windows Hello", async () => {
   const options = await generateRegistrationOptions({
     rpName: "Cursor Gateway Secure",
     rpID: "secure.joelzt.org",
@@ -18,13 +18,18 @@ test("WebAuthn registration options require UV and bind rpId", async () => {
     userID: new Uint8Array(16).fill(7),
     userDisplayName: "user@example.com",
     attestationType: "none",
+    timeout: 120_000,
+    preferredAuthenticatorType: "localDevice",
     authenticatorSelection: {
-      residentKey: "required",
+      authenticatorAttachment: "platform",
+      residentKey: "preferred",
       userVerification: "required"
     }
   });
   assert.equal(options.rp.id, "secure.joelzt.org");
   assert.equal(options.authenticatorSelection?.userVerification, "required");
+  assert.equal(options.authenticatorSelection?.authenticatorAttachment, "platform");
+  assert.equal(options.authenticatorSelection?.residentKey, "preferred");
   assert.ok(typeof options.challenge === "string" && options.challenge.length >= 32);
 });
 
@@ -32,10 +37,12 @@ test("WebAuthn authentication options require UV and bind rpId", async () => {
   const options = await generateAuthenticationOptions({
     rpID: "secure.joelzt.org",
     userVerification: "required",
-    allowCredentials: [{ id: "cred-1" }]
+    timeout: 120_000,
+    allowCredentials: [{ id: "cred-1", transports: ["internal"] }]
   });
   assert.equal(options.rpId, "secure.joelzt.org");
   assert.equal(options.userVerification, "required");
+  assert.deepEqual(options.allowCredentials?.[0]?.transports, ["internal"]);
   assert.ok(typeof options.challenge === "string" && options.challenge.length >= 32);
 });
 

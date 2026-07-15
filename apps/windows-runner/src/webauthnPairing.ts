@@ -72,6 +72,23 @@ function toWebAuthnCredential(credential: E2eePasskeyCredentialPublic): WebAuthn
   };
 }
 
+/** Prefer platform transports so Windows Hello / Touch ID is offered first. */
+function preferPlatformTransports(
+  transports: AuthenticatorTransportFuture[]
+): AuthenticatorTransportFuture[] {
+  const platform = transports.filter((t) => t === "internal");
+  if (platform.length > 0) return platform;
+  return transports;
+}
+
+/** Map thrown errors to stable reject codes safe for the Secure UI (no secrets). */
+function passkeyRejectReason(error: unknown): string {
+  const message = error instanceof Error ? error.message : "passkey_rejected";
+  const normalized = message.toLowerCase().replace(/[^a-z0-9_]+/g, "_").replace(/^_+|_+$/g, "");
+  if (/^[a-z][a-z0-9_]{1,127}$/.test(normalized)) return normalized;
+  return "passkey_rejected";
+}
+
 export async function processWebauthnPairingCycle(input: {
   state: RunnerE2eeState;
   gatewayFetch: GatewayFetch;
@@ -135,6 +152,9 @@ async function claimAndPublishOptions(input: {
   const active = existing.filter((credential) => !credential.revokedAt);
   const mode: "registration" | "authentication" = active.length > 0 ? "authentication" : "registration";
 
+  // Prefer platform authenticators (Windows Hello / Face ID / fingerprint).
+  // Avoid forcing cross-platform security keys or hybrid-only UI, which commonly
+  // surfaces as NotAllowedError on Windows when the user expects a PIN prompt.
   const optionsJson =
     mode === "registration"
       ? await generateRegistrationOptions({
@@ -144,6 +164,8 @@ async function claimAndPublishOptions(input: {
           userID: createHash("sha256").update(`passkey-user:${email}`).digest(),
           userDisplayName: email,
           attestationType: "none",
+          timeout: 120_000,
+          preferredAuthenticatorType: "localDevice",
           excludeCredentials: existing.map((credential) => ({
             id: credential.credentialId,
             ...(credential.transports
@@ -151,18 +173,27 @@ async function claimAndPublishOptions(input: {
               : {})
           })),
           authenticatorSelection: {
-            residentKey: "required",
+            authenticatorAttachment: "platform",
+            // "preferred" is more compatible with Windows Hello than "required".
+            residentKey: "preferred",
             userVerification: "required"
           }
         })
       : await generateAuthenticationOptions({
           rpID: config.webauthnRpId,
           userVerification: "required",
+          timeout: 120_000,
           allowCredentials: active.map((credential) => ({
             id: credential.credentialId,
+            // Prefer internal (platform) over hybrid so Chrome/Edge opens
+            // Windows Hello instead of a phone QR / security-key picker.
             ...(credential.transports
-              ? { transports: credential.transports as never }
-              : {})
+              ? {
+                  transports: preferPlatformTransports(
+                    credential.transports as AuthenticatorTransportFuture[]
+                  )
+                }
+              : { transports: ["internal"] as AuthenticatorTransportFuture[] })
           }))
         });
 
@@ -245,6 +276,7 @@ async function claimAndVerifyComplete(input: {
 
   const pending = pendingStore.get(pairId);
   let status: "paired" | "rejected" = "rejected";
+  let rejectReason: string | undefined;
 
   try {
     if (!pending) throw new Error("passkey_pending_missing");
@@ -334,10 +366,8 @@ async function claimAndVerifyComplete(input: {
       `Paired secure-web client ${start.clientId} via passkey ${complete.mode} (recipient_fp=${emailFingerprint(pending.email)})`
     );
   } catch (error) {
-    console.warn(
-      `Passkey pairing ${pairId} rejected:`,
-      error instanceof Error ? error.message : "unknown"
-    );
+    rejectReason = passkeyRejectReason(error);
+    console.warn(`Passkey pairing ${pairId} rejected:`, rejectReason);
     status = "rejected";
   } finally {
     pendingStore.delete(pairId);
@@ -356,6 +386,7 @@ async function claimAndVerifyComplete(input: {
     clientId: start.clientId,
     runnerId: config.runnerId,
     status,
+    ...(status === "rejected" && rejectReason ? { reason: rejectReason } : {}),
     runnerEncryptionKey: input.state.encryptionKey,
     runnerSigningKey: input.state.signingKey,
     runnerCertificate: cert,
