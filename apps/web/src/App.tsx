@@ -257,6 +257,42 @@ function RunProgressPanel({ run }: { run: RunRecord }) {
   );
 }
 
+/**
+ * Live heartbeat panel for an in-flight E2EE run. E2EE runs never reach the
+ * plaintext RunProgressPanel path, so without this the conversation went silent
+ * during long thinks — this ticks elapsed/beat locally and streams decrypted
+ * runner progress while the model works.
+ */
+function E2eeRunProgressPanel({ run }: { run: DecryptedRun }) {
+  const now = useNow(1000);
+  const record = run.record;
+  if (run.result) return null;
+  if (record.status !== "queued" && record.status !== "running") return null;
+
+  const elapsed = now - Date.parse(record.createdAt);
+  const sinceUpdate = now - Date.parse(record.updatedAt);
+  const kind: RunProgressKind | "queued" =
+    run.progress?.progressKind ?? (record.status === "queued" ? "queued" : "thinking");
+  const message =
+    run.progress?.message?.trim() ||
+    (record.status === "queued"
+      ? "Queued — waiting for a runner to claim this job."
+      : "Runner claimed the job. Live traces will stream here while the model works.");
+
+  return (
+    <div className="run-progress" data-kind={kind}>
+      <div className="run-progress-bar">
+        <span className="run-progress-kind">{kind}</span>
+        <span className="run-progress-status">{record.status}</span>
+        <span className="run-progress-elapsed">elapsed {formatElapsed(elapsed)}</span>
+        <span className="run-progress-fresh">beat {formatElapsed(sinceUpdate)} ago</span>
+        <span className="run-progress-pulse" aria-hidden="true" />
+      </div>
+      <pre className="run-progress-body">{message}</pre>
+    </div>
+  );
+}
+
 function reportIdFromPath(): ReportId | undefined {
   const match = window.location.pathname.match(/^\/reports\/([^/]+)\/?$/);
   const candidate = match?.[1] as ReportId | undefined;
@@ -940,7 +976,6 @@ function GatewayDashboard() {
                 type="button"
               >
                 <LockKeyhole aria-hidden="true" size={15} strokeWidth={2} />
-                {e2eeEvidenceOpen ? <span>{E2EE_ENCRYPTED_BADGE}</span> : null}
               </button>
               {e2eeEvidenceOpen ? (
                 <div className="e2ee-evidence-panel" role="dialog" aria-label="加密证据">
@@ -1222,11 +1257,7 @@ function GatewayDashboard() {
                         </div>
                         {run.result?.response ? <Markdown>{run.result.response}</Markdown> : null}
                         {run.result?.error ? <pre className="error-pre">{run.result.error}</pre> : null}
-                        {run.progress && !run.result ? (
-                          <pre className="run-progress-body">
-                            {run.progress.message || run.progress.progressKind}
-                          </pre>
-                        ) : null}
+                        <E2eeRunProgressPanel run={run} />
                         <MessageMetrics
                           startedAt={run.record.startedAt ?? run.record.createdAt}
                           finishedAt={run.record.finishedAt}

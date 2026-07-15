@@ -710,7 +710,7 @@ a {
 }
 
 .e2ee-status-badge.is-open {
-  padding: 0.32rem 0.68rem;
+  padding: 0.32rem;
   background: var(--accent-soft);
   box-shadow: inset 0 0 0 1px rgba(62, 185, 130, 0.28);
   color: var(--accent);
