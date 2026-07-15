@@ -45,8 +45,6 @@ import {
 import { SecureGatewayClient, type DecryptedRun } from "./secureClient.js";
 import {
   E2EE_ENCRYPTED_BADGE,
-  e2eeEncryptedTooltip,
-  e2eeRunEvidenceLabel,
   e2eeRunEvidenceTitle
 } from "./e2eeStatusUi.js";
 import {
@@ -936,24 +934,20 @@ function GatewayDashboard() {
               <button
                 aria-expanded={e2eeEvidenceOpen}
                 aria-label={E2EE_ENCRYPTED_BADGE}
-                className="e2ee-status-badge"
+                className={`e2ee-status-badge${e2eeEvidenceOpen ? " is-open" : ""}`}
                 onClick={() => setE2eeEvidenceOpen((open) => !open)}
-                title={e2eeEncryptedTooltip({
-                  ...(e2eeDevice?.pairedRunnerId
-                    ? { runnerId: e2eeDevice.pairedRunnerId }
-                    : {}),
-                  ...(lastE2eeRunId ? { lastRunId: lastE2eeRunId } : {})
-                })}
+                title={E2EE_ENCRYPTED_BADGE}
                 type="button"
               >
-                <LockKeyhole aria-hidden="true" size={14} strokeWidth={2} />
-                <span>{E2EE_ENCRYPTED_BADGE}</span>
-                {lastE2eeRunId ? (
-                  <span className="e2ee-status-run">{e2eeRunEvidenceLabel(lastE2eeRunId)}</span>
-                ) : null}
+                <LockKeyhole aria-hidden="true" size={15} strokeWidth={2} />
+                {e2eeEvidenceOpen ? <span>{E2EE_ENCRYPTED_BADGE}</span> : null}
               </button>
               {e2eeEvidenceOpen ? (
                 <div className="e2ee-evidence-panel" role="dialog" aria-label="加密证据">
+                  <p className="e2ee-evidence-title">
+                    <LockKeyhole aria-hidden="true" size={14} strokeWidth={2} />
+                    <span>{E2EE_ENCRYPTED_BADGE}</span>
+                  </p>
                   <p className="e2ee-evidence-note">
                     此徽章仅为 UI 状态，不是密码学证明。请结合 Network / 审计 / DB 自证。
                   </p>
