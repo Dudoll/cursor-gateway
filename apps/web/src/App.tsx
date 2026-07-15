@@ -63,6 +63,7 @@ import {
   mergeConversationLists,
   type MergedConversationItem
 } from "./mergedChat.js";
+import { buildPairedModelCatalog, modelIsAvailable } from "./pairedCatalog.js";
 
 type ReportSummary = ReportDefinition & {
   runCount: number;
@@ -462,10 +463,12 @@ function GatewayDashboard() {
     }
 
     // When E2EE is paired, the run routes to that runner's advertised workspaces
-    // (path-less public entries). Legacy `/api/workspaces` only returns rows with
-    // path IS NOT NULL — often a historical Windows id not on wsl-e2ee — which
-    // causes workspace_not_available_on_runner. Prefer the paired runner list.
+    // and models. Legacy `/api/workspaces` / `/api/models` only reflect in-memory
+    // legacy/Hermes heartbeats — empty or Hermes-only under E2EE-only runners —
+    // which left the dropdown at Auto and caused workspace_not_available_on_runner.
     let availableWorkspaces = workspaces.workspaces;
+    let availableModels = models.models;
+    let availableRunners = runners.runners;
     let e2eeConversationWorkspaceId: string | undefined;
     if (e2eeKeys && e2eePaired) {
       try {
@@ -474,13 +477,30 @@ function GatewayDashboard() {
         if (pairedRunnerId) {
           const directory = await client.runners();
           const paired = directory.find((runner) => runner.runnerId === pairedRunnerId);
-          if (paired?.workspaces.length) {
-            availableWorkspaces = paired.workspaces.map((item) => ({
-              id: item.id,
-              label: item.label,
-              path: "",
-              writable: item.writable
-            }));
+          if (paired) {
+            availableModels = buildPairedModelCatalog(paired.models);
+            availableRunners = [
+              {
+                runnerId: paired.runnerId,
+                lastSeenAt: paired.lastSeenAt,
+                online: paired.online,
+                workspaces: paired.workspaces.map((item) => ({
+                  id: item.id,
+                  label: item.label,
+                  path: "",
+                  writable: item.writable
+                })),
+                models: paired.models
+              }
+            ];
+            if (paired.workspaces.length) {
+              availableWorkspaces = paired.workspaces.map((item) => ({
+                id: item.id,
+                label: item.label,
+                path: "",
+                writable: item.writable
+              }));
+            }
           }
         }
         const list = await client.conversations();
@@ -517,9 +537,9 @@ function GatewayDashboard() {
 
     setState({
       principal: me.principal,
-      models: models.models,
+      models: availableModels,
       workspaces: availableWorkspaces,
-      runners: runners.runners,
+      runners: availableRunners,
       conversations: conversations.conversations,
       conversationRuns: conversationRuns.runs,
       memory: memory.facts
@@ -541,11 +561,11 @@ function GatewayDashboard() {
       // Keep an explicit, still-valid user choice; otherwise fall back to the
       // server-configured default model. Treat the legacy implicit "auto" as
       // unset so a newly configured default takes effect.
-      if (current && current !== "auto" && models.models.some((item) => item.id === current)) {
+      if (current && current !== "auto" && modelIsAvailable(availableModels, current)) {
         return current;
       }
-      if (models.models.some((item) => item.id === preferredDefault)) return preferredDefault;
-      return current || preferredDefault || "auto";
+      if (modelIsAvailable(availableModels, preferredDefault)) return preferredDefault;
+      return "auto";
     });
   }
 
