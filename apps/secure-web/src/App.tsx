@@ -1,4 +1,5 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
+import { flushSync } from "react-dom";
 import {
   GatewayApi,
   GatewayApiError,
@@ -32,8 +33,10 @@ import {
   parseRecoveryFragment
 } from "./recoveryPairingClient.js";
 import {
+  CS_AUTH_RETURNING_NOTICE,
   captureCsAuthRedirectParams,
   completeCsAuthReturn,
+  delayBeforeCsRedirect,
   formatCsAuthReturnError,
   loadPendingCsAuthRedirect
 } from "./csAuthReturn.js";
@@ -164,7 +167,11 @@ export function App() {
         params
       });
       setCsAuthPending(null);
-      setStatus({ tone: "ok", text: "授权已签发，正在返回 CS…" });
+      // Flush so the notice paints before navigation (avoid blank instant jump).
+      flushSync(() => {
+        setStatus({ tone: "ok", text: CS_AUTH_RETURNING_NOTICE });
+      });
+      await delayBeforeCsRedirect();
       // replace：避免用户再按返回键停在 Secure 聊天页。
       window.location.replace(returnUrl);
       return true;
@@ -183,12 +190,16 @@ export function App() {
   ) {
     const device = await keys.device();
     setBoot({ kind: "ready", keys, device });
-    setStatus({ tone: "ok", text: `已与 Runner ${runnerIdValue} 配对` });
     setRunnerId(runnerIdValue);
     setStep(3);
     await refreshDirectory(clientApi, keys);
     const pending = csAuthPending ?? loadPendingCsAuthRedirect();
-    if (!pending) return;
+    if (!pending) {
+      // Pure Secure pairing — no CS return context; do not imply redirect.
+      setStatus({ tone: "ok", text: `已配对（Runner ${runnerIdValue}）` });
+      return;
+    }
+    setStatus({ tone: "ok", text: `已配对，正在完成 CS 授权…` });
     setCsAuthPending(pending);
     await tryFinishCsAuth(clientApi, keys, pending);
   }

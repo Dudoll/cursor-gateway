@@ -1184,10 +1184,6 @@ function GatewayDashboard() {
                   <LockKeyhole aria-hidden="true" size={21} strokeWidth={1.75} />
                 </div>
                 <h2>加密聊天</h2>
-                <p className="welcome-copy">
-                  新消息一律端到端加密。历史明文会话仍可在侧栏打开查看，并标为「
-                  {HISTORICAL_PLAINTEXT_LABEL}」。
-                </p>
               </div>
             ) : null}
 

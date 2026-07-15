@@ -15,6 +15,18 @@ export const PENDING_CS_AUTH_KEY = "cg-secure-web:pending-cs-auth";
 /** Client-side TTL for CS→Secure return context (must outlive typical mail+pair). */
 export const CS_AUTH_RETURN_TTL_MS = 10 * 60 * 1000;
 
+/** Shown on Secure after CS grant succeeds, before `location.replace` back to CS. */
+export const CS_AUTH_RETURNING_NOTICE = "验证完成，即将跳转回原页面…";
+
+/** Brief pause so the returning notice can paint before navigation. */
+export const CS_AUTH_RETURNING_DELAY_MS = 600;
+
+export function delayBeforeCsRedirect(
+  ms = CS_AUTH_RETURNING_DELAY_MS
+): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 export type StoredCsAuthReturn = {
   params: CsAuthRedirectParams;
   savedAt: number;

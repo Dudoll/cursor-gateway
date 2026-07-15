@@ -5,11 +5,14 @@ import {
   parseCsAuthRedirectSearch
 } from "@cursor-gateway/e2ee";
 import {
+  CS_AUTH_RETURNING_DELAY_MS,
+  CS_AUTH_RETURNING_NOTICE,
   CS_AUTH_RETURN_TTL_MS,
   PENDING_CS_AUTH_KEY,
   buildStoredCsAuthReturn,
   captureCsAuthRedirectParams,
   clearPendingCsAuthRedirect,
+  delayBeforeCsRedirect,
   formatCsAuthReturnError,
   loadPendingCsAuthRedirect,
   markPendingCsAuthRedirectConsumed,
@@ -198,4 +201,22 @@ test("Chinese error messages for missing/expired CS return", () => {
     formatCsAuthReturnError(new Error("cs_auth_grant_timeout")),
     /超时|启用加密/
   );
+});
+
+test("CS returning notice is Chinese and delay is brief", async () => {
+  assert.match(CS_AUTH_RETURNING_NOTICE, /验证完成.*即将跳转回原页面/);
+  assert.ok(CS_AUTH_RETURNING_DELAY_MS >= 300);
+  assert.ok(CS_AUTH_RETURNING_DELAY_MS <= 800);
+  const started = Date.now();
+  await delayBeforeCsRedirect(50);
+  assert.ok(Date.now() - started >= 45);
+});
+
+test("pairing-complete copy: redirect notice only with CS context", () => {
+  // Mirrors App finishPairingThenMaybeReturnToCs: no pending → 已配对 only.
+  const session = memoryStorage();
+  const local = memoryStorage();
+  const pending = loadPendingCsAuthRedirect({ session, local });
+  assert.equal(pending, null);
+  assert.doesNotMatch(CS_AUTH_RETURNING_NOTICE, /已配对/);
 });
