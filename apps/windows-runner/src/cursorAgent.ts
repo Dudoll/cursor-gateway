@@ -1,5 +1,13 @@
-import { Agent, AgentNotFoundError, Cursor, CursorAgentError } from "@cursor/sdk";
+import { Agent, AgentNotFoundError, Cursor, CursorAgentError, configureCursorSdk } from "@cursor/sdk";
 import type { SDKMessage } from "@cursor/sdk";
+
+// This WSL host is region-blocked and reaches Cursor only via the local HTTP
+// proxy. The SDK's agent RPC uses @connectrpc/connect-node; its HTTP/2 path
+// cannot be routed through an HTTP CONNECT proxy, so force HTTP/1.1. The
+// proxy-preload then tunnels node:https through the proxy (see run-e2ee-runner.sh
+// / proxy-preload.mjs). Without this the agent egresses DIRECT and fails with
+// "Model not available ... not supported in your region".
+configureCursorSdk({ local: { useHttp1ForAgent: true } });
 import type {
   ModelInfo,
   RunProgressKind,

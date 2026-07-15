@@ -56,8 +56,18 @@ while true; do
     exit 1
   fi
   start=$(date +%s)
-  # Clean env so only apps/windows-runner/.env drives config (plus PATH/HOME).
+  # Clean env so only apps/windows-runner/.env drives config (plus PATH/HOME),
+  # plus outbound proxy config. Hosts with no direct egress to Cursor/Anthropic
+  # (e.g. region-blocked networks) need HTTPS_PROXY/HTTP_PROXY; NODE_OPTIONS
+  # preloads a global undici dispatcher because Node's built-in fetch does not
+  # honor *_PROXY env vars on its own. NO_PROXY keeps the self-hosted gateway and
+  # loopback DIRECT so pairing/heartbeat are not routed through the proxy. All are
+  # optional: unset -> no proxy, and the preload is a no-op without *_PROXY.
   env -i PATH="$(dirname "$NODE"):/usr/bin:/bin" HOME="$HOME" \
+    ${HTTPS_PROXY:+HTTPS_PROXY="$HTTPS_PROXY"} \
+    ${HTTP_PROXY:+HTTP_PROXY="$HTTP_PROXY"} \
+    ${NO_PROXY:+NO_PROXY="$NO_PROXY"} \
+    ${CURSOR_PROXY_PRELOAD:+NODE_OPTIONS="--import $CURSOR_PROXY_PRELOAD"} \
     "$NODE" dist/index.js >> "$LOG" 2>&1
   code=$?
   ran=$(( $(date +%s) - start ))
