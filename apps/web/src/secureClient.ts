@@ -125,13 +125,20 @@ export class SecureGatewayClient {
     if (!conversation.title) return "Encrypted conversation";
     const secret = await this.keys.conversation(conversation.id);
     if (!secret) return "无法解密：本机无此会话密钥";
-    const value = await decryptJson(
-      secret.rootKey,
-      "browser-local:conversation-title",
-      { protocol: E2EE_PROTOCOL, conversationId: conversation.id },
-      conversation.title
-    );
-    return typeof value === "string" ? value : "Encrypted conversation";
+    try {
+      const value = await decryptJson(
+        secret.rootKey,
+        "browser-local:conversation-title",
+        { protocol: E2EE_PROTOCOL, conversationId: conversation.id },
+        conversation.title
+      );
+      return typeof value === "string" ? value : "Encrypted conversation";
+    } catch {
+      // A single undecryptable title (rotated/re-paired key) must never throw —
+      // otherwise the caller's whole refresh loop aborts before re-fetching runs,
+      // freezing every run's latency/token metrics. Fall back to a placeholder.
+      return "无法解密标题";
+    }
   }
 
   async runs(conversationId: string) {

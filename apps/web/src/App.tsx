@@ -529,10 +529,14 @@ function GatewayDashboard() {
     let availableRunners = runners.runners;
     let e2eeConversationWorkspaceId: string | undefined;
     if (e2eeKeys && e2eePaired) {
-      try {
-        const client = new SecureGatewayClient(gatewayApi, e2eeKeys);
-        const pairedRunnerId = e2eeDevice?.pairedRunnerId;
-        if (pairedRunnerId) {
+      const client = new SecureGatewayClient(gatewayApi, e2eeKeys);
+      // Each E2EE fetch is isolated: a failure in the runner catalog or the
+      // conversation/title list must NEVER skip the runs refresh below, or the
+      // conversation's latency/token metrics freeze at their last value while the
+      // rest of the UI keeps ticking (the "prints once, never refreshes" bug).
+      const pairedRunnerId = e2eeDevice?.pairedRunnerId;
+      if (pairedRunnerId) {
+        try {
           const directory = await client.runners();
           const paired = directory.find((runner) => runner.runnerId === pairedRunnerId);
           if (paired) {
@@ -560,7 +564,12 @@ function GatewayDashboard() {
               }));
             }
           }
+        } catch (err) {
+          // Runner directory is best-effort; keep the last-known catalog.
+          setError(err instanceof Error ? err.message : String(err));
         }
+      }
+      try {
         const list = await client.conversations();
         e2eeConversationWorkspaceId = list.find((item) => item.id === conversationId)?.workspaceId;
         setE2eeConversations(
@@ -575,18 +584,19 @@ function GatewayDashboard() {
           titles[conversation.id] = await client.title(conversation);
         }
         setE2eeTitles(titles);
-        if (conversationId) {
-          try {
-            const decrypted = await client.runs(conversationId);
-            setE2eeRuns(decrypted);
-          } catch {
-            setE2eeRuns([]);
-          }
-        } else {
+      } catch (err) {
+        // Keep the last-known conversation list/titles; still refresh runs below.
+        setError(err instanceof Error ? err.message : String(err));
+      }
+      if (conversationId) {
+        try {
+          const decrypted = await client.runs(conversationId);
+          setE2eeRuns(decrypted);
+        } catch {
           setE2eeRuns([]);
         }
-      } catch (err) {
-        setError(err instanceof Error ? err.message : String(err));
+      } else {
+        setE2eeRuns([]);
       }
     } else {
       setE2eeConversations([]);
