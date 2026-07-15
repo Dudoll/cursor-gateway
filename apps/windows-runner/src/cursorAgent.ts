@@ -47,13 +47,70 @@ function buildPrompt(job: RunnerJob, includeHistory: boolean) {
   ].filter(Boolean).join("\n\n");
 }
 
-function extractText(result: unknown) {
-  if (!result || typeof result !== "object") return "";
+function extractResultText(result: unknown): string | undefined {
+  if (!result || typeof result !== "object") return undefined;
   const maybe = result as Record<string, unknown>;
   if (typeof maybe.result === "string") return maybe.result;
   if (typeof maybe.text === "string") return maybe.text;
   if (typeof maybe.output === "string") return maybe.output;
-  return "Cursor returned an unsupported result shape.";
+  return undefined;
+}
+
+function extractErrorMessage(result: unknown): string | undefined {
+  if (!result || typeof result !== "object") return undefined;
+  const err = (result as { error?: unknown }).error;
+  if (typeof err === "string" && err.trim()) return err;
+  if (err && typeof err === "object") {
+    const message = (err as { message?: unknown }).message;
+    if (typeof message === "string" && message.trim()) return message;
+  }
+  return undefined;
+}
+
+function assistantTextFromMessage(
+  message: Extract<SDKMessage, { type: "assistant" }>
+): string {
+  return message.message.content
+    .filter((block): block is Extract<(typeof message.message.content)[number], { type: "text" }> =>
+      block.type === "text"
+    )
+    .map((block) => block.text)
+    .join("");
+}
+
+async function lastAssistantFromConversation(run: {
+  supports(operation: "conversation"): boolean;
+  conversation(): Promise<unknown[]>;
+}): Promise<string> {
+  try {
+    if (!run.supports("conversation")) return "";
+    const turns = await run.conversation();
+    let text = "";
+    for (const turn of turns) {
+      if (
+        turn &&
+        typeof turn === "object" &&
+        (turn as { type?: unknown }).type === "agentConversationTurn"
+      ) {
+        const steps = (turn as { turn?: { steps?: unknown } }).turn?.steps;
+        if (Array.isArray(steps)) {
+          for (const step of steps) {
+            if (
+              step &&
+              typeof step === "object" &&
+              (step as { type?: unknown }).type === "assistantMessage"
+            ) {
+              const stepText = (step as { message?: { text?: unknown } }).message?.text;
+              if (typeof stepText === "string" && stepText.trim()) text = stepText;
+            }
+          }
+        }
+      }
+    }
+    return text;
+  } catch {
+    return "";
+  }
 }
 
 function isAgentNotFoundError(error: unknown) {
@@ -71,12 +128,7 @@ function progressFromMessage(message: SDKMessage): {
     return { kind: "thinking", message: "The model is thinking." };
   }
   if (message.type === "assistant") {
-    const text = message.message.content
-      .filter((block): block is Extract<(typeof message.message.content)[number], { type: "text" }> =>
-        block.type === "text"
-      )
-      .map((block) => block.text)
-      .join("");
+    const text = assistantTextFromMessage(message);
     return text.trim() ? { kind: "responding", message: text } : undefined;
   }
   if (message.type === "tool_call") {
@@ -146,8 +198,13 @@ export async function runCursorJob(
     }
 
     const run = await agent.send(buildPrompt(job, includeHistory));
+    let lastAssistantText = "";
     if (reportProgress && run.supports("stream")) {
       for await (const message of run.stream()) {
+        if (message.type === "assistant") {
+          const text = assistantTextFromMessage(message);
+          if (text.trim()) lastAssistantText = text;
+        }
         const progress = progressFromMessage(message);
         if (progress) await reportProgress(progress);
       }
@@ -159,21 +216,33 @@ export async function runCursorJob(
     const outputTokens = usage?.outputTokens ?? null;
 
     if (status && status !== "finished") {
+      const errorMessage =
+        extractErrorMessage(result) ??
+        extractResultText(result) ??
+        (lastAssistantText.trim() || `Cursor 运行结束，状态为「${status}」。`);
       return {
         runId: job.runId,
         status: "error",
         response: null,
-        error: extractText(result),
+        error: errorMessage,
         agentId: "agentId" in agent ? String(agent.agentId) : null,
         inputTokens,
         outputTokens
       };
     }
 
+    let responseText = extractResultText(result) ?? "";
+    if (!responseText.trim() && lastAssistantText.trim()) {
+      responseText = lastAssistantText;
+    }
+    if (!responseText.trim()) {
+      responseText = await lastAssistantFromConversation(run);
+    }
+
     return {
       runId: job.runId,
       status: "finished",
-      response: extractText(result),
+      response: responseText,
       error: null,
       agentId: "agentId" in agent ? String(agent.agentId) : null,
       inputTokens,
