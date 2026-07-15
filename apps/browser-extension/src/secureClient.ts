@@ -129,7 +129,7 @@ export class SecureGatewayClient {
   async title(conversation: E2eeConversationRecord) {
     if (!conversation.title) return "Encrypted conversation";
     const secret = await this.keys.conversation(conversation.id);
-    if (!secret) return "Key unavailable";
+    if (!secret) return "无法解密：本机无此会话密钥";
     const value = await decryptJson(
       secret.rootKey,
       "browser-local:conversation-title",

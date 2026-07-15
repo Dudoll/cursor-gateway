@@ -169,6 +169,30 @@ function formatLatency(startedAt: string, finishedAt: string) {
   return `${Math.floor(seconds / 60)}m ${(seconds % 60).toFixed(1)}s`;
 }
 
+/** Latency + token usage under a finished reply. Omit missing token fields (no placeholders). */
+function MessageMetrics(props: {
+  startedAt: string;
+  finishedAt: string | null | undefined;
+  inputTokens?: number | null | undefined;
+  outputTokens?: number | null | undefined;
+}) {
+  if (!props.finishedAt) return null;
+  const hasInput = typeof props.inputTokens === "number";
+  const hasOutput = typeof props.outputTokens === "number";
+  return (
+    <div className="message-metrics">
+      <span>Latency {formatLatency(props.startedAt, props.finishedAt)}</span>
+      {hasInput ? <span>Input {props.inputTokens!.toLocaleString()} tokens</span> : null}
+      {hasOutput ? <span>Output {props.outputTokens!.toLocaleString()} tokens</span> : null}
+      {hasInput && hasOutput ? (
+        <span>
+          Total {(props.inputTokens! + props.outputTokens!).toLocaleString()} tokens
+        </span>
+      ) : null}
+    </div>
+  );
+}
+
 function isQuestionRun(run: RunRecord) {
   return run.idempotencyKey?.startsWith("qa:") ?? false;
 }
@@ -1178,15 +1202,6 @@ function GatewayDashboard() {
                 </div>
               </section>
             ) : null}
-            {timeline.length === 0 && !(e2eeRequired && !e2eePaired) ? (
-              <div className="home-welcome">
-                <div className="welcome-mark">
-                  <LockKeyhole aria-hidden="true" size={21} strokeWidth={1.75} />
-                </div>
-                <h2>加密聊天</h2>
-              </div>
-            ) : null}
-
             {timeline.map((turn, index) => {
               if (turn.kind === "e2ee") {
                 const run = turn.run as (typeof e2eeRuns)[number];
@@ -1218,6 +1233,12 @@ function GatewayDashboard() {
                             {run.progress.message || run.progress.progressKind}
                           </pre>
                         ) : null}
+                        <MessageMetrics
+                          startedAt={run.record.startedAt ?? run.record.createdAt}
+                          finishedAt={run.record.finishedAt}
+                          inputTokens={run.result?.inputTokens}
+                          outputTokens={run.result?.outputTokens}
+                        />
                         <div
                           className="e2ee-run-meta"
                           title={e2eeRunEvidenceTitle(run.record.id)}
@@ -1272,18 +1293,12 @@ function GatewayDashboard() {
                       {run.response ? <Markdown>{run.response}</Markdown> : null}
                       {run.error ? <pre className="error-pre">{run.error}</pre> : null}
                       <RunProgressPanel run={run} />
-                      {run.finishedAt ? (
-                        <div className="message-metrics">
-                          <span>Latency {formatLatency(run.createdAt, run.finishedAt)}</span>
-                          <span>Input {run.inputTokens?.toLocaleString() ?? "—"} tokens</span>
-                          <span>Output {run.outputTokens?.toLocaleString() ?? "—"} tokens</span>
-                          {run.inputTokens !== null && run.outputTokens !== null ? (
-                            <span>
-                              Total {(run.inputTokens + run.outputTokens).toLocaleString()} tokens
-                            </span>
-                          ) : null}
-                        </div>
-                      ) : null}
+                      <MessageMetrics
+                        startedAt={run.createdAt}
+                        finishedAt={run.finishedAt}
+                        inputTokens={run.inputTokens}
+                        outputTokens={run.outputTokens}
+                      />
                     </div>
                   </div>
                 </div>
