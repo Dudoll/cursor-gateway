@@ -9,7 +9,7 @@
 | 优先级 | 通道 | 说明 |
 | --- | --- | --- |
 | 主 | **Passkey** | Cloudflare Access 身份 + WebAuthn（UV required）+ Runner 离线证书。Passkey 只证明在场，不是 E2EE 私钥。 |
-| 备 | **已配对设备批准** | 新设备发起 pending；已配对设备签 transcript；Runner 验签后发 grant。 |
+| 备 | **已配对设备批准** | 新设备在 Secure 发起 pending；**已授权的 CS 浏览器**（推荐）或已配对 Secure 浏览器签 transcript；Runner 验签后完成配对并发 cs_auth grant。 |
 | 再备 | **Runner 本地恢复码 / 二维码** | ≥128-bit 高熵；HKDF/HMAC 认证 transcript；单次/TTL；Gateway 看不到明文。见 [trust-root-rotation.md](./trust-root-rotation.md)。 |
 | 可选 | **邮件 magic link** | Resend/SMTP 保留；公司无法访问外部邮箱时不要依赖。Token 仅在邮件 URL fragment 与 Runner 本地。 |
 

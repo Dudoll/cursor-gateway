@@ -1180,6 +1180,12 @@ export async function registerRoutes(app: FastifyInstance) {
 
         secure.post("/approvals/request", async (request, reply) => {
           const body = e2eeDeviceApprovalRequestBodySchema.parse(request.body);
+          if (
+            config.secureClientOrigin &&
+            body.request.secureOrigin !== config.secureClientOrigin
+          ) {
+            return reply.code(400).send({ error: "secure_origin_mismatch" });
+          }
           try {
             const row = await createDeviceApprovalRequest({
               userId: request.principal!.id,

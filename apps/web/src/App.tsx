@@ -19,6 +19,7 @@ import {
 } from "lucide-react";
 import type {
   Conversation,
+  E2eeDeviceApprovalRequest,
   MemoryFact,
   ModelInfo,
   Principal,
@@ -34,6 +35,7 @@ import {
   beginCsDeviceAuth,
   completeCsDeviceAuthFromFragment
 } from "./csAuth.js";
+import { decideDeviceApproval, listPendingApprovals } from "./deviceApproval.js";
 import {
   CsWebKeyStore,
   detectIncompatibleStorage,
@@ -358,6 +360,10 @@ function GatewayDashboard() {
   const [lastE2eeRunId, setLastE2eeRunId] = useState<string | null>(null);
   const [e2eeEvidenceOpen, setE2eeEvidenceOpen] = useState(false);
   const [cfAccessLogoutUrl, setCfAccessLogoutUrl] = useState<string | null>(null);
+  const [pendingApprovals, setPendingApprovals] = useState<
+    Array<{ approvalId: string; request: E2eeDeviceApprovalRequest; expiresAt: string }>
+  >([]);
+  const [approvalBusyId, setApprovalBusyId] = useState<string | null>(null);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useSidebarCollapsed();
@@ -571,6 +577,52 @@ function GatewayDashboard() {
     // authorizeE2ee is stable enough via closure; intentional one-shot.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [e2eeRequired, e2eePaired, e2eeKeys, secureClientOrigin]);
+
+  /** Old paired CS browser: poll Secure "paired-device approval" requests for this Access user. */
+  useEffect(() => {
+    if (!e2eePaired || !e2eeKeys) {
+      setPendingApprovals([]);
+      return;
+    }
+    let cancelled = false;
+    const refresh = async () => {
+      try {
+        const list = await listPendingApprovals(gatewayApi);
+        if (!cancelled) setPendingApprovals(list);
+      } catch {
+        // Non-fatal: approval banner is best-effort while chatting.
+      }
+    };
+    void refresh();
+    const timer = window.setInterval(() => void refresh(), 4_000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [e2eePaired, e2eeKeys, gatewayApi]);
+
+  async function onDecidePendingApproval(
+    request: E2eeDeviceApprovalRequest,
+    decision: "approved" | "rejected"
+  ) {
+    if (!e2eeKeys) return;
+    setApprovalBusyId(request.approvalId);
+    setError("");
+    try {
+      await decideDeviceApproval({ api: gatewayApi, keys: e2eeKeys, request, decision });
+      setPendingApprovals((current) =>
+        current.filter((item) => item.approvalId !== request.approvalId)
+      );
+    } catch (err) {
+      setError(
+        err instanceof Error
+          ? `设备批准失败：${err.message}`
+          : "设备批准失败"
+      );
+    } finally {
+      setApprovalBusyId(null);
+    }
+  }
 
   async function authorizeE2ee() {
     if (!e2eeKeys) {
@@ -1044,6 +1096,48 @@ function GatewayDashboard() {
 
           {error ? <div className="error chat-error">{error}</div> : null}
           <div className="home-messages">
+            {e2eePaired && pendingApprovals.length > 0 ? (
+              <section className="e2ee-device-approval" aria-live="polite">
+                <LockKeyhole aria-hidden="true" size={22} />
+                <div>
+                  <h2>有新设备请求配对批准</h2>
+                  <p>
+                    另一台设备在 Secure Web 选择了「已配对设备批准」。请在此用本机已授权密钥批准或拒绝（同一
+                    Cloudflare Access 账号）。
+                  </p>
+                  <ul className="e2ee-device-approval-list">
+                    {pendingApprovals.map((item) => (
+                      <li key={item.approvalId}>
+                        <span>
+                          {item.request.label?.trim() || "新设备"}
+                          {" · "}
+                          <code>{item.request.newClientId.slice(0, 8)}…</code>
+                          {" · 过期 "}
+                          {new Date(item.expiresAt).toLocaleString()}
+                        </span>
+                        <span className="e2ee-device-approval-actions">
+                          <button
+                            disabled={approvalBusyId === item.approvalId}
+                            onClick={() => void onDecidePendingApproval(item.request, "approved")}
+                            type="button"
+                          >
+                            批准
+                          </button>
+                          <button
+                            className="secondary"
+                            disabled={approvalBusyId === item.approvalId}
+                            onClick={() => void onDecidePendingApproval(item.request, "rejected")}
+                            type="button"
+                          >
+                            拒绝
+                          </button>
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              </section>
+            ) : null}
             {e2eeRequired && !e2eePaired ? (
               <section className="e2ee-required" aria-live="polite">
                 <LockKeyhole aria-hidden="true" size={22} />

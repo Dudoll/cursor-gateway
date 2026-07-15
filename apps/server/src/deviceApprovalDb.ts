@@ -179,18 +179,20 @@ export async function claimNextDeviceApprovalDecision(input: {
   runnerId: string;
 }): Promise<DeviceApprovalRow | undefined> {
   await expireStale();
-  const result = await pool.query(
-    `
-      select *
-      from e2ee_device_approvals
-      where status = 'decided' and runner_id = $1 and expires_at > now()
-      order by updated_at
-      for update skip locked
-      limit 1
-    `,
-    [input.runnerId]
-  );
-  return result.rows[0] ? mapRow(result.rows[0]) : undefined;
+  return inTransaction(async (client) => {
+    const result = await client.query(
+      `
+        select *
+        from e2ee_device_approvals
+        where status = 'decided' and runner_id = $1 and expires_at > now()
+        order by updated_at
+        for update skip locked
+        limit 1
+      `,
+      [input.runnerId]
+    );
+    return result.rows[0] ? mapRow(result.rows[0]) : undefined;
+  });
 }
 
 export async function publishDeviceApprovalResult(input: {

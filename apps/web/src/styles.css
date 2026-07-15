@@ -1403,6 +1403,67 @@ a {
   line-height: 1.55;
 }
 
+.e2ee-device-approval {
+  display: flex;
+  gap: 0.8rem;
+  max-width: 760px;
+  margin: 0 auto 1.25rem;
+  padding: 1rem 1.1rem;
+  border: 1px solid rgba(232, 176, 88, 0.45);
+  border-radius: var(--radius-sm);
+  background: rgba(52, 36, 14, 0.78);
+  color: var(--text);
+}
+
+.e2ee-device-approval > svg {
+  flex: 0 0 auto;
+  color: #e8b058;
+}
+
+.e2ee-device-approval h2 {
+  margin: 0 0 0.35rem;
+  font-size: 0.95rem;
+}
+
+.e2ee-device-approval p {
+  margin: 0 0 0.65rem;
+  color: var(--muted);
+  font-size: 0.82rem;
+  line-height: 1.55;
+}
+
+.e2ee-device-approval-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.55rem;
+}
+
+.e2ee-device-approval-list li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem 0.75rem;
+  font-size: 0.82rem;
+}
+
+.e2ee-device-approval-list code {
+  font-size: 0.78rem;
+}
+
+.e2ee-device-approval-actions {
+  display: inline-flex;
+  gap: 0.4rem;
+}
+
+.e2ee-device-approval-actions .secondary {
+  background: transparent;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  color: var(--muted);
+}
+
 .home-messages,
 .report-messages {
   min-height: 0;

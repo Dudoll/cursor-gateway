@@ -181,6 +181,8 @@ export function App() {
     keys: SecureWebKeyStore,
     runnerIdValue: string
   ) {
+    const device = await keys.device();
+    setBoot({ kind: "ready", keys, device });
     setStatus({ tone: "ok", text: `已与 Runner ${runnerIdValue} 配对` });
     setRunnerId(runnerIdValue);
     setStep(3);
@@ -379,7 +381,7 @@ export function App() {
       setApprovalId(started.approvalId);
       setStatus({
         tone: "warn",
-        text: `已请求设备批准（${started.approvalId}）。请在已配对设备上批准。过期：${started.expiresAt}`
+        text: `已发起批准请求（${started.approvalId}）。请到已授权的 CS 或已配对 Secure 浏览器批准。过期：${started.expiresAt}`
       });
       const result = await waitForDeviceApprovalResult({
         api,
@@ -411,6 +413,28 @@ export function App() {
       setBusy(false);
     }
   }
+
+  /** Paired Secure browser: auto-load pending approvals while the panel is open. */
+  useEffect(() => {
+    if (boot.kind !== "ready" || !api) return;
+    if (pairingPanel !== "approval") return;
+    if (!boot.device.pairedRunnerId) return;
+    let cancelled = false;
+    const refresh = async () => {
+      try {
+        const list = await listPendingApprovals(api);
+        if (!cancelled) setPendingApprovals(list);
+      } catch {
+        // Keep last list; manual refresh still surfaces errors.
+      }
+    };
+    void refresh();
+    const timer = window.setInterval(() => void refresh(), 4_000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [boot, api, pairingPanel]);
 
   async function onDecideApproval(
     request: E2eeDeviceApprovalRequest,
@@ -699,10 +723,30 @@ export function App() {
 
         {pairingPanel === "approval" ? (
           <>
-            <p className="meta">新设备发起请求；已配对设备在同一 Cloudflare Access 账号下批准。</p>
+            <p className="meta">
+              <strong>新设备：</strong>
+              点「发起批准请求」，保持本页打开等待（约 10 分钟内）。
+              <br />
+              <strong>旧设备：</strong>
+              打开已授权的{" "}
+              <a href={gatewayInput || "https://cs.joelzt.org"} rel="noreferrer">
+                CS
+              </a>
+              （推荐，聊天页会自动弹出待批准），或在本 Secure 已配对浏览器点「刷新待批准列表」后批准。须为同一
+              Cloudflare Access 账号。仅在 CS 登录、本机 Secure 未配对时无法在此批准。
+            </p>
             <div className="row">
-              <button type="button" disabled={busy || !api} onClick={onRequestApproval}>
-                由已配对设备批准（新设备）
+              <button
+                type="button"
+                disabled={busy || !api || Boolean(boot.device.pairedRunnerId)}
+                onClick={onRequestApproval}
+                title={
+                  boot.device.pairedRunnerId
+                    ? "本机已配对；请用未配对的新设备发起请求"
+                    : undefined
+                }
+              >
+                发起批准请求（新设备）
               </button>
               <button
                 type="button"
@@ -713,6 +757,11 @@ export function App() {
                 刷新待批准列表（已配对设备）
               </button>
             </div>
+            {boot.device.pairedRunnerId ? (
+              <p className="meta">本机已配对，可作为旧设备批准；正在自动检查待批准请求…</p>
+            ) : (
+              <p className="meta">本机尚未配对，可作为新设备发起请求。</p>
+            )}
             {approvalId ? (
               <p className="meta">
                 当前 approvalId：<code>{approvalId}</code>
@@ -728,7 +777,7 @@ export function App() {
                     <div className="row" style={{ marginTop: 6 }}>
                       <button
                         type="button"
-                        disabled={busy}
+                        disabled={busy || !boot.device.pairedRunnerId}
                         onClick={() => onDecideApproval(item.request, "approved")}
                       >
                         批准
@@ -736,7 +785,7 @@ export function App() {
                       <button
                         type="button"
                         className="secondary"
-                        disabled={busy}
+                        disabled={busy || !boot.device.pairedRunnerId}
                         onClick={() => onDecideApproval(item.request, "rejected")}
                       >
                         拒绝
@@ -745,6 +794,8 @@ export function App() {
                   </li>
                 ))}
               </ul>
+            ) : boot.device.pairedRunnerId ? (
+              <p className="meta">暂无待批准请求。</p>
             ) : null}
           </>
         ) : null}
