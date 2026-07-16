@@ -26,6 +26,7 @@ ENV NODE_ENV=production
 COPY --from=build /app/package.json /app/package-lock.json* ./
 COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/packages/shared ./packages/shared
+COPY --from=build /app/packages/e2ee ./packages/e2ee
 COPY --from=build /app/apps/server ./apps/server
 COPY --from=build /app/apps/web/dist ./apps/web/dist
 COPY --from=build /app/artifacts/cursor-gateway-secure.zip ./artifacts/cursor-gateway-secure.zip
