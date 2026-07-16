@@ -587,7 +587,7 @@ export function App() {
   if (boot.kind === "loading") {
     return (
       <div className="app">
-        <h1 className="brand">Cursor Gateway Secure</h1>
+        <h1 className="brand">Secure Gateway</h1>
         <p className="lede">正在检查 WebCrypto 与 IndexedDB 持久化…</p>
       </div>
     );
@@ -596,7 +596,7 @@ export function App() {
   if (boot.kind === "blocked") {
     return (
       <div className="app">
-        <h1 className="brand">Cursor Gateway Secure</h1>
+        <h1 className="brand">Secure Gateway</h1>
         <div className="panel blocker">
           <h2>设备存储不可用</h2>
           <p>
@@ -613,7 +613,7 @@ export function App() {
     <div className="app">
       <header className="app-top">
         <div>
-          <h1 className="brand">Cursor Gateway Secure</h1>
+          <h1 className="brand">Secure Gateway</h1>
           <p className="lede">
             跨浏览器 E2EE 客户端。密钥以不可导出形式保存在本设备。Gateway 仅中继密文。协议：
             <code>cg-e2ee/1</code>。

@@ -2,7 +2,7 @@
   "name": "cursor-gateway",
   "private": true,
   "version": "0.1.1",
-  "description": "Controlled gateway for running local Cursor agents on a Windows machine.",
+  "description": "Controlled gateway for running local coding agents (Linux/WSL) with an E2EE relay.",
   "type": "module",
   "workspaces": [
     "apps/*",

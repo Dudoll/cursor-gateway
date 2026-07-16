@@ -1286,7 +1286,7 @@ function GatewayDashboard() {
                       <div className="message-avatar">AI</div>
                       <div className="message-main">
                         <div className="message-meta">
-                          <strong>Cursor</strong>
+                          <strong>Agent</strong>
                           <span className="message-model">{run.request.routing.model}</span>
                         </div>
                         {run.result?.response ? <Markdown>{run.result.response}</Markdown> : null}
@@ -1328,7 +1328,7 @@ function GatewayDashboard() {
                     <div className="message-avatar">{run.model.startsWith("hermes:") ? "H" : "AI"}</div>
                     <div className="message-main">
                       <div className="message-meta">
-                        <strong>{run.model.startsWith("hermes:") ? "Hermes" : "Cursor"}</strong>
+                        <strong>{run.model.startsWith("hermes:") ? "Hermes" : "Agent"}</strong>
                         <span className="message-model">{run.model}</span>
                         <span className="historical-plain-tag">{HISTORICAL_PLAINTEXT_LABEL}</span>
                         {run.finishedAt ? (

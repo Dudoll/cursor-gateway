@@ -75,7 +75,7 @@ npx tsx scripts/e2ee/trust-root-cli.ts init-root
 #    from its sealed state file (run this on the Runner host, or pass
 #    --encryption-key-file / --signing-key-file exported elsewhere):
 npx tsx scripts/e2ee/trust-root-cli.ts issue-cert \
-  --runner-id windows-main \
+  --runner-id local-runner \
   --allowed-origins https://secure.joelzt.org \
   --allowed-rp-ids secure.joelzt.org
 #   -> ~/.cursor-gateway/runner-identity-cert.json
@@ -85,7 +85,7 @@ npx tsx scripts/e2ee/trust-root-cli.ts issue-cert \
 #    public "handle" — recoveryId + expiry, no secret — is optionally
 #    advertised to the Gateway):
 npx tsx scripts/e2ee/trust-root-cli.ts recovery-code \
-  --runner-id windows-main \
+  --runner-id local-runner \
   --secure-origin https://secure.joelzt.org \
   --gateway-url https://gateway.example.com \
   --runner-shared-secret "$RUNNER_SHARED_SECRET"

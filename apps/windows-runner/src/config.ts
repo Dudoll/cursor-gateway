@@ -56,7 +56,7 @@ const booleanEnv = (defaultValue: boolean) =>
 
 const envSchema = z.object({
   GATEWAY_URL: z.string().url(),
-  RUNNER_ID: z.string().min(1).default("windows-main"),
+  RUNNER_ID: z.string().min(1).default("local-runner"),
   RUNNER_SHARED_SECRET: z.string().min(32),
   RUNNER_WORKSPACES: z.string().min(1),
   RUNNER_POLL_INTERVAL_MS: z.coerce.number().int().positive().default(2000),
@@ -111,7 +111,7 @@ const envSchema = z.object({
   // Passkey pairing (WebAuthn)
   RUNNER_WEBAUTHN_ENABLED: booleanEnv(false),
   WEBAUTHN_RP_ID: z.string().min(1).default("secure.joelzt.org"),
-  WEBAUTHN_RP_NAME: z.string().min(1).default("Cursor Gateway Secure"),
+  WEBAUTHN_RP_NAME: z.string().min(1).default("Secure Gateway"),
   WEBAUTHN_ORIGINS: z.string().default(""),
   WEBAUTHN_CHALLENGE_TTL_SECONDS: z.coerce.number().int().positive().default(300),
   // Paired-device approval

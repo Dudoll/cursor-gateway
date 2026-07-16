@@ -2,7 +2,7 @@
 
 ## 保证范围
 
-安全端点是签名的 `Cursor Gateway Secure` 浏览器扩展、跨浏览器 **Secure Web PWA**（`apps/secure-web`，见 [secure-web-e2ee.md](secure-web-e2ee.md)）与 Runner（Windows / Linux / WSL）。Prompt、会话历史、Memory、进度、结果和详细错误在离开端点前加密；Cloudflare、VPS、PostgreSQL、备份和反向代理只处理中继密文。
+安全端点是签名的 `Secure Gateway` 浏览器扩展、跨浏览器 **Secure Web PWA**（`apps/secure-web`，见 [secure-web-e2ee.md](secure-web-e2ee.md)）与 Runner（Windows / Linux / WSL）。Prompt、会话历史、Memory、进度、结果和详细错误在离开端点前加密；Cloudflare、VPS、PostgreSQL、备份和反向代理只处理中继密文。
 
 Runner 会在本机解密，然后调用 Cursor SDK。Cursor 模型服务仍会收到明文，因此本功能是“Gateway-blind E2EE”，不是模型提供商不可见的加密推理。
 
@@ -75,7 +75,7 @@ Runner：
 | --- | --- | --- |
 | `RUNNER_E2EE_ENABLED` | `true` | 启用 E2EE claim / 解密 / 加密回传。 |
 | `RUNNER_LEGACY_ENABLED` | `false` | 是否继续领取旧明文任务；全量切换 E2EE 后置 `false`。 |
-| `RUNNER_ID` | `windows-main` | Runner 标识；主密钥轮换时使用新的 `RUNNER_ID` 作为新安全 epoch。 |
+| `RUNNER_ID` | `local-runner` | Runner 标识；主密钥轮换时使用新的 `RUNNER_ID` 作为新安全 epoch。 |
 | `RUNNER_WORKSPACES` | 必填 | 本地 workspace 白名单，`;` 分隔的绝对路径；心跳只上报派生的 workspace ID 与可写策略，不上报绝对路径。 |
 | `RUNNER_E2EE_STATE_FILE` | `~/.cursor-gateway/runner-e2ee-state.dat` | 密钥 / 配对 / 重放状态文件路径（Windows 上由 DPAPI 保护）。 |
 | `RUNNER_E2EE_MASTER_KEY` / `RUNNER_E2EE_MASTER_KEY_FILE` | 空 | Linux/WSL：用 scrypt→AES-GCM 封存 state；推荐把可用主密钥放在 tmpfs，口令封存见 `scripts/e2ee/`。 |

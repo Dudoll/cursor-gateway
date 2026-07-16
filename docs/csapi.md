@@ -23,7 +23,7 @@ HTTP 门面，目的是让标准 CLI（OpenCode / Claude Code 等）只需要「
 
 - **csapi / Gateway 可见明文。** 请求体、system prompt、对话内容在 csapi 进程与网关侧
   是明文，可被日志、抓包、数据库层面看到（我们做最小化日志，但技术上可见）。
-- **Runner / 模型可见明文。** 明文经队列下发到 Windows Runner，再交给 Cursor SDK / 模型，
+- **Runner / 模型可见明文。** 明文经队列下发到 Local Runner，再交给 Cursor SDK / 模型，
   这一路也都是明文。
 - **这不是 E2EE。** 抓包和服务器日志侧「看得到明文」是方案 B 的预期行为，不得写成
   「端到端加密 / Gateway-blind」。
@@ -42,7 +42,7 @@ OpenCode / Claude Code CLI (本机文件读写)
 csapi 门面  (apps/server, /v1/*)         ← 明文可见（方案 B）
         │  明文 run 入队 (PostgreSQL, content_mode=plaintext)
         ▼
-Windows Runner (wsl-e2ee / windows-main)  ← 明文可见
+Local Runner (wsl-e2ee / local-runner)  ← 明文可见
         │  Cursor SDK local runtime
         ▼
 Cursor 模型 / 上游                         ← 明文可见
@@ -93,7 +93,7 @@ Base URL: `https://csapi.joelzt.org`
 |------|------|------|
 | `CSAPI_ENABLED` | `false` | 是否挂载 csapi 路由（配置了 key 时建议 `true`） |
 | `CSAPI_API_KEYS` | 空 | 逗号分隔的合法 API key 列表（发行/校验用） |
-| `CSAPI_DEFAULT_MODEL` | `auto` | 请求模型未知时回退的模型。注意：`auto` 由 Windows Runner 领取；若线上只有 Hermes，会自动改写为第一个 `hermes:*`，也可直接设为 `hermes:default` |
+| `CSAPI_DEFAULT_MODEL` | `auto` | 请求模型未知时回退的模型。注意：`auto` 由 Local Runner 领取；若线上只有 Hermes，会自动改写为第一个 `hermes:*`，也可直接设为 `hermes:default` |
 | `CSAPI_DEFAULT_WORKSPACE_ID` | 空 | 默认 workspace；留空则自动取第一个可用 workspace |
 | `CSAPI_MAX_CONCURRENCY_PER_KEY` | `4` | 每 key 并发上限；超限 429 |
 | `CSAPI_RUN_TIMEOUT_MS` | `300000` | 单次 run 等待超时（毫秒） |

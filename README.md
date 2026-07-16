@@ -1,4 +1,4 @@
-# Cursor Gateway
+# CS Gateway
 
 Run Cursor agents against files on your own machine, controlled through a small
 web/Telegram gateway. Two pieces:
@@ -41,7 +41,7 @@ That's it. To keep it running in the background:
 powershell -ExecutionPolicy Bypass -File apps\windows-runner\scripts\install-wsl-runner-daemon.ps1
 ```
 
-Details and troubleshooting: [`docs/windows-runner.md`](docs/windows-runner.md).
+Details and troubleshooting: [`docs/runner.md`](docs/runner.md).
 
 ## Quick start: the server
 
@@ -73,7 +73,7 @@ Full deployment (DNS, Cloudflare Access, Telegram, backups):
 ## End-to-end encryption (optional)
 
 For a Gateway-blind path where the VPS, Cloudflare, Postgres, and backups only
-relay ciphertext, use the signed **Cursor Gateway Secure** browser extension
+relay ciphertext, use the signed **Secure Gateway** browser extension
 (`apps/browser-extension`) and/or the cross-browser **Secure Web PWA**
 (`apps/secure-web`, magic-link pairing — see
 [`docs/secure-web-e2ee.md`](docs/secure-web-e2ee.md)) with an E2EE-capable

@@ -227,7 +227,7 @@ export async function runCursorJob(
       const errorMessage =
         extractErrorMessage(result) ??
         extractResultText(result) ??
-        (lastAssistantText.trim() || `Cursor 运行结束，状态为「${status}」。`);
+        (lastAssistantText.trim() || `模型运行结束，状态为「${status}」。`);
       return {
         runId: job.runId,
         status: "error",

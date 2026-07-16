@@ -409,7 +409,7 @@ export function buildModelsResponse(modelIds: string[]): Record<string, unknown>
   for (const id of ["auto", ...modelIds]) {
     if (seen.has(id)) continue;
     seen.add(id);
-    data.push({ id, object: "model", created, owned_by: "cursor-gateway" });
+    data.push({ id, object: "model", name: id, created, owned_by: "local-runner" });
   }
   return { object: "list", data };
 }
