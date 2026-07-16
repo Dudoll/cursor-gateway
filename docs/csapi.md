@@ -168,16 +168,26 @@ CSAPI_API_KEY=sk-xxxx sh scripts/csapi/install-csapi.sh
 **永不进 git、永不进 HTTP header**。
 
 ```bash
-# 交互式（提示输入真实 key；先探测 /cg/v1/server-keys 并核对固定根指纹）
+# 交互式（提示输入真实 key；探测 /cg/v1/server-keys 并核对固定根指纹；
+#          没有仓库会提示自动 clone，缺依赖会自动 npm install）
 sh scripts/csapi/install-csapi-secure.sh
-# 非交互 + 立即后台启动 Adapter
-CSAPI_API_KEY=sk-xxxx sh scripts/csapi/install-csapi-secure.sh --start
-# 只打印 / 卸载 / 查看状态 / 跳过探测
+# 非交互 + 立即后台启动 Adapter（真·一键）
+CSAPI_API_KEY=sk-xxxx sh scripts/csapi/install-csapi-secure.sh --start --yes
+# 注册 systemd --user 开机自启（Linux）
+CSAPI_API_KEY=sk-xxxx sh scripts/csapi/install-csapi-secure.sh --service --yes
+# 只准备仓库（clone + npm install，可加 --build 编译 dist），不写配置
+sh scripts/csapi/install-csapi-secure.sh --setup
+# 只打印 / 卸载 / 查看状态 / 停止 / 跳过探测 / 不自动 clone / 不装依赖
 sh scripts/csapi/install-csapi-secure.sh --print
 sh scripts/csapi/install-csapi-secure.sh --uninstall
 sh scripts/csapi/install-csapi-secure.sh --status
+sh scripts/csapi/install-csapi-secure.sh --stop
 sh scripts/csapi/install-csapi-secure.sh --no-probe
+sh scripts/csapi/install-csapi-secure.sh --no-clone --no-install
 ```
+
+Windows：`powershell -ExecutionPolicy Bypass -File .\install-csapi-secure.ps1`
+（`-Start / -Service / -Setup / -Print / -Uninstall / -Status / -Stop / -NoProbe / -NoClone / -NoInstall / -Build / -Yes`）。
 
 - **信任锚**：脚本离线固定（pin）Ed25519 根指纹（内置常量 + `scripts/csapi/trust/csapi-trust-root-public.json`，
   **仅公钥**）。服务端下发的身份证书必须由该根签发，否则 **fail-closed，绝不回退明文**。
@@ -185,8 +195,11 @@ sh scripts/csapi/install-csapi-secure.sh --no-probe
   并打印运维前置（见下）；探到根指纹不匹配 → 疑似 MITM，拒绝写任何配置。
 - **与 §7.1 明文安装器的关系**：两者写**不同的**受管块；本脚本的块在 rc 中靠后，会覆盖明文安装器的
   `ANTHROPIC_*/OPENAI_*`（后写生效）。二选一即可：要抗 MITM 用本脚本，要最省事的明文兼容用 §7.1。
-- **前置**：启动 Adapter 需仓库源码（`apps/secure-adapter` + `npm install`，node≥22）；纯 `curl|sh`
-  单文件只能完成「配置 + 探测」，启动仍需 clone 仓库（或设 `CSAPI_REPO_DIR`）。
+- **真·一键**：启动 Adapter 需仓库源码（`apps/secure-adapter`，node≥22）。脚本会**自动**：找不到仓库时
+  `git clone` 公开仓库到 `~/.cursor-gateway/cursor-gateway`（`--no-clone` 关闭、`--yes` 免确认）、缺依赖时
+  在仓库根 `npm install`（`--no-install` 关闭）。已有本地仓库则自动复用（也可 `CSAPI_REPO_DIR=/path` 指定）。
+- **自启**：`--service`（Linux）注册 `systemd --user` 单元开机自启；无 systemd 时回退 nohup 后台。
+  Windows `-Service` 注册登录计划任务。
 
 ### 生产运维前置（必须先开）
 
