@@ -430,6 +430,77 @@ export async function migrate() {
       expires_at timestamptz not null,
       created_at timestamptz not null default now()
     );
+
+    -- relay-P1: account-bound cg-mitm devices
+    create table if not exists cg_devices (
+      device_id uuid primary key,
+      account_id text not null,
+      signing_fingerprint text not null,
+      encryption_fingerprint text not null,
+      device_cert jsonb not null,
+      epoch int not null default 1,
+      label text,
+      status text not null default 'active',
+      created_at timestamptz not null default now(),
+      last_seen_at timestamptz,
+      revoked_at timestamptz
+    );
+    create index if not exists cg_devices_account_idx
+      on cg_devices(account_id) where status = 'active';
+
+    -- relay-P2: per-account KEK (wrapped by KMS master key)
+    create table if not exists account_keks (
+      account_id text not null,
+      epoch int not null default 1,
+      wrapped_kek jsonb not null,
+      kms_key_id text,
+      created_at timestamptz not null default now(),
+      primary key (account_id, epoch)
+    );
+
+    alter table conversations add column if not exists account_id text;
+    alter table conversations add column if not exists wrapped_dek jsonb;
+    alter table conversations add column if not exists kek_epoch int;
+    alter table conversations add column if not exists archived_at timestamptz;
+
+    create table if not exists cs_relay_messages (
+      id uuid primary key,
+      conversation_id uuid not null references conversations(id) on delete cascade,
+      account_id text not null,
+      sequence bigint not null,
+      role text not null,
+      content_ciphertext jsonb not null,
+      content_mode text not null default 'cs-relay-v1',
+      idempotency_key uuid,
+      created_at timestamptz not null default now(),
+      deleted_at timestamptz
+    );
+    create unique index if not exists cs_relay_msg_seq_uniq
+      on cs_relay_messages(conversation_id, sequence) where deleted_at is null;
+    create unique index if not exists cs_relay_msg_idem_uniq
+      on cs_relay_messages(account_id, idempotency_key) where idempotency_key is not null;
+    create index if not exists cs_relay_msg_sync_idx
+      on cs_relay_messages(account_id, conversation_id, sequence);
+
+    do $cs_relay_constraints$
+    begin
+      if not exists (
+        select 1 from pg_constraint where conname = 'conversations_cs_relay_plaintext_empty'
+      ) then
+        alter table conversations
+          add constraint conversations_cs_relay_plaintext_empty
+          check (
+            content_mode <> 'cs-relay-v1'
+            or (
+              title is null
+              and account_id is not null
+              and wrapped_dek is not null
+              and kek_epoch is not null
+            )
+          ) not valid;
+      end if;
+    end
+    $cs_relay_constraints$;
   `);
 }
 

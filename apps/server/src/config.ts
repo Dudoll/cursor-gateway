@@ -70,7 +70,15 @@ const envSchema = z.object({
   CG_TRUST_ROOTS_FILE: z.string().default(""),
   CG_MASTER_KEY: z.string().default(""),
   CG_MASTER_KEY_FILE: z.string().default(""),
-  CG_PAD_BUCKETS: z.string().default("512,2048,8192,32768,131072")
+  CG_PAD_BUCKETS: z.string().default("512,2048,8192,32768,131072"),
+  // trusted-CS relay (multi-device history). Default off for gray rollout.
+  CS_RELAY_HISTORY_ENABLED: booleanEnv(false),
+  CS_RELAY_ACCOUNT_BINDING: booleanEnv(true),
+  CS_RELAY_KMS_KEY_ID: z.string().default("file-master-1"),
+  CS_RELAY_SEND_JITTER_MS: z.coerce.number().int().nonnegative().default(0),
+  CS_RELAY_RUNNER_REENCRYPT: booleanEnv(false),
+  CS_RELAY_MAX_HISTORY_TURNS: z.coerce.number().int().positive().default(20),
+  CS_RELAY_MAX_HISTORY_BYTES: z.coerce.number().int().positive().default(48_000)
 });
 
 const splitCsv = (value: string) =>
@@ -135,6 +143,15 @@ export const config = {
     masterKey: parsed.CG_MASTER_KEY.trim(),
     masterKeyFile: parsed.CG_MASTER_KEY_FILE.trim(),
     padBuckets: parsed.CG_PAD_BUCKETS.trim()
+  },
+  csRelay: {
+    historyEnabled: parsed.CS_RELAY_HISTORY_ENABLED,
+    accountBinding: parsed.CS_RELAY_ACCOUNT_BINDING,
+    kmsKeyId: parsed.CS_RELAY_KMS_KEY_ID.trim() || "file-master-1",
+    sendJitterMs: parsed.CS_RELAY_SEND_JITTER_MS,
+    runnerReencrypt: parsed.CS_RELAY_RUNNER_REENCRYPT,
+    maxHistoryTurns: parsed.CS_RELAY_MAX_HISTORY_TURNS,
+    maxHistoryBytes: parsed.CS_RELAY_MAX_HISTORY_BYTES
   }
 };
 

@@ -96,7 +96,7 @@ export const cgServerIdentityCertSchema = z
 export type CgServerIdentityCert = z.infer<typeof cgServerIdentityCertSchema>;
 
 // --- device certificate (ES256 server signature) ---
-export const cgDeviceCertSchema = z
+export const cgDeviceCertV1Schema = z
   .object({
     protocol: z.literal(CG_MITM_PROTOCOL),
     kind: z.literal("cg-device-cert/1"),
@@ -111,7 +111,62 @@ export const cgDeviceCertSchema = z
     signature: e2eeSignatureSchema
   })
   .strict();
+export type CgDeviceCertV1 = z.infer<typeof cgDeviceCertV1Schema>;
+
+/** Account-bound device cert (relay-P1). Compatible readers accept v1|v2. */
+export const cgDeviceCertV2Schema = z
+  .object({
+    protocol: z.literal(CG_MITM_PROTOCOL),
+    kind: z.literal("cg-device-cert/2"),
+    version: z.literal(2),
+    accountId: z.string().trim().min(1).max(256),
+    deviceId: z.string().uuid(),
+    epoch: z.number().int().positive().max(1_000_000),
+    signingKey: e2eeKeyDescriptorSchema,
+    encryptionKey: e2eeKeyDescriptorSchema,
+    keyIdHint: z.string().trim().min(1).max(128),
+    /** Transition enroll scope; production prefer oidc|passkey|cf-access. */
+    authScope: z.enum(["api-key", "oidc", "passkey", "cf-access"]).default("api-key"),
+    issuedAt: isoTime,
+    expiresAt: isoTime,
+    serverCertId: z.string().uuid(),
+    signature: e2eeSignatureSchema
+  })
+  .strict();
+export type CgDeviceCertV2 = z.infer<typeof cgDeviceCertV2Schema>;
+
+export const cgDeviceCertSchema = z.union([cgDeviceCertV1Schema, cgDeviceCertV2Schema]);
 export type CgDeviceCert = z.infer<typeof cgDeviceCertSchema>;
+
+export const cgAccountAuthSchema = z.discriminatedUnion("kind", [
+  z
+    .object({
+      kind: z.literal("api-key"),
+      apiKey: z.string().min(1).max(512)
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal("oidc"),
+      idToken: z.string().min(16).max(8192)
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal("cf-access"),
+      cfAccessJwt: z.string().min(16).max(8192)
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal("passkey"),
+      accountId: z.string().trim().min(1).max(256),
+      credentialId: z.string().trim().min(1).max(512),
+      assertion: z.record(z.string(), z.unknown())
+    })
+    .strict()
+]);
+export type CgAccountAuth = z.infer<typeof cgAccountAuthSchema>;
 
 // --- GET /cg/v1/server-keys ---
 export const cgServerKeysResponseSchema = z
@@ -134,13 +189,24 @@ export const cgEnrollInnerSchema = z
   .object({
     protocol: z.literal(CG_MITM_PROTOCOL),
     kind: z.literal("enroll-inner"),
-    apiKey: z.string().min(1).max(512),
+    /** @deprecated Prefer accountAuth; retained for CLI transition. */
+    apiKey: z.string().min(1).max(512).optional(),
+    accountAuth: cgAccountAuthSchema.optional(),
     deviceSigningKey: e2eeKeyDescriptorSchema,
     deviceEncryptionKey: e2eeKeyDescriptorSchema,
     label: z.string().trim().min(1).max(128).nullable(),
     createdAt: isoTime
   })
-  .strict();
+  .strict()
+  .superRefine((value, ctx) => {
+    if (!value.apiKey && !value.accountAuth) {
+      ctx.addIssue({
+        code: "custom",
+        message: "enroll_requires_apiKey_or_accountAuth",
+        path: ["accountAuth"]
+      });
+    }
+  });
 export type CgEnrollInner = z.infer<typeof cgEnrollInnerSchema>;
 
 export const cgEnrollRequestSchema = z
@@ -279,3 +345,92 @@ export const cgCancelRequestSchema = z
   })
   .strict();
 export type CgCancelRequest = z.infer<typeof cgCancelRequestSchema>;
+
+// --- POST /cg/v1/devices/revoke (ciphertext inner via exchange-shaped envelope) ---
+export const cgRevokeInnerSchema = z
+  .object({
+    kind: z.literal("revoke-inner"),
+    targetDeviceId: z.string().uuid(),
+    /** When true, bump account KEK epoch after revoke (forward secrecy for new convos). */
+    bumpKekEpoch: z.boolean().default(false)
+  })
+  .strict();
+export type CgRevokeInner = z.infer<typeof cgRevokeInnerSchema>;
+
+export const cgRevokeRequestSchema = z
+  .object({
+    protocol: z.literal(CG_MITM_PROTOCOL),
+    kind: z.literal("revoke-request"),
+    sessionId: base64Url(43).length(43),
+    deviceId: z.string().uuid(),
+    serverCertId: z.string().uuid(),
+    epoch: z.number().int().nonnegative().max(1_000_000),
+    enc: e2eeHpkeEnvelopeSchema.optional(),
+    sequence: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+    createdAt: isoTime,
+    payload: e2eeCiphertextSchema
+  })
+  .strict();
+export type CgRevokeRequest = z.infer<typeof cgRevokeRequestSchema>;
+
+// --- POST /cg/v1/sync (cs-relay multi-device history) ---
+export const CS_RELAY_CONTENT_MODE = "cs-relay-v1" as const;
+
+export const cgSyncOpSchema = z.enum([
+  "conversation-list",
+  "messages-page",
+  "delta",
+  "archive",
+  "delete"
+]);
+export type CgSyncOp = z.infer<typeof cgSyncOpSchema>;
+
+export const cgSyncInnerSchema = z
+  .object({
+    protocol: z.literal(CG_MITM_PROTOCOL),
+    kind: z.literal("sync-request"),
+    op: cgSyncOpSchema,
+    conversationId: z.string().uuid().optional(),
+    sinceSequence: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional(),
+    sinceUpdatedAt: isoTime.optional(),
+    expectedSequence: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional(),
+    limit: z.number().int().positive().max(200).default(50),
+    cursor: z.string().max(512).optional(),
+    deviceAuth: e2eeSignatureSchema,
+    pad: z.string().max(200_000).optional()
+  })
+  .strict();
+export type CgSyncInner = z.infer<typeof cgSyncInnerSchema>;
+
+export const cgSyncRequestSchema = z
+  .object({
+    protocol: z.literal(CG_MITM_PROTOCOL),
+    kind: z.literal("sync-request"),
+    sessionId: base64Url(43).length(43),
+    deviceId: z.string().uuid(),
+    serverCertId: z.string().uuid(),
+    epoch: z.number().int().nonnegative().max(1_000_000),
+    enc: e2eeHpkeEnvelopeSchema.optional(),
+    sequence: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+    createdAt: isoTime,
+    payload: e2eeCiphertextSchema
+  })
+  .strict();
+export type CgSyncRequest = z.infer<typeof cgSyncRequestSchema>;
+
+export const cgSyncStreamOpenSchema = z
+  .object({
+    protocol: z.literal(CG_MITM_PROTOCOL),
+    kind: z.literal("sync-stream-open"),
+    sessionId: base64Url(43).length(43),
+    deviceId: z.string().uuid(),
+    serverCertId: z.string().uuid(),
+    epoch: z.number().int().nonnegative().max(1_000_000),
+    enc: e2eeHpkeEnvelopeSchema.optional(),
+    sinceSequence: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional(),
+    conversationId: z.string().uuid().optional(),
+    createdAt: isoTime,
+    payload: e2eeCiphertextSchema
+  })
+  .strict();
+export type CgSyncStreamOpen = z.infer<typeof cgSyncStreamOpenSchema>;

@@ -508,6 +508,9 @@ export function isCsapiPath(url: string | undefined): boolean {
     path === "/cg/v1/server-keys" ||
     path === "/cg/v1/enroll" ||
     path === "/cg/v1/exchange" ||
-    path === "/cg/v1/cancel"
+    path === "/cg/v1/cancel" ||
+    path === "/cg/v1/devices/revoke" ||
+    path === "/cg/v1/sync" ||
+    path === "/cg/v1/sync/stream"
   );
 }

@@ -13,6 +13,7 @@
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
+    "@cursor-gateway/e2ee": "file:../../packages/e2ee",
     "@cursor-gateway/shared": "file:../../packages/shared",
     "@fastify/cors": "^11.3.0",
     "@fastify/jwt": "^10.2.0",

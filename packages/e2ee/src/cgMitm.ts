@@ -15,6 +15,7 @@ import {
   cgTrustRootPublicSchema,
   type CgAnySignature,
   type CgDeviceCert,
+  type CgDeviceCertV2,
   type CgEd25519PublicKey,
   type CgServerIdentityCert,
   type CgTrustRootPublic,
@@ -184,19 +185,40 @@ export function cgServerCertTranscript(
 export function cgDeviceCertTranscript(
   cert: Omit<CgDeviceCert, "signature">
 ): JsonValue {
+  if (cert.kind === "cg-device-cert/2") {
+    const v2 = cert as Omit<Extract<CgDeviceCert, { kind: "cg-device-cert/2" }>, "signature">;
+    return {
+      protocol: v2.protocol,
+      kind: v2.kind,
+      version: v2.version,
+      accountId: v2.accountId,
+      deviceId: v2.deviceId,
+      epoch: v2.epoch,
+      signingFingerprint: v2.signingKey.fingerprint,
+      signingKeyId: v2.signingKey.keyId,
+      encryptionFingerprint: v2.encryptionKey.fingerprint,
+      encryptionKeyId: v2.encryptionKey.keyId,
+      keyIdHint: v2.keyIdHint,
+      authScope: v2.authScope,
+      issuedAt: v2.issuedAt,
+      expiresAt: v2.expiresAt,
+      serverCertId: v2.serverCertId
+    };
+  }
+  const v1 = cert as Omit<Extract<CgDeviceCert, { kind: "cg-device-cert/1" }>, "signature">;
   return {
-    protocol: cert.protocol,
-    kind: cert.kind,
-    version: cert.version,
-    deviceId: cert.deviceId,
-    signingFingerprint: cert.signingKey.fingerprint,
-    signingKeyId: cert.signingKey.keyId,
-    encryptionFingerprint: cert.encryptionKey.fingerprint,
-    encryptionKeyId: cert.encryptionKey.keyId,
-    keyIdHint: cert.keyIdHint,
-    issuedAt: cert.issuedAt,
-    expiresAt: cert.expiresAt,
-    serverCertId: cert.serverCertId
+    protocol: v1.protocol,
+    kind: v1.kind,
+    version: v1.version,
+    deviceId: v1.deviceId,
+    signingFingerprint: v1.signingKey.fingerprint,
+    signingKeyId: v1.signingKey.keyId,
+    encryptionFingerprint: v1.encryptionKey.fingerprint,
+    encryptionKeyId: v1.encryptionKey.keyId,
+    keyIdHint: v1.keyIdHint,
+    issuedAt: v1.issuedAt,
+    expiresAt: v1.expiresAt,
+    serverCertId: v1.serverCertId
   };
 }
 
@@ -427,14 +449,14 @@ export async function issueCgDeviceCert(input: {
   serverCertId: string;
   validityDays?: number;
   issuedAt?: string;
-}): Promise<CgDeviceCert> {
+}): Promise<Extract<CgDeviceCert, { kind: "cg-device-cert/1" }>> {
   const issuedAt = input.issuedAt ?? new Date().toISOString();
   const validityDays = input.validityDays ?? 365;
   const expiresAt = new Date(Date.parse(issuedAt) + validityDays * 86_400_000).toISOString();
-  const unsigned: Omit<CgDeviceCert, "signature"> = {
+  const unsigned = {
     protocol: CG_MITM_PROTOCOL,
-    kind: "cg-device-cert/1",
-    version: 1,
+    kind: "cg-device-cert/1" as const,
+    version: 1 as const,
     deviceId: input.deviceId,
     signingKey: input.signingKey,
     encryptionKey: input.encryptionKey,
@@ -448,7 +470,51 @@ export async function issueCgDeviceCert(input: {
     input.signingPrivateKey,
     input.signingKeyId
   );
-  return cgDeviceCertSchema.parse({ ...unsigned, signature });
+  return cgDeviceCertSchema.parse({ ...unsigned, signature }) as Extract<
+    CgDeviceCert,
+    { kind: "cg-device-cert/1" }
+  >;
+}
+
+/** Issue account-bound device cert (cg-device-cert/2). */
+export async function issueCgDeviceCertV2(input: {
+  signingPrivateKey: CryptoKey;
+  signingKeyId: string;
+  accountId: string;
+  deviceId: string;
+  epoch?: number;
+  authScope?: CgDeviceCertV2["authScope"];
+  signingKey: E2eeKeyDescriptor;
+  encryptionKey: E2eeKeyDescriptor;
+  keyIdHint: string;
+  serverCertId: string;
+  validityDays?: number;
+  issuedAt?: string;
+}): Promise<CgDeviceCertV2> {
+  const issuedAt = input.issuedAt ?? new Date().toISOString();
+  const validityDays = input.validityDays ?? 365;
+  const expiresAt = new Date(Date.parse(issuedAt) + validityDays * 86_400_000).toISOString();
+  const unsigned = {
+    protocol: CG_MITM_PROTOCOL,
+    kind: "cg-device-cert/2" as const,
+    version: 2 as const,
+    accountId: input.accountId,
+    deviceId: input.deviceId,
+    epoch: input.epoch ?? 1,
+    signingKey: input.signingKey,
+    encryptionKey: input.encryptionKey,
+    keyIdHint: input.keyIdHint,
+    authScope: input.authScope ?? ("api-key" as const),
+    issuedAt,
+    expiresAt,
+    serverCertId: input.serverCertId
+  };
+  const signature = await signValue(
+    cgDeviceCertTranscript(unsigned),
+    input.signingPrivateKey,
+    input.signingKeyId
+  );
+  return cgDeviceCertSchema.parse({ ...unsigned, signature }) as CgDeviceCertV2;
 }
 
 export async function verifyCgDeviceCert(input: {
