@@ -1316,3 +1316,7 @@ export async function verifyDeviceApprovalDecision(input: {
     input.approverSigningPublicKey
   );
 }
+
+// cg-mitm/1 helpers (Ed25519 root, purpose/AAD, server/device cert). Exported
+// last so the primitives above are initialized before cgMitm.ts imports them.
+export * from "./cgMitm.js";

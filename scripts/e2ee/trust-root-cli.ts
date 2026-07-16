@@ -13,6 +13,12 @@
  *                                      [--root-private PATH] [--root-public PATH] [--master-key-file PATH]
  *                                      [--encryption-key-file PATH --signing-key-file PATH | --runner-state-file PATH]
  *                                      [--out PATH]
+ *   trust-root-cli.ts init-cg-root     [--epoch N] [--out-dir DIR] [--master-key-file PATH]
+ *   trust-root-cli.ts issue-server-cert --server-id ID --allowed-origins a,b
+ *                                      --hpke-key-file PATH --signing-key-file PATH
+ *                                      [--validity-days N] [--epoch N]
+ *                                      [--root-private PATH] [--root-public PATH] [--master-key-file PATH]
+ *                                      [--out PATH]
  *   trust-root-cli.ts recovery-code    --runner-id ID [--secure-origin URL] [--ttl-seconds N]
  *                                      [--gateway-url URL --runner-shared-secret SECRET]
  *
@@ -35,16 +41,21 @@ import {
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import {
+  cgTrustRootPublicSchema,
   e2eeKeyDescriptorSchema,
   e2eeTrustRootPublicSchema,
+  type CgTrustRootPublic,
   type E2eeKeyDescriptor,
   type E2eeTrustRootPublic
 } from "@cursor-gateway/shared";
 import {
   encodeCrockfordGrouped,
+  generateCgTrustRootKeyPair,
   generateRecoverySecret,
   generateTrustRootKeyPair,
+  importCgEd25519PrivateKey,
   importTrustRootPrivateKey,
+  issueCgServerIdentityCert,
   issueRunnerIdentityCert
 } from "@cursor-gateway/e2ee";
 
@@ -357,6 +368,136 @@ async function loadQrcode(): Promise<QrcodeModule | null> {
   }
 }
 
+// --- cg-mitm/1 Ed25519 offline root + server identity certificate ---
+
+type CgTrustRootPrivateEntry = {
+  privateJwk: JsonWebKey;
+  epoch: number;
+  keyId: string;
+  fingerprint: string;
+  createdAt: string;
+  alg: "EdDSA";
+};
+type CgTrustRootPrivateStore = { version: 1; roots: Record<string, CgTrustRootPrivateEntry> };
+
+function loadCgPrivateStore(path: string, masterKey: string): CgTrustRootPrivateStore {
+  if (!existsSync(path)) return { version: 1, roots: {} };
+  const sealed = new Uint8Array(readFileSync(path));
+  const plaintext = openWithMasterKey(sealed, masterKey);
+  try {
+    return JSON.parse(new TextDecoder().decode(plaintext)) as CgTrustRootPrivateStore;
+  } finally {
+    plaintext.fill(0);
+  }
+}
+
+function saveCgPrivateStore(path: string, store: CgTrustRootPrivateStore, masterKey: string): void {
+  const plaintext = new TextEncoder().encode(JSON.stringify(store));
+  const sealed = sealWithMasterKey(plaintext, masterKey);
+  writeFileAtomic(path, new TextDecoder().decode(sealed), 0o600);
+}
+
+function loadCgPublicList(path: string): CgTrustRootPublic[] {
+  if (!existsSync(path)) return [];
+  const raw = JSON.parse(readFileSync(path, "utf8")) as { trustRoots?: unknown[] };
+  return (raw.trustRoots ?? []).map((item) => cgTrustRootPublicSchema.parse(item));
+}
+
+function saveCgPublicList(path: string, roots: CgTrustRootPublic[]): void {
+  writeFileAtomic(path, JSON.stringify({ trustRoots: roots }, null, 2), 0o644);
+}
+
+async function cmdInitCgRoot(args: Args): Promise<void> {
+  const outDir = optionalString(args, "out-dir") ?? GATEWAY_DIR;
+  const privatePath = join(outDir, "cg-trust-root-private.enc");
+  const publicPath = join(outDir, "cg-trust-root-public.json");
+  const masterKey = resolveMasterKey(args);
+
+  const privateStore = loadCgPrivateStore(privatePath, masterKey);
+  const publicRoots = loadCgPublicList(publicPath);
+  const maxExistingEpoch = Object.values(privateStore.roots).reduce(
+    (max, entry) => Math.max(max, entry.epoch),
+    0
+  );
+  const epochArg = optionalString(args, "epoch");
+  const epoch = epochArg ? Number(epochArg) : maxExistingEpoch + 1;
+  if (!Number.isInteger(epoch) || epoch < 1) throw new Error("--epoch must be a positive integer");
+
+  const root = await generateCgTrustRootKeyPair(epoch);
+  privateStore.roots[root.public.keyId] = {
+    privateJwk: root.privateJwk,
+    epoch,
+    keyId: root.public.keyId,
+    fingerprint: root.public.fingerprint,
+    createdAt: root.public.createdAt,
+    alg: "EdDSA"
+  };
+  saveCgPrivateStore(privatePath, privateStore, masterKey);
+  saveCgPublicList(publicPath, [...publicRoots, root.public]);
+
+  console.log(`Generated cg-mitm Ed25519 trust root epoch ${epoch}`);
+  console.log(`  keyId:       ${root.public.keyId}`);
+  console.log(`  fingerprint: ${root.public.fingerprint}`);
+  console.log(`  private:     ${privatePath} (sealed, 0600 — keep offline)`);
+  console.log(`  public:      ${publicPath}`);
+  console.log(
+    "Distribute the public file with CG_TRUST_ROOTS_FILE (or embed in server-keys). " +
+      "Root private material must never touch the always-online Gateway."
+  );
+}
+
+async function cmdIssueServerCert(args: Args): Promise<void> {
+  const outDir = optionalString(args, "out-dir") ?? GATEWAY_DIR;
+  const privatePath =
+    optionalString(args, "root-private") ?? join(outDir, "cg-trust-root-private.enc");
+  const publicPath =
+    optionalString(args, "root-public") ?? join(outDir, "cg-trust-root-public.json");
+  const masterKey = resolveMasterKey(args);
+
+  const serverId = requireString(args, "server-id");
+  const allowedOrigins = splitCsv(requireString(args, "allowed-origins"));
+  const validityDays = Number(optionalString(args, "validity-days") ?? "365");
+  const out = optionalString(args, "out") ?? join(outDir, "cg-server-identity-cert.json");
+
+  const hpkeKey = e2eeKeyDescriptorSchema.parse(
+    JSON.parse(readFileSync(requireString(args, "hpke-key-file"), "utf8"))
+  );
+  const signingKey = e2eeKeyDescriptorSchema.parse(
+    JSON.parse(readFileSync(requireString(args, "signing-key-file"), "utf8"))
+  );
+
+  const privateStore = loadCgPrivateStore(privatePath, masterKey);
+  const publicRoots = loadCgPublicList(publicPath);
+  const entries = Object.values(privateStore.roots);
+  if (entries.length === 0) throw new Error("No cg trust roots found; run init-cg-root first");
+  const epochArg = optionalString(args, "epoch");
+  const selected = epochArg
+    ? entries.find((entry) => entry.epoch === Number(epochArg))
+    : entries.reduce((latest, entry) => (entry.epoch > latest.epoch ? entry : latest));
+  if (!selected) throw new Error(`No cg trust root found for epoch ${epochArg}`);
+  const rootPublic = publicRoots.find((root) => root.keyId === selected.keyId);
+  if (!rootPublic) throw new Error("Cg root private entry has no matching public record");
+
+  const rootPrivateKey = await importCgEd25519PrivateKey(selected.privateJwk);
+  const cert = await issueCgServerIdentityCert({
+    rootPrivateKey,
+    rootPublic,
+    serverId,
+    hpkeKey,
+    signingKey,
+    allowedOrigins,
+    validityDays
+  });
+
+  writeFileAtomic(out, JSON.stringify(cert, null, 2), 0o644);
+  console.log(`Issued cg-mitm server identity certificate for ${serverId}`);
+  console.log(`  certId:      ${cert.certId}`);
+  console.log(`  epoch:       ${cert.epoch}`);
+  console.log(`  expiresAt:   ${cert.expiresAt}`);
+  console.log(`  written to:  ${out}`);
+  console.log("Copy this file to the Gateway host as CG_SERVER_CERT_FILE.");
+}
+
 async function cmdRecoveryCode(args: Args): Promise<void> {
   const runnerId = requireString(args, "runner-id", process.env.RUNNER_ID);
   const secureOrigin = (optionalString(args, "secure-origin") ?? "https://secure.joelzt.org").replace(
@@ -443,11 +584,15 @@ async function main() {
       return cmdInitRoot(args);
     case "issue-cert":
       return cmdIssueCert(args);
+    case "init-cg-root":
+      return cmdInitCgRoot(args);
+    case "issue-server-cert":
+      return cmdIssueServerCert(args);
     case "recovery-code":
       return cmdRecoveryCode(args);
     default:
       console.error(
-        "Usage: trust-root-cli.ts <init-root|issue-cert|recovery-code> [options]\n" +
+        "Usage: trust-root-cli.ts <init-root|issue-cert|init-cg-root|issue-server-cert|recovery-code> [options]\n" +
           "See scripts/e2ee/README.md for full option reference."
       );
       process.exit(1);

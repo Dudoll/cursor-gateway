@@ -1,4 +1,17 @@
 import { z } from "zod";
+import {
+  E2EE_HPKE_SUITE,
+  e2eeCiphertextSchema,
+  e2eeHpkeEnvelopeSchema,
+  e2eeKeyDescriptorSchema,
+  e2eePublicKeySchema,
+  e2eeSignatureSchema,
+  type E2eeCiphertext,
+  type E2eeHpkeEnvelope,
+  type E2eeKeyDescriptor,
+  type E2eePublicKey,
+  type E2eeSignature
+} from "./e2eeSchemas.js";
 
 export const roleSchema = z.enum(["admin", "operator", "viewer"]);
 export type Role = z.infer<typeof roleSchema>;
@@ -176,56 +189,22 @@ export const memoryFactSchema = z.object({
 export type MemoryFact = z.infer<typeof memoryFactSchema>;
 
 export const E2EE_PROTOCOL = "cg-e2ee/1" as const;
-export const E2EE_HPKE_SUITE = "HPKE-v1-P256-HKDF-SHA256-A256GCM" as const;
+export {
+  E2EE_HPKE_SUITE,
+  e2eeCiphertextSchema,
+  e2eeHpkeEnvelopeSchema,
+  e2eeKeyDescriptorSchema,
+  e2eePublicKeySchema,
+  e2eeSignatureSchema,
+  type E2eeCiphertext,
+  type E2eeHpkeEnvelope,
+  type E2eeKeyDescriptor,
+  type E2eePublicKey,
+  type E2eeSignature
+};
 
 const base64UrlSchema = (maxLength: number) =>
   z.string().min(1).max(maxLength).regex(/^[A-Za-z0-9_-]+$/);
-
-export const e2eePublicKeySchema = z
-  .object({
-    kty: z.literal("EC"),
-    crv: z.literal("P-256"),
-    x: base64UrlSchema(43).length(43),
-    y: base64UrlSchema(43).length(43)
-  })
-  .strict();
-export type E2eePublicKey = z.infer<typeof e2eePublicKeySchema>;
-
-export const e2eeKeyDescriptorSchema = z
-  .object({
-    keyId: z.string().trim().min(8).max(128),
-    fingerprint: z.string().regex(/^sha256:[A-Za-z0-9_-]{43}$/),
-    publicKey: e2eePublicKeySchema
-  })
-  .strict();
-export type E2eeKeyDescriptor = z.infer<typeof e2eeKeyDescriptorSchema>;
-
-export const e2eeCiphertextSchema = z
-  .object({
-    alg: z.literal("A256GCM"),
-    nonce: base64UrlSchema(16).length(16),
-    ciphertext: base64UrlSchema(2_000_000)
-  })
-  .strict();
-export type E2eeCiphertext = z.infer<typeof e2eeCiphertextSchema>;
-
-export const e2eeHpkeEnvelopeSchema = z
-  .object({
-    alg: z.literal(E2EE_HPKE_SUITE),
-    enc: base64UrlSchema(87).length(87),
-    ciphertext: base64UrlSchema(64).length(64)
-  })
-  .strict();
-export type E2eeHpkeEnvelope = z.infer<typeof e2eeHpkeEnvelopeSchema>;
-
-export const e2eeSignatureSchema = z
-  .object({
-    alg: z.literal("ES256"),
-    keyId: z.string().trim().min(8).max(128),
-    value: base64UrlSchema(86).length(86)
-  })
-  .strict();
-export type E2eeSignature = z.infer<typeof e2eeSignatureSchema>;
 
 export const publicWorkspaceSchema = z
   .object({
@@ -1043,3 +1022,7 @@ export const e2eeRecoveryHandleSchema = z
   })
   .strict();
 export type E2eeRecoveryHandle = z.infer<typeof e2eeRecoveryHandleSchema>;
+
+// cg-mitm/1 application-layer anti-MITM channel schema (P1). Re-exported last so the
+// base e2ee* schemas above are fully initialized before cgMitm.ts consumes them.
+export * from "./cgMitm.js";
