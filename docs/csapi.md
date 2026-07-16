@@ -10,10 +10,10 @@ HTTP 门面，目的是让标准 CLI（OpenCode / Claude Code 等）只需要「
 
 ## 1. 范围冻结（本阶段权威口径）
 
-- **主推方案 B（兼容优先）。** 在 `csapi.joelzt.org` 暴露标准兼容端点，安全模型是
+- **方案 B（兼容优先）。** 在 `csapi.joelzt.org` 暴露标准兼容端点，安全模型是
   **TLS + API key + 最小日志**。**不是** Gateway-blind 端到端加密（E2EE）。
-- **方案 A（localhost sidecar + `cg-e2ee/1`）为后续可选项**，本阶段不实现。代码与文档
-  在边界上保持清晰，不得把方案 B 表述为 E2EE。
+- **方案 A（本机 Secure Adapter + `cg-mitm/1`）已落地**：客户端一键脚本见 §7.1（**推荐**），
+  抗中间人、明文不出本机。代码与文档在边界上保持清晰，不得把方案 B 表述为 E2EE。
 - 现有 E2EE 通道（`cs.joelzt.org` Web + 签名扩展 + `/api/e2ee/v1`）不受影响，也不复用
   它的密文保证来给 csapi 背书。
 
@@ -27,7 +27,7 @@ HTTP 门面，目的是让标准 CLI（OpenCode / Claude Code 等）只需要「
   这一路也都是明文。
 - **这不是 E2EE。** 抓包和服务器日志侧「看得到明文」是方案 B 的预期行为，不得写成
   「端到端加密 / Gateway-blind」。
-- 想要 Gateway-blind 明文不出本机，必须走**方案 A**（localhost sidecar，后续实现）。
+- 想要 Gateway-blind 明文不出本机，走**方案 A**（本机 Secure Adapter，见 §7.1，已可用）。
 
 **OpenCode / Claude Code 的文件读写发生在 CLI 本机**，而不是远程 Runner 工作区：CLI 在
 你自己的电脑上读写你的项目文件，只是把「模型补全」这一步通过 csapi 转给远程 Runner/模型。
@@ -107,7 +107,7 @@ Base URL: `https://csapi.joelzt.org`
 - SSE 为完成后分块，不是 token 级实时（见 §4.2）。
 - 已 `running` 的 run 不可被真正抢占取消。
 - 工具调用 / function calling / 图片输入未做完整映射（文本为主；图片以占位符处理）。
-- 方案 A（localhost sidecar）未实现。
+- 方案 A（本机 Secure Adapter，cg-mitm/1）**已实现**，客户端一键脚本见 §7.1。
 
 ## 7. CLI 配置示例
 
@@ -140,26 +140,7 @@ curl -sS https://csapi.joelzt.org/v1/chat/completions \
   -d '{"model":"auto","stream":true,"messages":[{"role":"user","content":"ping"}]}'
 ```
 
-## 7.1 懒人安装（一键脚本，可四处分发）
-
-不想手动 export？用 `scripts/csapi/install-csapi.sh`（POSIX，单文件可分发）一键配好
-Claude Code / OpenCode 的环境变量，并自动探测连通性：
-
-```bash
-# 交互式（提示输入 key，输入不回显）
-sh scripts/csapi/install-csapi.sh
-# 或非交互（环境变量传 key）
-CSAPI_API_KEY=sk-xxxx sh scripts/csapi/install-csapi.sh
-```
-
-- 幂等：用标记注释块写入 `~/.bashrc` / `~/.zshrc`，重复运行只更新不堆叠。
-- Windows 用 `scripts/csapi/install-csapi.ps1`（用户级环境变量）。
-- 仓库公开时也可 `curl -fsSL <raw-url>/scripts/csapi/install-csapi.sh | sh`。
-- 脚本不含任何真实 key；明确标注这是 **plaintext 兼容通道，非 E2EE**。
-
-用法与分发方式详见 `scripts/csapi/README.md`。
-
-## 7.2 抗 MITM 懒人安装（Secure Adapter，方案 A）
+## 7.1 抗 MITM 懒人安装（Secure Adapter，方案 A，推荐）
 
 想要**明文不出本机、抗中间人**（企业根证书 / mitmproxy 也读不到 prompt）？用
 `scripts/csapi/install-csapi-secure.sh`（Windows：`install-csapi-secure.ps1`）一键配好本机
@@ -193,8 +174,8 @@ Windows：`powershell -ExecutionPolicy Bypass -File .\install-csapi-secure.ps1`
   **仅公钥**）。服务端下发的身份证书必须由该根签发，否则 **fail-closed，绝不回退明文**。
 - **fail-closed 探测**：探到 `/cg/v1/server-keys` 为 `404/426` → 说明服务端尚未开启安全通道，脚本**友好报错**
   并打印运维前置（见下）；探到根指纹不匹配 → 疑似 MITM，拒绝写任何配置。
-- **与 §7.1 明文安装器的关系**：两者写**不同的**受管块；本脚本的块在 rc 中靠后，会覆盖明文安装器的
-  `ANTHROPIC_*/OPENAI_*`（后写生效）。二选一即可：要抗 MITM 用本脚本，要最省事的明文兼容用 §7.1。
+- **与 §7.2 明文安装器的关系**：两者写**不同的**受管块；本脚本的块在 rc 中靠后，会覆盖明文安装器的
+  `ANTHROPIC_*/OPENAI_*`（后写生效）。二选一即可：要抗 MITM 用本脚本，要最省事的明文兼容用 §7.2。
 - **真·一键**：启动 Adapter 需仓库源码（`apps/secure-adapter`，node≥22）。脚本会**自动**：找不到仓库时
   `git clone` 公开仓库到 `~/.cursor-gateway/cursor-gateway`（`--no-clone` 关闭、`--yes` 免确认）、缺依赖时
   在仓库根 `npm install`（`--no-install` 关闭）。已有本地仓库则自动复用（也可 `CSAPI_REPO_DIR=/path` 指定）。
@@ -217,6 +198,28 @@ scripts/csapi/dev-cg-mitm-setup.sh https://csapi.joelzt.org
 
 未开启前，`/cg/v1/server-keys` 为 404，安装器只会**报错并说明前置**，不写坏配置。协议与威胁模型详见
 `docs/cg-mitm.md`。
+
+## 7.2 明文兼容懒人安装（install-csapi.sh，方案 B）
+
+> ⚠️ 这是 **plaintext 兼容通道（TLS + API key），非 E2EE**：prompt/response 在门面 / 网关 / Runner /
+> 模型侧明文可见。只在信任链路或快速试用时用；要抗中间人请用上面 §7.1 的方案 A。
+
+不想手动 export、也不需要抗 MITM？用 `scripts/csapi/install-csapi.sh`（POSIX，单文件可分发）一键配好
+Claude Code / OpenCode 的环境变量（直连门面），并自动探测连通性：
+
+```bash
+# 交互式（提示输入 key，输入不回显）
+sh scripts/csapi/install-csapi.sh
+# 或非交互（环境变量传 key）
+CSAPI_API_KEY=sk-xxxx sh scripts/csapi/install-csapi.sh
+```
+
+- 幂等：用标记注释块写入 `~/.bashrc` / `~/.zshrc`，重复运行只更新不堆叠。
+- Windows 用 `scripts/csapi/install-csapi.ps1`（用户级环境变量）。
+- 仓库公开时也可 `curl -fsSL <raw-url>/scripts/csapi/install-csapi.sh | sh`。
+- 零依赖单文件，脚本不含任何真实 key。
+
+用法与分发方式、方案 A vs 方案 B 对比详见 `scripts/csapi/README.md`。
 
 ## 8. 验收 checklist
 
