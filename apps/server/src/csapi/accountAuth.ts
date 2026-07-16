@@ -1,9 +1,13 @@
 /**
  * Resolve enroll accountAuth → accountId (relay-P1).
- * Prefer OIDC / CF Access / Passkey; api-key remains transition-scoped.
+ * Full signature verification for CF Access / OIDC; WebAuthn UV+challenge for passkey.
+ * Never trusts unsigned JWT claims.
  */
 import type { CgAccountAuth, CgDeviceCertV2 } from "@cursor-gateway/shared";
+import { config as appConfig } from "../config.js";
 import { matchApiKey } from "./protocol.js";
+import { verifyCloudflareAccessJwt, verifyOidcIdToken } from "./jwtVerify.js";
+import { verifyCgPasskeyAssertion } from "./passkeyEnroll.js";
 
 export type ResolvedAccount = {
   accountId: string;
@@ -11,24 +15,25 @@ export type ResolvedAccount = {
   keyIdHint: string;
 };
 
-function decodeJwtPayload(token: string): Record<string, unknown> {
-  const parts = token.split(".");
-  if (parts.length < 2) throw new Error("enroll_token_malformed");
-  const json = Buffer.from(parts[1]!, "base64url").toString("utf8");
-  const payload = JSON.parse(json) as Record<string, unknown>;
-  if (typeof payload.exp === "number" && payload.exp * 1000 < Date.now() - 60_000) {
-    throw new Error("enroll_token_expired");
-  }
-  return payload;
-}
+export type AccountAuthContext = {
+  apiKeys: Set<string>;
+  /** When true (tests only), allow api-key enroll without CF/OIDC config. */
+  allowApiKeyTransition?: boolean;
+};
 
-export function resolveAccountAuth(input: {
+export async function resolveAccountAuth(input: {
   accountAuth?: CgAccountAuth;
   apiKey?: string;
   apiKeys: Set<string>;
-}): ResolvedAccount {
+  allowApiKeyTransition?: boolean;
+}): Promise<ResolvedAccount> {
   const auth = input.accountAuth;
+  const allowApiKey = input.allowApiKeyTransition !== false;
+
   if (auth?.kind === "api-key" || (!auth && input.apiKey)) {
+    if (!allowApiKey && appConfig.nodeEnv === "production") {
+      throw new Error("enroll_api_key_disabled_in_production");
+    }
     const apiKey = auth?.kind === "api-key" ? auth.apiKey : input.apiKey!;
     const keyId = matchApiKey(apiKey, input.apiKeys);
     if (!keyId) throw new Error("enroll_unauthorized");
@@ -38,41 +43,61 @@ export function resolveAccountAuth(input: {
       keyIdHint: keyId
     };
   }
-  if (auth?.kind === "oidc") {
-    const payload = decodeJwtPayload(auth.idToken);
-    const sub = typeof payload.sub === "string" ? payload.sub.trim() : "";
-    if (!sub) throw new Error("enroll_oidc_sub_missing");
-    return {
-      accountId: `oidc:${sub}`,
-      authScope: "oidc",
-      keyIdHint: `oidc:${sub.slice(0, 48)}`
-    };
-  }
+
   if (auth?.kind === "cf-access") {
-    const payload = decodeJwtPayload(auth.cfAccessJwt);
-    const email =
-      (typeof payload.email === "string" && payload.email) ||
-      (typeof payload.sub === "string" && payload.sub) ||
+    const audience =
+      appConfig.csRelay.cfAccessAudience ||
+      [...appConfig.allowedCloudflareAud][0] ||
       "";
-    if (!email) throw new Error("enroll_cf_access_identity_missing");
+    const check = await verifyCloudflareAccessJwt({
+      token: auth.cfAccessJwt,
+      teamDomain: appConfig.cfAccessTeamDomain,
+      audience,
+      allowedEmails: appConfig.allowedEmails
+    });
+    if (!check.ok) throw new Error(check.reason);
+    const email = check.email!;
     return {
-      accountId: `cf:${email.toLowerCase()}`,
+      accountId: `cf:${email}`,
       authScope: "cf-access",
-      keyIdHint: `cf:${email.toLowerCase().slice(0, 48)}`
+      keyIdHint: `cf:${email.slice(0, 48)}`
     };
   }
+
+  if (auth?.kind === "oidc") {
+    const check = await verifyOidcIdToken({
+      token: auth.idToken,
+      jwksUrl: appConfig.csRelay.oidcJwksUrl,
+      issuer: appConfig.csRelay.oidcIssuer,
+      audience: appConfig.csRelay.oidcAudience,
+      allowedEmails: appConfig.allowedEmails
+    });
+    if (!check.ok) throw new Error(check.reason);
+    return {
+      accountId: `oidc:${check.sub}`,
+      authScope: "oidc",
+      keyIdHint: `oidc:${check.sub.slice(0, 48)}`
+    };
+  }
+
   if (auth?.kind === "passkey") {
-    if (!auth.accountId || !auth.credentialId) throw new Error("enroll_passkey_incomplete");
-    // Full WebAuthn verification is delegated to existing passkeyPairing flows;
-    // enroll accepts a bound accountId + credentialId assertion shape.
+    if (!auth.challengeId) throw new Error("enroll_passkey_challenge_missing");
+    if (!auth.credentialId) throw new Error("enroll_passkey_incomplete");
     if (!auth.assertion || typeof auth.assertion !== "object") {
       throw new Error("enroll_passkey_assertion_missing");
     }
+    const verified = await verifyCgPasskeyAssertion({
+      challengeId: auth.challengeId,
+      credentialId: auth.credentialId,
+      assertion: auth.assertion,
+      expectedAccountId: auth.accountId || null
+    });
     return {
-      accountId: auth.accountId,
+      accountId: verified.accountId,
       authScope: "passkey",
       keyIdHint: `passkey:${auth.credentialId.slice(0, 48)}`
     };
   }
+
   throw new Error("enroll_unauthorized");
 }

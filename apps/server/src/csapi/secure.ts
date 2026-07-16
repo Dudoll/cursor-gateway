@@ -71,6 +71,8 @@ import {
   softDeleteRelayConversation
 } from "../csRelayHistory.js";
 import { resolveAccountAuth } from "./accountAuth.js";
+import { createCgEnrollChallenge } from "./passkeyEnroll.js";
+import { subscribeSyncAccount } from "./syncBus.js";
 import { loadCgTrustRoots } from "../cgTrustRoots.js";
 import { config as appConfig } from "../config.js";
 import type { CsapiDeps } from "./server.js";
@@ -331,16 +333,26 @@ export async function loadCgSecureConfig(): Promise<CsapiSecureConfig | null> {
   };
 }
 
-function resolveKmsProvider(): KmsProvider {
-  const master = appConfig.cg.masterKey.trim() || (
-    appConfig.cg.masterKeyFile.trim() && existsSync(appConfig.cg.masterKeyFile)
+function resolveKmsProvider(): KmsProvider | null {
+  if (appConfig.csRelay.httpNoKms && !appConfig.csRelay.decryptorOnly) {
+    return null;
+  }
+  const relayFile = appConfig.csRelay.masterKeyFile.trim();
+  const master =
+    (relayFile && existsSync(relayFile)
+      ? readFileSync(relayFile, "utf8").trim()
+      : "") ||
+    appConfig.cg.masterKey.trim() ||
+    (appConfig.cg.masterKeyFile.trim() && existsSync(appConfig.cg.masterKeyFile)
       ? readFileSync(appConfig.cg.masterKeyFile, "utf8").trim()
-      : ""
-  );
+      : "");
   if (master.length >= 16) {
     return new FileMasterKeyProvider(appConfig.csRelay.kmsKeyId, master);
   }
-  // Dev/test fallback — never use in production with CS_RELAY_HISTORY_ENABLED.
+  if (appConfig.csRelay.historyEnabled && appConfig.nodeEnv === "production") {
+    throw new Error("cs_relay_master_key_required");
+  }
+  // Dev/test fallback only when history is off or non-production.
   return new MemoryKmsProvider(appConfig.csRelay.kmsKeyId || "memory-kms-1");
 }
 
@@ -354,6 +366,10 @@ export function createCsapiSecure(deps: CsapiSecureDeps) {
   const csapi = createCsapi(deps);
   const cfg = deps.secure;
   const kms = resolveKmsProvider();
+  function requireKms(): KmsProvider {
+    if (!kms) throw new CgSecureError("kms_unavailable_http_front");
+    return kms;
+  }
   const deviceStatusCache = new CgDeviceStatusCache(30_000);
 
   const sessions = new Map<string, SecureSession>();
@@ -383,14 +399,16 @@ export function createCsapiSecure(deps: CsapiSecureDeps) {
         } catch (error) {
           const reason = error instanceof Error ? error.message : "";
           if (reason === "device_revoked") fail("device_revoked");
-          if (reason === "device_not_enrolled") {
-            // Memory has the cert but DB has no row (persist failed) — allow
-            // process-local enrollment so Adapter/dev tests work without Postgres.
+          const allowMemory =
+            appConfig.csRelay.allowMemoryDevices || appConfig.nodeEnv !== "production";
+          if (reason === "device_not_enrolled" && allowMemory) {
             return { cert: cached, accountId };
           }
-          // DB unreachable: trust in-process enrollment for this process lifetime.
-          console.warn("[cg-secure] device status check failed; using memory cert", reason);
-          return { cert: cached, accountId };
+          if (allowMemory) {
+            console.warn("[cg-secure] device status check failed; using memory cert", reason);
+            return { cert: cached, accountId };
+          }
+          fail(reason === "device_not_enrolled" ? "device_not_enrolled" : "device_status_unavailable");
         }
       }
       return { cert: cached, accountId };
@@ -553,9 +571,10 @@ export function createCsapiSecure(deps: CsapiSecureDeps) {
   }): Promise<void> {
     if (!appConfig.csRelay.historyEnabled || !input.accountId) return;
     try {
-      await ensureAccountKek(kms, input.accountId);
+      const k = requireKms();
+      await ensureAccountKek(k, input.accountId);
       await appendRelayMessage({
-        kms,
+        kms: k,
         accountId: input.accountId,
         conversationId: input.conversationId,
         role: "user",
@@ -563,7 +582,7 @@ export function createCsapiSecure(deps: CsapiSecureDeps) {
         idempotencyKey: input.idempotencyKey
       });
       await appendRelayMessage({
-        kms,
+        kms: k,
         accountId: input.accountId,
         conversationId: input.conversationId,
         role: "assistant",
@@ -608,10 +627,11 @@ export function createCsapiSecure(deps: CsapiSecureDeps) {
         let keyIdHint = "unknown";
 
         if (appConfig.csRelay.accountBinding) {
-          const resolved = resolveAccountAuth({
+          const resolved = await resolveAccountAuth({
             ...(inner.accountAuth ? { accountAuth: inner.accountAuth } : {}),
             ...(inner.apiKey ? { apiKey: inner.apiKey } : {}),
-            apiKeys: deps.config.apiKeys
+            apiKeys: deps.config.apiKeys,
+            allowApiKeyTransition: appConfig.csRelay.allowMemoryDevices || appConfig.nodeEnv !== "production"
           });
           accountId = resolved.accountId;
           keyIdHint = resolved.keyIdHint;
@@ -640,10 +660,17 @@ export function createCsapiSecure(deps: CsapiSecureDeps) {
               label: inner.label
             });
             if (appConfig.csRelay.historyEnabled) {
-              await ensureAccountKek(kms, resolved.accountId);
+              await ensureAccountKek(requireKms(), resolved.accountId);
             }
           } catch (persistError) {
-            console.warn("[cg-secure] cg_devices persist failed; memory-only device", persistError);
+            const allowMemory =
+              appConfig.csRelay.allowMemoryDevices || appConfig.nodeEnv !== "production";
+            if (!allowMemory) {
+              throw persistError instanceof Error
+                ? persistError
+                : new Error("device_persist_failed");
+            }
+            console.warn("[cg-secure] cg_devices persist failed; memory-only device (test mode)", persistError);
           }
         } else {
           if (!inner.apiKey) return sendCgError(reply, "enroll_unauthorized");
@@ -683,6 +710,29 @@ export function createCsapiSecure(deps: CsapiSecureDeps) {
           deviceCert,
           payload,
           createdAt: new Date().toISOString()
+        });
+      } catch (error) {
+        return sendCgError(reply, cgReason(error));
+      }
+    },
+
+    async handleEnrollChallenge(request: FastifyRequest, reply: FastifyReply) {
+      reply.header("cache-control", "no-store");
+      const rpId = appConfig.csRelay.webauthnRpId || new URL(appConfig.publicOrigin).hostname;
+      const origins = appConfig.csRelay.webauthnOrigins.size
+        ? [...appConfig.csRelay.webauthnOrigins]
+        : [appConfig.publicOrigin];
+      try {
+        const body = (request.body ?? {}) as { accountIdHint?: string };
+        const challenge = await createCgEnrollChallenge({
+          accountIdHint: body.accountIdHint ?? null,
+          rpId,
+          origins
+        });
+        return reply.send({
+          protocol: CG_MITM_PROTOCOL,
+          kind: "enroll-challenge",
+          ...challenge
         });
       } catch (error) {
         return sendCgError(reply, cgReason(error));
@@ -898,7 +948,7 @@ export function createCsapiSecure(deps: CsapiSecureDeps) {
           if (s.deviceId === inner.targetDeviceId) sessions.delete(sid);
         }
         if (inner.bumpKekEpoch && appConfig.csRelay.historyEnabled) {
-          await bumpAccountKekEpoch(kms, loaded.accountId);
+          await bumpAccountKekEpoch(requireKms(), loaded.accountId);
         }
         await deps.backend.audit({
           eventType: "cg_device_revoke",
@@ -968,7 +1018,7 @@ export function createCsapiSecure(deps: CsapiSecureDeps) {
             if (c.titleCiphertext && c.wrappedDek && c.kekEpoch != null) {
               try {
                 const { kek, raw } = await (async () => {
-                  const opened = await ensureAccountKek(kms, accountId);
+                  const opened = await ensureAccountKek(requireKms(), accountId);
                   return { kek: opened.kek, raw: null as Uint8Array | null };
                 })();
                 void kek;
@@ -992,7 +1042,7 @@ export function createCsapiSecure(deps: CsapiSecureDeps) {
         } else if (inner.op === "messages-page" || inner.op === "delta") {
           if (!inner.conversationId) fail("sync_conversation_required");
           const page = await listRelayMessages({
-            kms,
+            kms: requireKms(),
             accountId,
             conversationId: inner.conversationId,
             sinceSequence: inner.sinceSequence ?? 0,
@@ -1059,28 +1109,77 @@ export function createCsapiSecure(deps: CsapiSecureDeps) {
       }
     },
 
-    async handleSyncStream(request: FastifyRequest, reply: FastifyReply) {
+        async handleSyncStream(request: FastifyRequest, reply: FastifyReply) {
       reply.header("cache-control", "no-store");
       if (!appConfig.csRelay.historyEnabled) {
         return sendCgError(reply, "relay_history_disabled", 503);
       }
-      // Minimal SSE keepalive channel; clients poll /cg/v1/sync for catch-up.
-      // Pub/sub payloads carry only accountId/conversationId/sequence (no plaintext).
+      // Query: sessionId + deviceId required; client must have enrolled session.
+      const q = request.query as Record<string, string>;
+      const sessionId = q.sessionId;
+      const deviceId = q.deviceId;
+      if (!sessionId || !deviceId) return sendCgError(reply, "sync_stream_params_missing");
+      const session = sessions.get(sessionId);
+      if (!session || session.deviceId !== deviceId) return sendCgError(reply, "unknown_session");
+      let accountId = session.accountId;
+      try {
+        const loaded = await loadDeviceCert(deviceId);
+        accountId = loaded.accountId;
+        session.accountId = accountId;
+      } catch (error) {
+        return sendCgError(reply, cgReason(error));
+      }
+      if (!accountId) return sendCgError(reply, "device_not_account_bound");
+
       beginCgStream(reply);
       const heartbeat = setInterval(() => writeCgHeartbeat(reply), 10_000);
-      reply.raw.on("close", () => clearInterval(heartbeat));
+      let unsubscribe: (() => void) | null = null;
+      const cleanup = () => {
+        clearInterval(heartbeat);
+        if (unsubscribe) unsubscribe();
+      };
+      reply.raw.on("close", cleanup);
+
       try {
-        reply.raw.write(
-          "event: cg\ndata: " +
-            JSON.stringify({
-              protocol: CG_MITM_PROTOCOL,
-              kind: "sync-stream-ready",
-              note: "use_post_sync_for_ciphertext_delta"
-            }) +
-            "\n\n"
-        );
-      } catch {
-        // ignore
+        await writeCgFrame(reply, session, "open", {
+          kind: "sync-stream-ready",
+          accountIdHash: accountId.slice(0, 12)
+        });
+        unsubscribe = await subscribeSyncAccount(accountId, (notify) => {
+          void (async () => {
+            try {
+              // Fetch delta ciphertext path: decrypt in CS, re-seal to this device session.
+              const page = await listRelayMessages({
+                kms: requireKms(),
+                accountId: accountId!,
+                conversationId: notify.conversationId,
+                sinceSequence: Math.max(0, notify.sequence - 1),
+                limit: 5,
+                cursor: null
+              });
+              const messages = page.messages.filter((m) => m.sequence === notify.sequence);
+              await writeCgFrame(reply, session, "delta", {
+                kind: "sync-delta",
+                conversationId: notify.conversationId,
+                sequence: notify.sequence,
+                messages
+              });
+            } catch (error) {
+              try {
+                await writeCgFrame(reply, session, "error", {
+                  errorKind: cgReason(error),
+                  conversationId: notify.conversationId,
+                  sequence: notify.sequence
+                });
+              } catch {
+                // connection gone
+              }
+            }
+          })();
+        });
+      } catch (error) {
+        cleanup();
+        return sendCgError(reply, cgReason(error));
       }
       return reply;
     }
@@ -1091,6 +1190,7 @@ export function registerCsapiSecure(app: FastifyInstance, deps: CsapiSecureDeps)
   const secure = createCsapiSecure(deps);
   app.get("/cg/v1/server-keys", (request, reply) => secure.handleServerKeys(request, reply));
   app.post("/cg/v1/enroll", (request, reply) => secure.handleEnroll(request, reply));
+  app.post("/cg/v1/enroll/challenge", (request, reply) => secure.handleEnrollChallenge(request, reply));
   app.post("/cg/v1/exchange", (request, reply) => secure.handleExchange(request, reply));
   app.post("/cg/v1/cancel", (request, reply) => secure.handleCancel(request, reply));
   app.post("/cg/v1/devices/revoke", (request, reply) => secure.handleRevoke(request, reply));

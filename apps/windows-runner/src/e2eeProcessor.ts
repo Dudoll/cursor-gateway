@@ -64,10 +64,24 @@ export class E2eeJobProcessor {
     }
 
     const client = this.state.getPairedClient(request.clientId, request.clientKeyId);
-    if (!client || client.signingKey.keyId !== request.signature.keyId) {
-      throw new Error("e2ee_client_not_paired");
+    // cs-relay: CS signs with its server signing key; accept when configured via
+    // RUNNER_CS_RELAY_SIGNING_PUBLIC_JWK (or already paired as clientId cs-relay).
+    let clientSigningKey: CryptoKey;
+    if (request.clientId === "cs-relay") {
+      const csPub = this.state.getCsRelaySigningPublicKey?.();
+      if (csPub) {
+        clientSigningKey = await importSigningPublicKey(csPub);
+      } else if (client && client.signingKey.keyId === request.signature.keyId) {
+        clientSigningKey = await importSigningPublicKey(client.signingKey.publicKey);
+      } else {
+        throw new Error("e2ee_cs_relay_client_not_configured");
+      }
+    } else {
+      if (!client || client.signingKey.keyId !== request.signature.keyId) {
+        throw new Error("e2ee_client_not_paired");
+      }
+      clientSigningKey = await importSigningPublicKey(client.signingKey.publicKey);
     }
-    const clientSigningKey = await importSigningPublicKey(client.signingKey.publicKey);
     if (
       !(await verifyValue(
         unsignedEnvelope(request),

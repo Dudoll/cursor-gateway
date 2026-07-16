@@ -117,7 +117,9 @@ const envSchema = z.object({
   // Paired-device approval
   DEVICE_APPROVAL_TTL_SECONDS: z.coerce.number().int().positive().default(600),
   // Recovery pairing (local high-entropy code, never sent to Gateway)
-  RECOVERY_TTL_SECONDS: z.coerce.number().int().positive().default(1_800)
+  RECOVERY_TTL_SECONDS: z.coerce.number().int().positive().default(1_800),
+  // CS relay client (cs-relay) signing public JWK JSON for runner verification
+  RUNNER_CS_RELAY_SIGNING_PUBLIC_JWK: optionalEnvString
 });
 
 const parsed = envSchema.parse(process.env);
@@ -227,5 +229,6 @@ export const config = {
     .filter(Boolean),
   webauthnChallengeTtlSeconds: parsed.WEBAUTHN_CHALLENGE_TTL_SECONDS,
   deviceApprovalTtlSeconds: parsed.DEVICE_APPROVAL_TTL_SECONDS,
-  recoveryTtlSeconds: parsed.RECOVERY_TTL_SECONDS
+  recoveryTtlSeconds: parsed.RECOVERY_TTL_SECONDS,
+  csRelaySigningPublicJwk: parsed.RUNNER_CS_RELAY_SIGNING_PUBLIC_JWK
 };

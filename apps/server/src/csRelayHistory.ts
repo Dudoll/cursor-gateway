@@ -14,6 +14,7 @@ import {
   type KmsProvider
 } from "@cursor-gateway/e2ee";
 import { pool } from "./db.js";
+import { publishSyncNotify } from "./csapi/syncBus.js";
 
 export interface AccountKekRow {
   accountId: string;
@@ -329,9 +330,16 @@ export async function appendRelayMessage(input: {
     input.conversationId
   ]);
 
+  const sequence = Number(inserted.rows[0]!.sequence);
+  void publishSyncNotify({
+    accountId: input.accountId,
+    conversationId: input.conversationId,
+    sequence
+  });
+
   return {
     id: String(inserted.rows[0]!.id),
-    sequence: Number(inserted.rows[0]!.sequence)
+    sequence
   };
 }
 

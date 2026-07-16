@@ -160,8 +160,9 @@ export const cgAccountAuthSchema = z.discriminatedUnion("kind", [
   z
     .object({
       kind: z.literal("passkey"),
-      accountId: z.string().trim().min(1).max(256),
+      accountId: z.string().trim().min(1).max(256).optional(),
       credentialId: z.string().trim().min(1).max(512),
+      challengeId: z.string().uuid(),
       assertion: z.record(z.string(), z.unknown())
     })
     .strict()

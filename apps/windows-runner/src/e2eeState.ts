@@ -298,6 +298,17 @@ export class RunnerE2eeState {
     return paired?.signingKey.keyId === keyId ? paired : undefined;
   }
 
+  /** Optional CS signing pubkey for cs-relay clientId (env-configured). */
+  getCsRelaySigningPublicKey(): import("@cursor-gateway/shared").E2eePublicKey | null {
+    const raw = config.csRelaySigningPublicJwk?.trim();
+    if (!raw) return null;
+    try {
+      return JSON.parse(raw) as import("@cursor-gateway/shared").E2eePublicKey;
+    } catch {
+      return null;
+    }
+  }
+
   async pairClient(bundle: E2eeClientPairingBundle) {
     const parsed = e2eeClientPairingBundleSchema.parse(bundle);
     const existing = this.state.pairedClients[parsed.clientId];

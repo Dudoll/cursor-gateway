@@ -482,6 +482,33 @@ export async function migrate() {
     create index if not exists cs_relay_msg_sync_idx
       on cs_relay_messages(account_id, conversation_id, sequence);
 
+    -- relay-P1: CS-side WebAuthn credentials + enroll challenges
+    create table if not exists cg_passkey_credentials (
+      credential_id text primary key,
+      account_id text not null,
+      public_key bytea not null,
+      counter bigint not null default 0,
+      transports jsonb not null default '[]'::jsonb,
+      created_at timestamptz not null default now(),
+      updated_at timestamptz not null default now(),
+      revoked_at timestamptz
+    );
+    create index if not exists cg_passkey_credentials_account_idx
+      on cg_passkey_credentials(account_id) where revoked_at is null;
+
+    create table if not exists cg_enroll_challenges (
+      challenge_id uuid primary key,
+      account_id_hint text,
+      challenge text not null,
+      rp_id text not null,
+      origins jsonb not null,
+      expires_at timestamptz not null,
+      created_at timestamptz not null default now(),
+      consumed_at timestamptz
+    );
+    create index if not exists cg_enroll_challenges_expiry_idx
+      on cg_enroll_challenges(expires_at) where consumed_at is null;
+
     do $cs_relay_constraints$
     begin
       if not exists (

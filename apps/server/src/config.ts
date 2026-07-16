@@ -78,7 +78,18 @@ const envSchema = z.object({
   CS_RELAY_SEND_JITTER_MS: z.coerce.number().int().nonnegative().default(0),
   CS_RELAY_RUNNER_REENCRYPT: booleanEnv(false),
   CS_RELAY_MAX_HISTORY_TURNS: z.coerce.number().int().positive().default(20),
-  CS_RELAY_MAX_HISTORY_BYTES: z.coerce.number().int().positive().default(48_000)
+  CS_RELAY_MAX_HISTORY_BYTES: z.coerce.number().int().positive().default(48_000),
+  /** Production: require DB persist for devices (fail-closed). Tests may set false. */
+  CS_RELAY_ALLOW_MEMORY_DEVICES: booleanEnv(false),
+  CS_RELAY_MASTER_KEY_FILE: z.string().default(""),
+  CS_RELAY_CF_ACCESS_AUD: z.string().default(""),
+  CS_RELAY_OIDC_JWKS_URL: z.string().default(""),
+  CS_RELAY_OIDC_ISSUER: z.string().default(""),
+  CS_RELAY_OIDC_AUDIENCE: z.string().default(""),
+  CS_RELAY_WEBAUTHN_RP_ID: z.string().default(""),
+  CS_RELAY_WEBAUTHN_ORIGINS: z.string().default(""),
+  CS_RELAY_DECRYPTOR_ONLY: booleanEnv(false),
+  CS_RELAY_HTTP_NO_KMS: booleanEnv(false)
 });
 
 const splitCsv = (value: string) =>
@@ -151,7 +162,17 @@ export const config = {
     sendJitterMs: parsed.CS_RELAY_SEND_JITTER_MS,
     runnerReencrypt: parsed.CS_RELAY_RUNNER_REENCRYPT,
     maxHistoryTurns: parsed.CS_RELAY_MAX_HISTORY_TURNS,
-    maxHistoryBytes: parsed.CS_RELAY_MAX_HISTORY_BYTES
+    maxHistoryBytes: parsed.CS_RELAY_MAX_HISTORY_BYTES,
+    allowMemoryDevices: parsed.CS_RELAY_ALLOW_MEMORY_DEVICES,
+    masterKeyFile: parsed.CS_RELAY_MASTER_KEY_FILE.trim(),
+    cfAccessAudience: parsed.CS_RELAY_CF_ACCESS_AUD.trim(),
+    oidcJwksUrl: parsed.CS_RELAY_OIDC_JWKS_URL.trim(),
+    oidcIssuer: parsed.CS_RELAY_OIDC_ISSUER.trim(),
+    oidcAudience: parsed.CS_RELAY_OIDC_AUDIENCE.trim(),
+    webauthnRpId: parsed.CS_RELAY_WEBAUTHN_RP_ID.trim(),
+    webauthnOrigins: new Set(splitCsv(parsed.CS_RELAY_WEBAUTHN_ORIGINS)),
+    decryptorOnly: parsed.CS_RELAY_DECRYPTOR_ONLY,
+    httpNoKms: parsed.CS_RELAY_HTTP_NO_KMS
   }
 };
 

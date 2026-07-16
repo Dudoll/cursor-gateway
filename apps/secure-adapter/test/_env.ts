@@ -3,4 +3,5 @@
 // evaluates in tests (these are never used by the secure channel logic under test).
 process.env.JWT_SECRET ??= "test-jwt-secret-that-is-at-least-32-chars-long";
 process.env.DATABASE_URL ??= "postgres://localhost:5432/test";
+process.env.CS_RELAY_ALLOW_MEMORY_DEVICES ??= "true";
 process.env.RUNNER_SHARED_SECRET ??= "test-runner-shared-secret-min-32-characters";
