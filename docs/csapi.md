@@ -159,6 +159,52 @@ CSAPI_API_KEY=sk-xxxx sh scripts/csapi/install-csapi.sh
 
 用法与分发方式详见 `scripts/csapi/README.md`。
 
+## 7.2 抗 MITM 懒人安装（Secure Adapter，方案 A）
+
+想要**明文不出本机、抗中间人**（企业根证书 / mitmproxy 也读不到 prompt）？用
+`scripts/csapi/install-csapi-secure.sh`（Windows：`install-csapi-secure.ps1`）一键配好本机
+`Secure Adapter`（cg-mitm/1）。它在本机暴露 loopback 门面，把每次调用重新封装成**密文**发往
+`/cg/v1/*`；真实 key 只留在本机 `~/.cursor-gateway/secure-adapter.env`（0600）与密文 envelope 内，
+**永不进 git、永不进 HTTP header**。
+
+```bash
+# 交互式（提示输入真实 key；先探测 /cg/v1/server-keys 并核对固定根指纹）
+sh scripts/csapi/install-csapi-secure.sh
+# 非交互 + 立即后台启动 Adapter
+CSAPI_API_KEY=sk-xxxx sh scripts/csapi/install-csapi-secure.sh --start
+# 只打印 / 卸载 / 查看状态 / 跳过探测
+sh scripts/csapi/install-csapi-secure.sh --print
+sh scripts/csapi/install-csapi-secure.sh --uninstall
+sh scripts/csapi/install-csapi-secure.sh --status
+sh scripts/csapi/install-csapi-secure.sh --no-probe
+```
+
+- **信任锚**：脚本离线固定（pin）Ed25519 根指纹（内置常量 + `scripts/csapi/trust/csapi-trust-root-public.json`，
+  **仅公钥**）。服务端下发的身份证书必须由该根签发，否则 **fail-closed，绝不回退明文**。
+- **fail-closed 探测**：探到 `/cg/v1/server-keys` 为 `404/426` → 说明服务端尚未开启安全通道，脚本**友好报错**
+  并打印运维前置（见下）；探到根指纹不匹配 → 疑似 MITM，拒绝写任何配置。
+- **与 §7.1 明文安装器的关系**：两者写**不同的**受管块；本脚本的块在 rc 中靠后，会覆盖明文安装器的
+  `ANTHROPIC_*/OPENAI_*`（后写生效）。二选一即可：要抗 MITM 用本脚本，要最省事的明文兼容用 §7.1。
+- **前置**：启动 Adapter 需仓库源码（`apps/secure-adapter` + `npm install`，node≥22）；纯 `curl|sh`
+  单文件只能完成「配置 + 探测」，启动仍需 clone 仓库（或设 `CSAPI_REPO_DIR`）。
+
+### 生产运维前置（必须先开）
+
+`install-csapi-secure.sh` 生效的前提是 csapi 服务端已开启 cg-mitm 安全通道。运维需（离线机器签根、
+在线机器只放公钥/证书）：
+
+```bash
+# 1) 生成 dev/离线信任材料 + root 签发的服务端证书（allowedOrigins 含生产域名）
+scripts/csapi/dev-cg-mitm-setup.sh https://csapi.joelzt.org
+# 2) 把打印的 CG_* 增量写入 csapi 的 .env 并重启，务必：
+#    CG_SECURE_ENABLED=true
+#    CG_SERVER_CERT_FILE / CG_SERVER_HPKE_KEY_FILE / CG_SERVER_SIGNING_KEY_FILE / CG_TRUST_ROOTS_FILE
+#    保持 CG_REQUIRE_SECURE=false（让明文 /v1/* 与安全 /cg/v1/* 并行灰度）
+```
+
+未开启前，`/cg/v1/server-keys` 为 404，安装器只会**报错并说明前置**，不写坏配置。协议与威胁模型详见
+`docs/cg-mitm.md`。
+
 ## 8. 验收 checklist
 
 > 实测结果在交付汇报里逐项勾选；日志/抓包侧会看到明文（符合方案 B，不得写 E2EE）。

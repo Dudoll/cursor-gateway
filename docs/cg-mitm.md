@@ -181,6 +181,21 @@ tsx scripts/csapi/verify-cg-mitm.ts                          # E1/A1/A4/A6/B/401
 `CG_REQUIRE_SECURE`**，保留明文 `/v1/*` 对照）→ `scripts/csapi/run-secure-adapter.sh` 启 Adapter →
 CLI 设 `ANTHROPIC_BASE_URL=http://127.0.0.1:8788` + loopback key 打一轮真实 Hermes/auto run。
 
+### 懒人安装（Secure Adapter 一键脚本）
+
+客户端不想手动导出一堆 `CG_ADAPTER_*`？用 `scripts/csapi/install-csapi-secure.sh`（Windows：
+`install-csapi-secure.ps1`）一键：**离线固定根指纹 → 探测并核对 `/cg/v1/server-keys` → 写本机 0600 配置 +
+启动器 → 幂等把 CLI 的 `ANTHROPIC_*/OPENAI_*` 指向本机 Adapter**。真实 key 只留本机与密文 envelope，永不进
+git / HTTP header。
+
+- 服务端**未开** `CG_SECURE_ENABLED`（`/cg/v1/server-keys` 为 404/426）→ 脚本**友好报错**并打印运维前置，不写坏配置。
+- 服务端下发的根指纹与固定指纹**不一致** → 疑似 MITM，拒绝写任何配置（fail-closed）。
+- 内置固定指纹与 `scripts/csapi/trust/csapi-trust-root-public.json`（**仅公钥**）一致，可多渠道 out-of-band 核对：
+  `sha256:E9OuniLwYNCVLPPwbG_aMimeFG3Ly1OFnhDplyQwy9g`。
+- 与明文 `install-csapi.sh` 写不同受管块；安全块在 rc 靠后、覆盖明文块（后写生效）。用法/分发/对比见
+  `scripts/csapi/README.md`。这是第 8 节「安全 bootstrap」在 P5 前的**过渡实现**：指纹离线固定 + fail-closed，
+  尚未叠加 minisign/Sigstore 两段式验签。
+
 ## 11. 实施阶段（P0–P5）
 
 | 阶段 | 内容 | 工作日 | 回滚 |

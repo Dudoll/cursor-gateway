@@ -41,6 +41,9 @@ var/
 cg-mitm-adapter-state.json
 cg-server-*.json
 cg-trust-root-*.json
+# Exception: the PUBLIC-ONLY pinned trust root committed for the lazy installer.
+# (public key + fingerprint only; the sealed private root never enters git)
+!scripts/csapi/trust/csapi-trust-root-public.json
 
 data/
 logs/

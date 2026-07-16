@@ -1,0 +1,18 @@
+{
+  "trustRoots": [
+    {
+      "protocol": "cg-mitm/1",
+      "kind": "cg-trust-root-public/1",
+      "alg": "EdDSA",
+      "keyId": "ed25519-E9OuniLwYNCVLPPwbG_aMi",
+      "fingerprint": "sha256:E9OuniLwYNCVLPPwbG_aMimeFG3Ly1OFnhDplyQwy9g",
+      "publicKey": {
+        "kty": "OKP",
+        "crv": "Ed25519",
+        "x": "MvV3o9CYm_oxId5vVTXfyRCaxJb1BbuAclsimhp_q3c"
+      },
+      "epoch": 1,
+      "createdAt": "2026-07-16T08:50:23.465Z"
+    }
+  ]
+}
