@@ -44,6 +44,7 @@ cg-trust-root-*.json
 # Exception: the PUBLIC-ONLY pinned trust root committed for the lazy installer.
 # (public key + fingerprint only; the sealed private root never enters git)
 !scripts/csapi/trust/csapi-trust-root-public.json
+!scripts/csapi/trust/extension-ed25519.pub.pem
 
 data/
 logs/
