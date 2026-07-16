@@ -140,6 +140,25 @@ curl -sS https://csapi.joelzt.org/v1/chat/completions \
   -d '{"model":"auto","stream":true,"messages":[{"role":"user","content":"ping"}]}'
 ```
 
+## 7.1 懒人安装（一键脚本，可四处分发）
+
+不想手动 export？用 `scripts/csapi/install-csapi.sh`（POSIX，单文件可分发）一键配好
+Claude Code / OpenCode 的环境变量，并自动探测连通性：
+
+```bash
+# 交互式（提示输入 key，输入不回显）
+sh scripts/csapi/install-csapi.sh
+# 或非交互（环境变量传 key）
+CSAPI_API_KEY=sk-xxxx sh scripts/csapi/install-csapi.sh
+```
+
+- 幂等：用标记注释块写入 `~/.bashrc` / `~/.zshrc`，重复运行只更新不堆叠。
+- Windows 用 `scripts/csapi/install-csapi.ps1`（用户级环境变量）。
+- 仓库公开时也可 `curl -fsSL <raw-url>/scripts/csapi/install-csapi.sh | sh`。
+- 脚本不含任何真实 key；明确标注这是 **plaintext 兼容通道，非 E2EE**。
+
+用法与分发方式详见 `scripts/csapi/README.md`。
+
 ## 8. 验收 checklist
 
 > 实测结果在交付汇报里逐项勾选；日志/抓包侧会看到明文（符合方案 B，不得写 E2EE）。
