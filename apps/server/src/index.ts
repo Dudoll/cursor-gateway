@@ -9,6 +9,8 @@ import { config } from "./config.js";
 import { migrate } from "./db.js";
 import { registerRoutes } from "./routes.js";
 import { registerTelegram } from "./telegram.js";
+import { createDbBackend } from "./csapi/backend.js";
+import { isCsapiPath, registerCsapi } from "./csapi/server.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -68,6 +70,28 @@ async function main() {
   await registerRoutes(app);
   await registerTelegram(app);
 
+  // csapi: Anthropic/OpenAI compatible facade (方案 B, plaintext-visible, NOT
+  // E2EE). Authenticated by its own API key, independent of Cloudflare Access.
+  if (config.csapi.enabled) {
+    if (config.csapi.apiKeys.size === 0) {
+      app.log.warn("CSAPI_ENABLED is true but CSAPI_API_KEYS is empty; csapi routes will reject all requests");
+    }
+    const backend = await createDbBackend();
+    registerCsapi(app, {
+      backend,
+      config: {
+        enabled: config.csapi.enabled,
+        apiKeys: config.csapi.apiKeys,
+        defaultModel: config.csapi.defaultModel,
+        defaultWorkspaceId: config.csapi.defaultWorkspaceId,
+        maxConcurrencyPerKey: config.csapi.maxConcurrencyPerKey,
+        runTimeoutMs: config.csapi.runTimeoutMs,
+        allowWrites: config.csapi.allowWrites
+      }
+    });
+    app.log.info("csapi facade mounted at /v1/* (plaintext compat, not E2EE)");
+  }
+
   const webDist = join(__dirname, "../../web/dist");
   if (existsSync(webDist)) {
     app.addHook("preHandler", async (request, reply) => {
@@ -75,6 +99,10 @@ async function main() {
         return;
       }
       if (request.raw.url?.startsWith("/api/") || request.raw.url?.startsWith("/telegram/")) {
+        return;
+      }
+      // csapi routes authenticate with their own API key, not Cloudflare Access.
+      if (isCsapiPath(request.raw.url)) {
         return;
       }
       return requireCloudflareUser(request, reply);
@@ -89,6 +117,9 @@ async function main() {
         return reply.code(404).send({ error: "not_found" });
       }
       if (request.raw.url === "/healthz") {
+        return reply.code(404).send({ error: "not_found" });
+      }
+      if (isCsapiPath(request.raw.url)) {
         return reply.code(404).send({ error: "not_found" });
       }
       const authResult = await requireCloudflareUser(request, reply);

@@ -48,7 +48,17 @@ const envSchema = z.object({
   CF_ACCESS_TEAM_DOMAIN: z.string().default(""),
   WEB_DEFAULT_MODEL: z.string().default("auto"),
   REPORT_MODEL_ID: z.string().default(""),
-  REPORT_WORKSPACE_ID: z.string().default("")
+  REPORT_WORKSPACE_ID: z.string().default(""),
+  // --- csapi (compatibility API facade, 方案 B). Plaintext-visible: NOT E2EE. ---
+  // Mount the Anthropic/OpenAI compatible facade under /v1/*. Auth is a
+  // csapi-specific API key, fully separate from Cloudflare Access.
+  CSAPI_ENABLED: booleanEnv(false),
+  CSAPI_API_KEYS: z.string().default(""),
+  CSAPI_DEFAULT_MODEL: z.string().default("auto"),
+  CSAPI_DEFAULT_WORKSPACE_ID: z.string().default(""),
+  CSAPI_MAX_CONCURRENCY_PER_KEY: z.coerce.number().int().positive().default(4),
+  CSAPI_RUN_TIMEOUT_MS: z.coerce.number().int().positive().default(300_000),
+  CSAPI_ALLOW_WRITES: booleanEnv(false)
 });
 
 const splitCsv = (value: string) =>
@@ -91,7 +101,16 @@ export const config = {
   cfAccessTeamDomain: parsed.CF_ACCESS_TEAM_DOMAIN.trim().replace(/\/$/, ""),
   webDefaultModel: parsed.WEB_DEFAULT_MODEL,
   reportModelId: parsed.REPORT_MODEL_ID,
-  reportWorkspaceId: parsed.REPORT_WORKSPACE_ID
+  reportWorkspaceId: parsed.REPORT_WORKSPACE_ID,
+  csapi: {
+    enabled: parsed.CSAPI_ENABLED,
+    apiKeys: new Set(splitCsv(parsed.CSAPI_API_KEYS)),
+    defaultModel: parsed.CSAPI_DEFAULT_MODEL.trim() || "auto",
+    defaultWorkspaceId: parsed.CSAPI_DEFAULT_WORKSPACE_ID.trim(),
+    maxConcurrencyPerKey: parsed.CSAPI_MAX_CONCURRENCY_PER_KEY,
+    runTimeoutMs: parsed.CSAPI_RUN_TIMEOUT_MS,
+    allowWrites: parsed.CSAPI_ALLOW_WRITES
+  }
 };
 
 export const isProduction = config.nodeEnv === "production";
