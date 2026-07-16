@@ -13,7 +13,7 @@ class FakeBackend implements CsapiBackend {
   finishDelayMs = 120;
   private runs = new Map<
     string,
-    { createdAt: number; prompt: string; conversationId: string; cancelledAt?: number }
+    { createdAt: number; prompt: string; conversationId: string; model: string; cancelledAt?: number }
   >();
   private conversations = new Set<string>();
   createConversationCount = 0;
@@ -21,9 +21,12 @@ class FakeBackend implements CsapiBackend {
   cancelCount = 0;
   maxSameConversationConcurrent = 0;
   maxDistinctConversationsConcurrent = 0;
+  /** Override advertised models (default includes a Windows-style id). */
+  advertisedModels: string[] = ["cursor-fast", "cursor-smart"];
+  lastRunModel: string | null = null;
 
   listModelIds() {
-    return ["cursor-fast", "cursor-smart"];
+    return this.advertisedModels;
   }
   runnersOnline() {
     return 1;
@@ -49,10 +52,17 @@ class FakeBackend implements CsapiBackend {
   async createRun(input: {
     conversationId: string;
     prompt: string;
+    model: string;
   }): Promise<CsapiRunHandle> {
     const runId = randomUUID();
-    this.runs.set(runId, { createdAt: Date.now(), prompt: input.prompt, conversationId: input.conversationId });
+    this.runs.set(runId, {
+      createdAt: Date.now(),
+      prompt: input.prompt,
+      conversationId: input.conversationId,
+      model: input.model
+    });
     this.createRunCount += 1;
+    this.lastRunModel = input.model;
     return { runId, conversationId: input.conversationId, status: "queued" as RunStatus };
   }
   private statusOf(runId: string): RunStatus {
@@ -162,6 +172,34 @@ test("models requires auth and lists auto + registered models", async () => {
   assert.equal(res.statusCode, 200);
   const ids = (res.json().data as Array<{ id: string }>).map((m) => m.id);
   assert.deepEqual(ids, ["auto", "cursor-fast", "cursor-smart"]);
+  await closeApp(app);
+});
+
+test("auto rewrites to hermes:* when only Hermes models are online", async () => {
+  const { app, backend } = buildApp({ finishDelayMs: 20 });
+  backend.advertisedModels = ["hermes:default"];
+  const res = await app.inject({
+    method: "POST",
+    url: "/v1/messages",
+    headers: { "x-api-key": KEY },
+    payload: { model: "auto", max_tokens: 32, messages: [{ role: "user", content: "ping" }] }
+  });
+  assert.equal(res.statusCode, 200);
+  assert.equal(backend.lastRunModel, "hermes:default");
+  await closeApp(app);
+});
+
+test("auto stays auto when a Windows-style model is online", async () => {
+  const { app, backend } = buildApp({ finishDelayMs: 20 });
+  backend.advertisedModels = ["cursor-fast", "hermes:default"];
+  const res = await app.inject({
+    method: "POST",
+    url: "/v1/chat/completions",
+    headers: { authorization: `Bearer ${KEY}` },
+    payload: { model: "auto", messages: [{ role: "user", content: "ping" }] }
+  });
+  assert.equal(res.statusCode, 200);
+  assert.equal(backend.lastRunModel, "auto");
   await closeApp(app);
 });
 

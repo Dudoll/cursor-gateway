@@ -93,7 +93,7 @@ Base URL: `https://csapi.joelzt.org`
 |------|------|------|
 | `CSAPI_ENABLED` | `false` | 是否挂载 csapi 路由（配置了 key 时建议 `true`） |
 | `CSAPI_API_KEYS` | 空 | 逗号分隔的合法 API key 列表（发行/校验用） |
-| `CSAPI_DEFAULT_MODEL` | `auto` | 请求模型未知时回退的模型 |
+| `CSAPI_DEFAULT_MODEL` | `auto` | 请求模型未知时回退的模型。注意：`auto` 由 Windows Runner 领取；若线上只有 Hermes，会自动改写为第一个 `hermes:*`，也可直接设为 `hermes:default` |
 | `CSAPI_DEFAULT_WORKSPACE_ID` | 空 | 默认 workspace；留空则自动取第一个可用 workspace |
 | `CSAPI_MAX_CONCURRENCY_PER_KEY` | `4` | 每 key 并发上限；超限 429 |
 | `CSAPI_RUN_TIMEOUT_MS` | `300000` | 单次 run 等待超时（毫秒） |

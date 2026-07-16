@@ -184,6 +184,16 @@ export function createCsapi(deps: CsapiDeps) {
     }
   }
 
+  function resolveRoutableModel(requested: string): string {
+    const candidate = backend.modelIsKnown(requested) ? requested : config.defaultModel;
+    if (candidate !== "auto") return candidate;
+    const online = backend.listModelIds();
+    const windows = online.filter((id) => !id.startsWith("hermes:"));
+    if (windows.length > 0) return "auto";
+    const hermes = online.find((id) => id.startsWith("hermes:"));
+    return hermes ?? "auto";
+  }
+
   /** Core execution: serialize per-session, enqueue a run, wait for completion. */
   async function execute(input: ExecuteInput): Promise<CompletedRun> {
     if (!lastUserText(input.messages)) {
@@ -195,7 +205,10 @@ export function createCsapi(deps: CsapiDeps) {
     if (!workspaceId) {
       throw new CsapiError(503, "api_error", "no workspace available (is a runner online?)");
     }
-    const model = backend.modelIsKnown(input.requestedModel) ? input.requestedModel : config.defaultModel;
+    // "auto" is Windows-runner semantics (claimNextRun: model NOT LIKE hermes:%).
+    // When only Hermes is online, rewrite auto → first hermes:* model so jobs
+    // are claimable instead of sitting queued until timeout.
+    const model = resolveRoutableModel(input.requestedModel);
     const sessionKey = input.sessionKey;
 
     const perform = async (): Promise<CompletedRun> => {
