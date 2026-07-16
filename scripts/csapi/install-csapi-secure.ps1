@@ -283,16 +283,23 @@ if ($Status) {
   return
 }
 
-# --- install / -Start / -Service 共同前置：先准备仓库（除 -Print）---
-if (-not $Print) { Ensure-RepoReady | Out-Null }
-
+# --- install / -Start / -Service / -Print 共同前置：先解析 pins、探测（fail-closed），再 clone ---
+# 与 install-csapi-secure.sh 一致：服务端未开安全通道时快速失败，避免无谓 clone/npm install。
 $Pins = Resolve-PinnedRoots
 Write-Info "固定根指纹: $Pins"
 
-if (-not $NoProbe) {
-  if (-not (Test-ServerKeys -Pins $Pins)) { exit 3 }
-} else {
-  Write-Warn "已跳过 server-keys 探测（-NoProbe）：未核对服务端安全通道与根指纹。"
+if ($Print) {
+  if ($RepoRoot) { Write-Info "仓库: $RepoRoot" } else { Write-Warn "未定位到仓库源码（-Print 不会 clone）。" }
+}
+
+if (-not $Print) {
+  if (-not $NoProbe) {
+    if (-not (Test-ServerKeys -Pins $Pins)) { exit 3 }
+  } else {
+    Write-Warn "已跳过 server-keys 探测（-NoProbe）：未核对服务端安全通道与根指纹。"
+  }
+  Ensure-RepoReady | Out-Null
+  $Pins = Resolve-PinnedRoots
 }
 
 # ---- 读取真实 key ----------------------------------------------------------
