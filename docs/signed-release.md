@@ -29,6 +29,8 @@
 | 项 | 状态 |
 |---|---|
 | 离线 Ed25519 根 / 安装器 pin | 已有（`scripts/csapi/trust/`） |
-| minisign/Sigstore 脚本骨架 | 本文档 |
-| 商店签名上传 | **外部凭证 blocker** |
-| 扩展 crypto bridge 最小 API | `apps/browser-extension/src/cgMitmBridge.ts` |
+| 打包脚本 | `scripts/csapi/sign-extension-release.sh` → zip + SHA256 + Ed25519/minisign |
+| 扩展公钥 | `scripts/csapi/trust/extension-ed25519.pub.pem`（私钥 `~/.cursor-gateway/extension-signing/` 0600） |
+| 商店签名上传 | **外部凭证 blocker**（Chrome Web Store / Force-install） |
+| 扩展 crypto bridge | `cgMitmBridge.ts` + `contentBridge.ts` + background onMessage |
+| CS web 桥接探测 | `apps/web/src/cgBridgeDetect.ts`（无扩展时诚实引导安装） |

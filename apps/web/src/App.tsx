@@ -63,6 +63,7 @@ import {
   type MergedConversationItem
 } from "./mergedChat.js";
 import { buildPairedModelCatalog, modelIsAvailable } from "./pairedCatalog.js";
+import { detectCgMitmBridge, type CgBridgeStatus } from "./cgBridgeDetect.js";
 
 type ReportSummary = ReportDefinition & {
   runCount: number;
@@ -426,6 +427,7 @@ function GatewayDashboard() {
   const [approvalBusyId, setApprovalBusyId] = useState<string | null>(null);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const [cgBridge, setCgBridge] = useState<CgBridgeStatus | null>(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useSidebarCollapsed();
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const promptRef = useAutosizeTextarea(prompt);
@@ -435,6 +437,16 @@ function GatewayDashboard() {
   const e2eePaired = Boolean(e2eeDevice?.pairedRunnerId);
   /** New messages always use E2EE once paired; required mode forces pairing first. */
   const useE2eeChat = e2eePaired;
+
+  useEffect(() => {
+    let cancelled = false;
+    void detectCgMitmBridge().then((status) => {
+      if (!cancelled) setCgBridge(status);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -995,6 +1007,17 @@ function GatewayDashboard() {
 
   return (
     <main className="home-app" id="main">
+      {cgBridge?.kind === "none" ? (
+        <div className="cg-bridge-banner" role="status">
+          {cgBridge.installHint}
+          {" "}
+          新会话默认目标路径为 cs-relay-v1（扩展/Adapter 就绪后）；旧 e2ee-v1 会话保持只读可回滚。
+        </div>
+      ) : cgBridge ? (
+        <div className="cg-bridge-banner is-ready" role="status">
+          已检测到可信桥接（{cgBridge.kind}），将优先走 trusted-CS relay（cs-relay-v1）。
+        </div>
+      ) : null}
       <header className="reports-topbar">
         <BrandMark />
         <TopTabs active="home" />

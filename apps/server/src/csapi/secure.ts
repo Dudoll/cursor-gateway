@@ -72,6 +72,7 @@ import {
 } from "../csRelayHistory.js";
 import { resolveAccountAuth } from "./accountAuth.js";
 import { createCgEnrollChallenge } from "./passkeyEnroll.js";
+import { CsRelayExecuteError, executeCsRelayReencrypt } from "./csRelayExecute.js";
 import { subscribeSyncAccount } from "./syncBus.js";
 import { loadCgTrustRoots } from "../cgTrustRoots.js";
 import { config as appConfig } from "../config.js";
@@ -593,6 +594,96 @@ export function createCsapiSecure(deps: CsapiSecureDeps) {
     }
   }
 
+  /**
+   * Execute after cg-mitm decrypt. When CS_RELAY_RUNNER_REENCRYPT is on, CS
+   * re-wraps for an online e2ee runner (queue stores ciphertext only).
+   * History conversation ids stay on the plaintext/cs-relay path for sync.
+   */
+  async function executeAfterDecrypt(
+    keyId: string,
+    inner: CgExchangeInner,
+    signal: AbortSignal
+  ): Promise<CompletedRunLike> {
+    if (!appConfig.csRelay.runnerReencrypt) {
+      return csapi.execute(toExecuteInput(keyId, inner, deps, signal));
+    }
+    const body = inner.body as Record<string, unknown>;
+    const messages = normalizeMessages(body.messages);
+    const principalId = await deps.backend.getPrincipalId();
+    const workspaceId = await deps.backend.pickWorkspaceId(
+      deps.config.defaultWorkspaceId || undefined
+    );
+    if (!workspaceId) {
+      throw new CgSecureError("no_workspace_available");
+    }
+    const title = (() => {
+      const lastUser = [...messages].reverse().find((m) => m.role === "user");
+      return (lastUser?.text ?? "csapi").slice(0, 80);
+    })();
+    // Keep a history conversation id separate from the e2ee queue conversation.
+    let historyConversationId: string;
+    if (inner.sessionKey) {
+      const mapKey = `${keyId}:${inner.sessionKey}`;
+      const remembered = (csapi as { sessionConversations: Map<string, string> })
+        .sessionConversations;
+      const existing = remembered.get(mapKey);
+      if (existing && (await deps.backend.conversationExists(existing, principalId))) {
+        historyConversationId = existing;
+      } else {
+        historyConversationId = await deps.backend.createConversation({
+          principalId,
+          workspaceId,
+          title
+        });
+        remembered.set(mapKey, historyConversationId);
+      }
+    } else {
+      historyConversationId = await deps.backend.createConversation({
+        principalId,
+        workspaceId,
+        title
+      });
+    }
+    const system = inner.wire === "anthropic" ? extractSystem(body.system) : "";
+    const turns = [
+      ...(system
+        ? [{ role: "system" as const, content: system }]
+        : []),
+      ...messages.map((m) => ({
+        role: m.role as "user" | "assistant" | "system",
+        content: m.text
+      }))
+    ];
+    try {
+      const sealed = await executeCsRelayReencrypt({
+        principalId,
+        workspaceId,
+        model:
+          typeof body.model === "string" && body.model
+            ? body.model
+            : deps.config.defaultModel,
+        turns,
+        csSigningPrivateKey: cfg.signingPrivateKey,
+        csSigningKeyId: cfg.signingKeyId,
+        allowWrites: deps.config.allowWrites,
+        signal,
+        timeoutMs: deps.config.runTimeoutMs
+      });
+      return {
+        text: sealed.text,
+        inputTokens: sealed.inputTokens,
+        outputTokens: sealed.outputTokens,
+        runId: sealed.runId,
+        conversationId: historyConversationId
+      };
+    } catch (error) {
+      if (error instanceof CsRelayExecuteError) {
+        throw new CgSecureError(error.reason);
+      }
+      throw error;
+    }
+  }
+
   return {
     async handleServerKeys(_request: FastifyRequest, reply: FastifyReply) {
       return reply.send(cgServerKeysResponseSchema.parse(cfg.serverKeysResponse));
@@ -782,7 +873,7 @@ export function createCsapiSecure(deps: CsapiSecureDeps) {
       if (!wantsStream) {
         try {
           const result =
-            cached ?? (await csapi.execute(toExecuteInput(keyId, inner, deps, abort.signal)));
+            cached ?? (await executeAfterDecrypt(keyId, inner, abort.signal));
           idempotency.set(env.idempotencyKey, result);
 
           const userText = (() => {
@@ -848,7 +939,7 @@ export function createCsapiSecure(deps: CsapiSecureDeps) {
       const heartbeat = setInterval(() => writeCgHeartbeat(reply), 10_000);
       try {
         const result =
-          cached ?? (await csapi.execute(toExecuteInput(keyId, inner, deps, abort.signal)));
+          cached ?? (await executeAfterDecrypt(keyId, inner, abort.signal));
         idempotency.set(env.idempotencyKey, result);
         const userText = (() => {
           const messages = normalizeMessages(

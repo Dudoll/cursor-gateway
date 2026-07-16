@@ -22,7 +22,7 @@
 3. 确认 enroll 返回 `cg-device-cert/2`，`cg_devices` 有行。
 4. 内部账号开 `CS_RELAY_HISTORY_ENABLED` + 配置 `CG_MASTER_KEY`（≥16 字符）。
 5. 验证 `/cg/v1/sync`、两设备同账号、跨账号 403、revoke。
-6. 开 `CS_RELAY_RUNNER_REENCRYPT`（远程 Runner mTLS 若无法自动签发则保持 loopback，记录 blocker）。
+6. 开 `CS_RELAY_RUNNER_REENCRYPT`（CS decrypt → truncate → HPKE 封 Runner → 队列只存 envelope；Runner 从 `/cg/v1/server-keys` 自动拉 CS 签名公钥）。远程 mTLS 可用 `scripts/csapi/gen-internal-mtls.sh` 生成内部 CA（应用层主路径不阻塞）。
 7. **最后**再考虑 `CG_REQUIRE_SECURE`。
 
 ## 回滚

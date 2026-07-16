@@ -68,7 +68,9 @@ export class E2eeJobProcessor {
     // RUNNER_CS_RELAY_SIGNING_PUBLIC_JWK (or already paired as clientId cs-relay).
     let clientSigningKey: CryptoKey;
     if (request.clientId === "cs-relay") {
-      const csPub = this.state.getCsRelaySigningPublicKey?.();
+      const csPub =
+        this.state.getCsRelaySigningPublicKey?.() ??
+        (await this.state.ensureCsRelaySigningPublicKey?.());
       if (csPub) {
         clientSigningKey = await importSigningPublicKey(csPub);
       } else if (client && client.signingKey.keyId === request.signature.keyId) {

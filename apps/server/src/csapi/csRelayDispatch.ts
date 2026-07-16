@@ -35,7 +35,7 @@ export async function buildCsRelayRunRequest(input: {
   allowWrites?: boolean;
   sequence?: number;
   previousDigest?: string | null;
-}): Promise<E2eeRunRequestEnvelope> {
+}): Promise<{ envelope: E2eeRunRequestEnvelope; rootKey: CryptoKey }> {
   const truncated = truncateHistoryForRunner(input.turns, input.maxTurns, input.maxBytes);
   const prompt = truncated
     .map((t) => `${t.role.toUpperCase()}: ${t.content}`)
@@ -96,7 +96,8 @@ export async function buildCsRelayRunRequest(input: {
     );
     const unsigned = { ...base, payload };
     const signature = await signValue(unsigned, input.csSigningPrivateKey, input.csSigningKeyId);
-    return { ...unsigned, signature };
+    // Keep rootKey so CS can decrypt runner→CS result/progress; zeroize only raw bytes.
+    return { envelope: { ...unsigned, signature }, rootKey: root };
   } finally {
     zeroize(raw);
   }

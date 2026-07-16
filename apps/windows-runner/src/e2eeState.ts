@@ -298,12 +298,46 @@ export class RunnerE2eeState {
     return paired?.signingKey.keyId === keyId ? paired : undefined;
   }
 
-  /** Optional CS signing pubkey for cs-relay clientId (env-configured). */
+  /** Optional CS signing pubkey for cs-relay clientId (env-configured or fetched). */
+  private cachedCsRelaySigningPublic: import("@cursor-gateway/shared").E2eePublicKey | null =
+    null;
+
   getCsRelaySigningPublicKey(): import("@cursor-gateway/shared").E2eePublicKey | null {
+    if (this.cachedCsRelaySigningPublic) return this.cachedCsRelaySigningPublic;
     const raw = config.csRelaySigningPublicJwk?.trim();
     if (!raw) return null;
     try {
-      return JSON.parse(raw) as import("@cursor-gateway/shared").E2eePublicKey;
+      const parsed = JSON.parse(raw) as import("@cursor-gateway/shared").E2eePublicKey;
+      this.cachedCsRelaySigningPublic = parsed;
+      return parsed;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * When RUNNER_CS_RELAY_SIGNING_PUBLIC_JWK is unset, pull CS signing pubkey from
+   * /cg/v1/server-keys (public) so cs-relay jobs verify without a separate env push.
+   */
+  async ensureCsRelaySigningPublicKey(): Promise<
+    import("@cursor-gateway/shared").E2eePublicKey | null
+  > {
+    const existing = this.getCsRelaySigningPublicKey();
+    if (existing) return existing;
+    try {
+      const url = `${config.gatewayUrl}/cg/v1/server-keys`;
+      const response = await fetch(url, {
+        headers: { accept: "application/json" },
+        signal: AbortSignal.timeout(10_000)
+      });
+      if (!response.ok) return null;
+      const body = (await response.json()) as {
+        cert?: { signingKey?: { publicKey?: import("@cursor-gateway/shared").E2eePublicKey } };
+      };
+      const pub = body.cert?.signingKey?.publicKey;
+      if (!pub) return null;
+      this.cachedCsRelaySigningPublic = pub;
+      return pub;
     } catch {
       return null;
     }

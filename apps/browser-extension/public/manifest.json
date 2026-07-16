@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Cursor Gateway Secure",
-  "version": "0.1.0",
-  "description": "Trusted end-to-end encrypted client for Cursor Gateway.",
+  "version": "0.1.1",
+  "description": "Trusted end-to-end encrypted client for Cursor Gateway (cg-mitm / cs-relay).",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAtRdPNpPB11hhSbg5+Kvbtdb/Zciqtj4H9hkzd4EbcSa1OagKLVxWKYqTiQyh1cQN/ACoqNOay+QCsTc8PzwlIhPzd/J6qEuT8kMWob5lgBb2hlAYBbxohOHSBgQpOmDzPhBY1aTSMhEic2OMCJo6Tq47ySItSh3Fyt0iODwGDDym3u2TXos2pQvEU1aSOj3Zj0PN5PGzibsoFHZ/pkp/XdBpNISD8LN//XvSkEPZqAqWkS/eMR8bAAtxmbOhRVPKlk1wUaMTmVVIETxO+RE94xP9AqarANhCrBlusfFzpmf+zHsImwI3j8ffEzHLPoz9z/xOdTFLiWjLYtwf0Lj1MQIDAQAB",
   "action": {
     "default_title": "Open Cursor Gateway Secure"
@@ -11,10 +11,26 @@
     "service_worker": "background.js",
     "type": "module"
   },
-  "optional_host_permissions": [
-    "https://*/*",
+  "content_scripts": [
+    {
+      "matches": [
+        "https://cs.joelzt.org/*",
+        "https://*.joelzt.org/*",
+        "http://localhost/*",
+        "http://127.0.0.1/*"
+      ],
+      "js": ["contentBridge.js"],
+      "run_at": "document_start"
+    }
+  ],
+  "host_permissions": [
+    "https://cs.joelzt.org/*",
+    "https://*.joelzt.org/*",
     "http://localhost/*",
     "http://127.0.0.1/*"
+  ],
+  "optional_host_permissions": [
+    "https://*/*"
   ],
   "content_security_policy": {
     "extension_pages": "script-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"

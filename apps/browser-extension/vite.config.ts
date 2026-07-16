@@ -9,11 +9,15 @@ export default defineConfig({
     rollupOptions: {
       input: {
         app: "index.html",
-        background: "src/background.ts"
+        background: "src/background.ts",
+        contentBridge: "src/contentBridge.ts"
       },
       output: {
-        entryFileNames: (chunk) =>
-          chunk.name === "background" ? "background.js" : "assets/[name]-[hash].js"
+        entryFileNames: (chunk) => {
+          if (chunk.name === "background") return "background.js";
+          if (chunk.name === "contentBridge") return "contentBridge.js";
+          return "assets/[name]-[hash].js";
+        }
       }
     }
   }
