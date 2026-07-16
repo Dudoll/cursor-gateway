@@ -158,17 +158,28 @@ Windows Runner 已是 E2EE 密文中继（`apps/windows-runner/src/e2eeProcessor
 
 | # | 场景 | 结果 |
 |---|---|---|
+| A1 | 抓取上行 exchange 请求 header + body | header 无 apiKey/长期 key；body `payload.alg=A256GCM` 密文，无明文 prompt/apiKey |
 | A2 | 篡改 exchange ciphertext | `c2s_decrypt_failed` |
 | A3 | 重放同一 exchange envelope | `c2s_sequence_replayed` |
 | A4 | 伪造 server-keys（攻击者根冒充受害者指纹） | `FailClosedError` 启动拒绝 |
 | A5 | 未 pin 的根指纹 | `root_fingerprint_not_pinned` |
+| A6 | 上行 header 泄露检查 | 无 `x-api-key`/`authorization`；仅密文 envelope |
 | B1 | Anthropic 非流式 exchange | 标准 `message` 形状 |
 | B2 | OpenAI 非流式 exchange | 标准 `chat.completion` 形状 |
 | B3 | 流式 ciphertext SSE → 标准 Anthropic SSE 重放 | `open`→`delta*`→`usage`→`done` |
 | B4 | loopback facade 端到端（含 401 本地 key） | HTTP 200 + SSE 帧正确 |
 | — | 错误 API key enroll | `enroll_unauthorized` |
 
-本地 dev 端到端：`scripts/csapi/dev-cg-mitm-setup.sh` 生成信任材料 → `CG_SECURE_ENABLED=true` 启 server → `npm run dev:secure-adapter` 启 Adapter → CLI 指向 `http://127.0.0.1:8788`。
+一次性可跑验收（用真实文件加载器 `loadCgSecureConfig` + 内存假 Runner，无需 DB/模型）：
+
+```
+scripts/csapi/dev-cg-mitm-setup.sh http://127.0.0.1:18080   # 生成 dev 信任材料（一次）
+tsx scripts/csapi/verify-cg-mitm.ts                          # E1/A1/A4/A6/B/401 全 PASS
+```
+
+本地/VPS 真实端到端：`dev-cg-mitm-setup.sh` 生成材料 → 按其打印的 `CG_*` 增量加入 server 环境并重启（**不开
+`CG_REQUIRE_SECURE`**，保留明文 `/v1/*` 对照）→ `scripts/csapi/run-secure-adapter.sh` 启 Adapter →
+CLI 设 `ANTHROPIC_BASE_URL=http://127.0.0.1:8788` + loopback key 打一轮真实 Hermes/auto run。
 
 ## 11. 实施阶段（P0–P5）
 
