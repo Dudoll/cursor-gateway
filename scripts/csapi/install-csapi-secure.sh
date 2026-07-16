@@ -170,7 +170,13 @@ clone_repo() {
   if git clone --depth 1 "$REPO_GIT_URL" "$CLONE_DIR" >&2; then
     ( cd "$CLONE_DIR" && pwd ); return 0
   fi
-  err "git clone 失败（网络 / 仓库可见性 / 认证）。若仓库私有请配好访问权限，或手动 clone 后设 CSAPI_REPO_DIR。"
+  # 自愈：清理半残目录后自动再试一次（首包被拦 / 中途断线常见）。
+  warn "git clone 失败，清理半残目录后自动重试一次..."
+  rm -rf "$CLONE_DIR" 2>/dev/null || true
+  if git clone --depth 1 "$REPO_GIT_URL" "$CLONE_DIR" >&2; then
+    ( cd "$CLONE_DIR" && pwd ); return 0
+  fi
+  err "git clone 两次均失败（网络 / 仓库可见性 / 认证）。若仓库私有请配好访问权限，或手动 clone 后设 CSAPI_REPO_DIR。"
   return 1
 }
 
@@ -194,8 +200,13 @@ npm_install_repo() {
   else
     info "在仓库根安装依赖: ( cd $_repo && npm install ) （首次较慢）..."
     if ! ( cd "$_repo" && npm install ) >&2; then
-      err "npm install 失败。请进入 $_repo 手动排查后重试。"
-      return 1
+      # 自愈：清理可能损坏的 node_modules 后自动再试一次。
+      warn "npm install 失败，清理 node_modules 后自动重试一次..."
+      rm -rf "$_repo/node_modules" 2>/dev/null || true
+      if ! ( cd "$_repo" && npm install ) >&2; then
+        err "npm install 两次均失败。请进入 $_repo 手动排查后重试。"
+        return 1
+      fi
     fi
   fi
   if [ "$DO_BUILD" -eq 1 ]; then
@@ -265,7 +276,24 @@ probe_and_verify() {
   info "探测 $_url ..."
   _body="$CFG_DIR/.server-keys.probe.$$"
   mkdir -p "$CFG_DIR" 2>/dev/null || true
-  _code="$(curl -sS -o "$_body" -w '%{http_code}' --max-time 20 "$_url" 2>/dev/null || echo 000)"
+
+  # 短暂网络/5xx 抖动 → 有限重试（最多 3 次，指数退避）。
+  # 404/426（服务端未开安全通道）与 200（可核对指纹）不重试：前者不可自愈、后者已成功拿到响应。
+  _try=1
+  _code=000
+  while [ "$_try" -le 3 ]; do
+    _code="$(curl -sS -o "$_body" -w '%{http_code}' --max-time 20 "$_url" 2>/dev/null || echo 000)"
+    case "$_code" in
+      000|5??)
+        if [ "$_try" -lt 3 ]; then
+          warn "探测 server-keys 暂时失败（HTTP $_code），第 $_try/3 次，$_try s 后重试..."
+          sleep "$_try"
+        fi
+        ;;
+      *) break ;;
+    esac
+    _try=$((_try + 1))
+  done
 
   if [ "$_code" = "404" ] || [ "$_code" = "426" ]; then
     rm -f "$_body"
@@ -564,6 +592,184 @@ remove_service() {
   info "已移除 systemd --user 服务单元。"
 }
 
+# ---- 自愈：健康检查 / 端口探测 / 有限次修复循环 ----------------------------
+# 说明：脚本作为子进程运行，无法修改父 shell 的环境变量；但**健康验证不依赖父
+# shell**——直接打本机 loopback /health 即可确认 Adapter 真的活着。因此“已验证通过”
+# 由脚本自己完成，与当前终端是否已 source rc 无关。
+
+# 直接打 /health，成功时把响应体打到 stdout。
+health_body() {
+  have curl || return 1
+  curl -fsS --max-time 5 "$ADAPTER_LOCAL_BASE/health" 2>/dev/null
+}
+
+# /health 是否为健康的 cg-mitm Adapter。
+health_ok() {
+  _h="$(health_body)" || return 1
+  [ -n "$_h" ] || return 1
+  case "$_h" in
+    *'"ok":true'*|*'"ok": true'*|*cg-mitm*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# 从 /health 响应提取 upstream 字段（用于核对 BASE_URL 是否一致）。
+health_upstream() {
+  _h="$(health_body)" || return 1
+  [ -n "$_h" ] || return 1
+  if have node; then
+    printf '%s' "$_h" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{const j=JSON.parse(s);if(j.upstream)console.log(String(j.upstream).replace(/\/$/,""))}catch(e){}})' 2>/dev/null
+  else
+    printf '%s' "$_h" | grep -oE '"upstream"[[:space:]]*:[[:space:]]*"[^"]*"' | head -n1 | sed 's/.*"\([^"]*\)".*/\1/' | sed 's/\/$//'
+  fi
+}
+
+# 打印一行 health JSON 摘要（尽量用 node 美化，回退原样）。
+health_summary() {
+  _h="$(health_body)" || return 1
+  [ -n "$_h" ] || return 1
+  if have node; then
+    printf '%s' "$_h" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{const j=JSON.parse(s);console.log(`ok=${j.ok} mode=${j.mode} upstream=${j.upstream} deviceId=${(j.deviceId||"").slice(0,12)}…`)}catch(e){console.log(s.trim())}})' 2>/dev/null || printf '%s' "$_h"
+  else
+    printf '%s' "$_h"
+  fi
+}
+
+# 端口是否被占用（任何进程）。
+port_busy() {
+  _p="$1"
+  if have ss;      then ss -ltn 2>/dev/null      | grep -qE "[:.]$_p[[:space:]]" && return 0; return 1; fi
+  if have lsof;    then lsof -iTCP:"$_p" -sTCP:LISTEN >/dev/null 2>&1 && return 0; return 1; fi
+  if have netstat; then netstat -ltn 2>/dev/null | grep -qE "[:.]$_p[[:space:]]" && return 0; return 1; fi
+  # 回退：能连上 /health 也算占用。
+  if have curl && curl -fsS --max-time 2 "http://$LISTEN_HOST:$_p/health" >/dev/null 2>&1; then return 0; fi
+  return 1
+}
+
+# 找一个空闲端口（换端口自愈用）。
+find_free_port() {
+  for _cand in 8788 8789 8790 8791 8890 9788 18788 28788; do
+    [ "$_cand" = "$LISTEN_PORT" ] && continue
+    port_busy "$_cand" || { printf '%s' "$_cand"; return 0; }
+  done
+  return 1
+}
+
+# 在脚本自身进程内 export（供自检/子进程用；无法影响父 shell）。
+export_current_session() {
+  ANTHROPIC_BASE_URL="$ADAPTER_LOCAL_BASE"; export ANTHROPIC_BASE_URL
+  ANTHROPIC_API_KEY="$LOOPBACK_KEY";        export ANTHROPIC_API_KEY
+  OPENAI_BASE_URL="$ADAPTER_LOCAL_BASE/v1"; export OPENAI_BASE_URL
+  OPENAI_API_KEY="$LOOPBACK_KEY";           export OPENAI_API_KEY
+}
+
+# upstream / rc 与当前 CSAPI_BASE_URL 不一致时，重写 env + 启动器 + rc 受管块。
+sync_upstream_if_needed() {
+  _need=0
+  if [ -f "$ENV_FILE" ]; then
+    _saved="$(grep '^CG_ADAPTER_UPSTREAM_URL=' "$ENV_FILE" 2>/dev/null | head -n1 | cut -d= -f2- | sed 's/\/$//' || true)"
+    [ -n "$_saved" ] && [ "$_saved" != "$UPSTREAM_URL" ] && _need=1
+  fi
+  if [ "$_need" -eq 0 ] && health_ok; then
+    _hu="$(health_upstream 2>/dev/null || true)"
+    [ -n "$_hu" ] && [ "$_hu" != "$UPSTREAM_URL" ] && _need=1
+  fi
+  if [ "$_need" -eq 1 ]; then
+    warn "检测到 upstream/BASE_URL 不一致（期望 $UPSTREAM_URL），重写 env 与 rc..."
+    write_env_file "$KEY" "$LOOPBACK_KEY" "$PINS"
+    write_launcher
+    RC="$(detect_rc)"
+    write_rc_block "$RC" "$LOOPBACK_KEY"
+    export_current_session
+    return 0
+  fi
+  return 1
+}
+
+# 换端口自愈：更新全局 + 重写 env / 启动器 / rc 受管块。
+switch_port() {
+  _newport="$1"
+  warn "端口 $LISTEN_PORT 仍被占用，切换到空闲端口 $_newport 并同步更新配置。"
+  LISTEN_PORT="$_newport"
+  ADAPTER_LOCAL_BASE="http://$LISTEN_HOST:$LISTEN_PORT"
+  write_env_file "$KEY" "$LOOPBACK_KEY" "$PINS"
+  write_launcher
+  RC="$(detect_rc)"
+  write_rc_block "$RC" "$LOOPBACK_KEY"
+  export_current_session
+}
+
+# 收尾自愈：确保 Adapter 起来且 /health 通过；失败则在有限次内自动修复。
+# 依赖主流程已设的全局：KEY / LOOPBACK_KEY / PINS / REPO_ROOT。返回 0=健康。
+verify_and_heal() {
+  if ! have curl; then
+    warn "未找到 curl，无法自检 /health；跳过自愈（请自行 curl $ADAPTER_LOCAL_BASE/health 验证）。"
+    start_adapter || true
+    return 0
+  fi
+
+  _max=3
+  _i=1
+  while [ "$_i" -le "$_max" ]; do
+    info "自检 [$_i/$_max]：GET $ADAPTER_LOCAL_BASE/health ..."
+    if health_ok; then return 0; fi
+
+    warn "health 未通过，进入自动修复（第 $_i/$_max 次）..."
+
+    # 1) 缺仓库源码 → 自动 clone + 装依赖。
+    if [ -z "$REPO_ROOT" ] || [ ! -d "$REPO_ROOT/apps/secure-adapter" ]; then
+      warn "缺少仓库源码（apps/secure-adapter），自动准备（clone + install）..."
+      ensure_repo_ready || true
+    fi
+
+    # 2) node_modules/tsx 缺失 → 自动重装依赖。
+    if [ -n "$REPO_ROOT" ] && [ ! -x "$REPO_ROOT/node_modules/.bin/tsx" ] && ! have tsx; then
+      warn "缺少 node_modules/tsx，自动重装依赖..."
+      npm_install_repo "$REPO_ROOT" || true
+    fi
+
+    # 2b) upstream/BASE_URL 与 env 或运行中 Adapter 不一致 → 重写配置。
+    sync_upstream_if_needed || true
+
+    # 2c) 第 2 轮起尝试编译 dist（tsx 启动失败时常见）。
+    if [ "$_i" -ge 2 ] && [ -n "$REPO_ROOT" ]; then
+      warn "尝试编译 Secure Adapter dist（自愈 build）..."
+      DO_BUILD=1 npm_install_repo "$REPO_ROOT" || true
+    fi
+
+    # 3) 端口占用但不是健康 Adapter → 停旧；仍占用则换端口。
+    if port_busy "$LISTEN_PORT" && ! health_ok; then
+      warn "端口 $LISTEN_PORT 被占用但不是健康的 Adapter，尝试停旧进程..."
+      stop_adapter 2>/dev/null || true
+      sleep 1
+      if port_busy "$LISTEN_PORT"; then
+        _np="$(find_free_port || true)"
+        [ -n "$_np" ] && switch_port "$_np"
+      fi
+    fi
+
+    # 4) (重)启动 Adapter。
+    if adapter_running || service_active; then
+      info "重启现有 Adapter..."
+      stop_adapter 2>/dev/null || true
+      sleep 1
+    fi
+    start_adapter || true
+
+    # 5) 就绪轮询（最多 ~12s）。
+    _w=0
+    while [ "$_w" -lt 12 ]; do
+      health_ok && break
+      sleep 1
+      _w=$((_w + 1))
+    done
+    health_ok && return 0
+
+    _i=$((_i + 1))
+  done
+  return 1
+}
+
 # ============================ 主流程 =======================================
 info "cg-mitm/1 Secure Adapter 安装器"
 info "上游 csapi: $UPSTREAM_URL   本机 Adapter: $ADAPTER_LOCAL_BASE"
@@ -654,25 +860,33 @@ info "写入 shell 配置: $RC"
 write_rc_block "$RC" "$LOOPBACK_KEY"
 info "已写受管块（幂等：重复运行只更新，不堆叠）。"
 
-case "$MODE" in
-  service) install_service || true ;;
-  start)   start_adapter || true ;;
-esac
+# ---- 收尾：不只打印“下一步”，而是自己拉起 + 自检 + 自愈 --------------------
+# 无论 install / start / service，都在脚本内 export（自检用）、确保 Adapter 起来、
+# 打 /health 验证；失败进入有限次修复循环（clone/装依赖/停旧/换端口/重启）。
+export_current_session
 
+# --service：先注册自启（内部会启动，或无 systemd 时回退 nohup）。
+[ "$MODE" = "service" ] && { install_service || true; }
+
+if verify_and_heal; then
+  echo
+  info "已验证通过 ✅  本机 Adapter /health 正常，监听 $ADAPTER_LOCAL_BASE"
+  info "health: $(health_summary)"
+  info "CLI 变量：新终端自动生效；当前交互式终端如需立即生效: . \"$RC\""
+  info "安全：真实 key 只在 $ENV_FILE(0600) 与密文 envelope 内；中间人只见 cg-mitm/1 密文。fail-closed，绝不回退明文。"
+  exit 0
+fi
+
+# 到这里：已自动修复 3 次仍未通过 /health → 给出最可能的“真·不可自愈”原因（需人工）。
 echo
-info "下一步："
-if [ -z "$REPO_ROOT" ]; then
-  info "  0) 本机启动 Adapter 需仓库源码：设 CSAPI_REPO_DIR=/path/to/repo（或让脚本自动 clone，去掉 --no-clone）。"
+err "已自动修复 3 次仍无法让 Adapter 通过 /health。最可能的原因（需人工处理）："
+if ! have node; then
+  err "  · 未安装 node（Adapter 需 node>=22）。装好 Node 后重跑本脚本，其余步骤会自动完成。"
+elif [ -z "$REPO_ROOT" ] || [ ! -d "$REPO_ROOT/apps/secure-adapter" ]; then
+  err "  · 未能获取仓库源码（clone 失败或被 --no-clone 关闭）。装好 git+网络、或设 CSAPI_REPO_DIR 后重跑。"
 else
-  info "  0) 依赖已就绪（如需重装: cd \"$REPO_ROOT\" && npm install）。"
+  err "  · Adapter 启动后 fail-closed（多为服务端未开安全通道 / 证书 / 根指纹问题）。日志尾部："
+  tail -n 20 "$LOG_FILE" 2>/dev/null | sed 's/^/      /' >&2 || true
+  err "  · 亦可先用方案 B（明文兼容）临时试用：sh scripts/csapi/install-csapi.sh"
 fi
-if [ "$MODE" != "start" ] && [ "$MODE" != "service" ]; then
-  info "  1) 启动本机 Adapter:  sh install-csapi-secure.sh --start"
-  info "     或注册开机自启:    sh install-csapi-secure.sh --service"
-fi
-info "  2) 让 CLI 变量生效:   重开终端，或 . \"$RC\""
-info "  3) 验证:  echo \$ANTHROPIC_BASE_URL  应为 $ADAPTER_LOCAL_BASE"
-info "           curl -sS $ADAPTER_LOCAL_BASE/health"
-echo
-info "安全：真实 key 只在 $ENV_FILE(0600) 与密文 envelope 内；网络中间人只见 cg-mitm/1 密文。"
-info "完成 ✅  这是抗 MITM 的方案 A（Adapter），fail-closed，绝不回退明文。"
+exit 1

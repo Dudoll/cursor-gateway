@@ -1,5 +1,29 @@
 # csapi 懒人安装脚本
 
+## 一键安装（方案 A，推荐 · 抗 MITM）
+
+复制下面一行即可：**自动探测根指纹 → clone 仓库 → npm install → 写配置 → 启动 Adapter → curl /health 验证**。成功会打印「已验证通过」；仅缺 key / node / 服务端未开安全通道时才需人工处理。
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Dudoll/cursor-gateway/main/scripts/csapi/install-csapi-secure.sh \
+  | CSAPI_API_KEY=sk-xxxx sh -s -- --yes
+```
+
+> 把 `sk-xxxx` 换成你的真实 CSAPI key。不想把 key 写进命令行？去掉 `CSAPI_API_KEY=...`，脚本会交互提示（输入不回显）。
+>
+> Windows（PowerShell）：
+>
+> ```powershell
+> $env:CSAPI_API_KEY="sk-xxxx"
+> irm https://raw.githubusercontent.com/Dudoll/cursor-gateway/main/scripts/csapi/install-csapi-secure.ps1 | iex
+> ```
+>
+> 或下载后本地执行：`powershell -ExecutionPolicy Bypass -File .\install-csapi-secure.ps1 -Yes`
+
+换门面地址：运行前设 `CSAPI_BASE_URL=https://your-host`（脚本会同步 upstream 与 rc）。
+
+---
+
 一键把「CLI 用的 API 环境」配好，用于 Claude Code（Anthropic 兼容）与 OpenCode / 任意 OpenAI 兼容客户端。
 
 提供**两种**通道，二选一：
@@ -41,13 +65,14 @@
    （`--no-install` 关闭；`--build` 额外编译 dist）。已有本地仓库自动复用，或 `CSAPI_REPO_DIR=/path` 指定。
 4. 写本机配置 `~/.cursor-gateway/secure-adapter.env`（0600，含**真实 key**）+ 启动器 `start-secure-adapter.sh`。
 5. **幂等**写 shell 受管块：把 CLI 的 `ANTHROPIC_*/OPENAI_*` 指向本机 Adapter（用本地 loopback key，非真实 key）。
-6. `--start` 拉起 Adapter；`--service` 注册 `systemd --user` 开机自启（无 systemd 回退 nohup）。
+6. **收尾自动完成**：启动 Adapter → curl `/health` 验证 → 失败则有限次自愈（重启、重装依赖、编译 dist、清端口、
+   修正 BASE_URL/rc）。成功打印「**已验证通过**」+ health 摘要；不再只提示「下一步」。
 
 ```bash
-# 交互式（提示输入真实 key；会自动 clone/装依赖）
+# 交互式（提示输入真实 key；会自动 clone/装依赖/启动/验证）
 sh install-csapi-secure.sh
-# 真·一键：非交互 + 自动确认 clone + 立即后台启动
-CSAPI_API_KEY=sk-xxxx sh install-csapi-secure.sh --start --yes
+# 真·一键：非交互 + 自动确认 clone（默认即启动并验证）
+CSAPI_API_KEY=sk-xxxx sh install-csapi-secure.sh --yes
 # 注册开机自启（systemd --user）
 CSAPI_API_KEY=sk-xxxx sh install-csapi-secure.sh --service --yes
 # 只准备仓库（clone + npm install [+ --build]），不写配置
@@ -61,18 +86,18 @@ sh install-csapi-secure.sh --no-probe
 sh install-csapi-secure.sh --no-clone --no-install
 ```
 
-Windows：`powershell -ExecutionPolicy Bypass -File .\install-csapi-secure.ps1`（`-Start / -Service /
+Windows：`powershell -ExecutionPolicy Bypass -File .\install-csapi-secure.ps1`（`-Service /
 -Setup / -Print / -Uninstall / -Status / -Stop / -NoProbe / -NoClone / -NoInstall / -Build / -Yes`）。
-Windows `-Service` 注册「登录自启」计划任务。
+Windows `-Service` 注册「登录自启」计划任务。默认安装即启动并 `/health` 验证（与 `.sh` 对齐）。
 
 ## curl|sh 分发（方案 A）
 
 安全版支持 `curl|sh` 真·一键：脚本探测核对根指纹后，会**自动 `git clone` 公开仓库 + `npm install`**，
-再写配置并（`--start`）拉起 Adapter。示例（自动确认 clone、非交互传 key）：
+再写配置、拉起 Adapter 并自检 `/health`。示例（自动确认 clone、非交互传 key）：
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Dudoll/cursor-gateway/main/scripts/csapi/install-csapi-secure.sh \
-  | CSAPI_API_KEY=sk-xxxx sh -s -- --start --yes
+  | CSAPI_API_KEY=sk-xxxx sh -s -- --yes
 ```
 
 - 已在本机 clone 过仓库、想跳过自动 clone，就在仓库目录内直接跑本脚本，或设 `CSAPI_REPO_DIR=/path/to/repo`。
@@ -208,6 +233,7 @@ curl -sS -H "Authorization: Bearer $OPENAI_API_KEY" \
 | 真实 key 位置 | 只在 `~/.cursor-gateway/secure-adapter.env`(0600) + 密文 envelope | 写进 shell rc（明文可见） |
 | 中间人可见 | 仅 cg-mitm/1 密文 | prompt/response 明文 |
 | 依赖 | 需仓库源码 + `npm install`（node≥22）跑 Adapter（脚本会**自动 clone + install**） | 零依赖，**单文件可分发** |
+| 收尾 | 自动启动 + `/health` 验证 + 有限次自愈 | 写配置 + 探测门面连通 |
 | 受管块 | `csapi secure adapter env`（在 rc 靠后，覆盖前者） | `csapi env` |
 
 二选一即可。两个受管块互不干扰；**同装时安全块靠后生效**（方案 A 覆盖方案 B），因此可以先用方案 B
@@ -215,8 +241,9 @@ curl -sS -H "Authorization: Bearer $OPENAI_API_KEY" \
 
 ## 常见问题
 
-- **想换门面地址？** 运行前设 `CSAPI_BASE_URL=https://your-host`，脚本会自动派生 `/v1`。
+- **想换门面地址？** 运行前设 `CSAPI_BASE_URL=https://your-host`，脚本会自动派生 `/v1` 并同步 upstream/rc。
 - **方案 A 探测报 404/426？** 服务端尚未开启安全通道，见上面「生产运维前置」；或先用方案 B 试用。
+- **方案 A 已验证通过？** 终端会打印 health 摘要；新终端自动带上 CLI 变量，当前终端可 `. ~/.bashrc`。
 - **方案 B health 失败但变量已写入？** 属正常降级：网络/门面临时不可达不影响写配置，稍后重试探测即可。
 - **models 返回 401/403？** key 无效或未授权，核对后重跑。
 - **要彻底清理？** 用 `--uninstall`（PowerShell 用 `-Uninstall`）。

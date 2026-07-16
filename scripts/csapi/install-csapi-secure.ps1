@@ -128,7 +128,14 @@ function Invoke-CloneRepo {
   if ($LASTEXITCODE -eq 0 -and (Test-Path (Join-Path $CloneDir 'apps\secure-adapter'))) {
     return (Resolve-Path $CloneDir).Path
   }
-  Write-Err "git clone 失败（网络 / 仓库可见性 / 认证）。请手动 clone 后设 `$env:CSAPI_REPO_DIR。"; return $null
+  # 自愈：清理半残目录后自动再试一次。
+  Write-Warn "git clone 失败，清理半残目录后自动重试一次..."
+  Remove-Item -Recurse -Force $CloneDir -ErrorAction SilentlyContinue
+  git clone --depth 1 $RepoGitUrl $CloneDir
+  if ($LASTEXITCODE -eq 0 -and (Test-Path (Join-Path $CloneDir 'apps\secure-adapter'))) {
+    return (Resolve-Path $CloneDir).Path
+  }
+  Write-Err "git clone 两次均失败（网络 / 仓库可见性 / 认证）。请手动 clone 后设 `$env:CSAPI_REPO_DIR。"; return $null
 }
 
 # ---- npm install / build ---------------------------------------------------
@@ -145,7 +152,15 @@ function Install-Deps { param($Repo)
   } else {
     Write-Info "在仓库根安装依赖: (cd $Repo; npm install) （首次较慢）..."
     Push-Location $Repo
-    try { npm install } finally { Pop-Location }
+    try {
+      npm install
+      if ($LASTEXITCODE -ne 0) {
+        # 自愈：清理可能损坏的 node_modules 后自动再试一次。
+        Write-Warn "npm install 失败，清理 node_modules 后自动重试一次..."
+        Remove-Item -Recurse -Force (Join-Path $Repo 'node_modules') -ErrorAction SilentlyContinue
+        npm install
+      }
+    } finally { Pop-Location }
   }
   if ($Build) {
     Write-Info "编译 Secure Adapter dist ..."
@@ -182,22 +197,32 @@ function Test-ServerKeys {
   param($Pins)
   $url = "$Upstream/cg/v1/server-keys"
   Write-Info "探测 $url ..."
-  try {
-    $resp = Invoke-WebRequest -Uri $url -TimeoutSec 20 -UseBasicParsing
-  } catch {
-    $code = $null
-    try { $code = $_.Exception.Response.StatusCode.value__ } catch {}
-    if ($code -eq 404 -or $code -eq 426) {
-      Write-Err "服务端未开启 cg-mitm 安全通道（/cg/v1/server-keys 返回 HTTP $code）。"
-      Write-Err "这是**运维前置**，不是本机问题。请联系 csapi 管理员开启服务端安全通道："
-      Write-Err "  · 需 CG_SECURE_ENABLED=true 且下发由固定根签发的服务端证书；"
-      Write-Err "  · 保持 CG_REQUIRE_SECURE=false，让明文 /v1/* 与安全 /cg/v1/* 并行灰度；"
-      Write-Err "  · 服务端下发的根指纹要与本安装器固定的一致：$Pins"
-      Write-Err "开启后重跑本脚本即可。（如需先预置配置：加 -NoProbe 跳过探测。）"
+  $resp = $null
+  for ($try = 1; $try -le 3; $try++) {
+    try {
+      $resp = Invoke-WebRequest -Uri $url -TimeoutSec 20 -UseBasicParsing
+      break
+    } catch {
+      $code = $null
+      try { $code = $_.Exception.Response.StatusCode.value__ } catch {}
+      if ($code -eq 404 -or $code -eq 426) {
+        Write-Err "服务端未开启 cg-mitm 安全通道（/cg/v1/server-keys 返回 HTTP $code）。"
+        Write-Err "这是**运维前置**，不是本机问题。请联系 csapi 管理员开启服务端安全通道："
+        Write-Err "  · 需 CG_SECURE_ENABLED=true 且下发由固定根签发的服务端证书；"
+        Write-Err "  · 保持 CG_REQUIRE_SECURE=false，让明文 /v1/* 与安全 /cg/v1/* 并行灰度；"
+        Write-Err "  · 服务端下发的根指纹要与本安装器固定的一致：$Pins"
+        Write-Err "开启后重跑本脚本即可。（如需先预置配置：加 -NoProbe 跳过探测。）"
+        return $false
+      }
+      # 网络/5xx 抖动 → 有限重试（不适用于 404/426 那种“不可自愈”前置）。
+      if ($try -lt 3) {
+        Write-Warn "探测 server-keys 暂时失败（$($_.Exception.Message)），第 $try/3 次，$try s 后重试..."
+        Start-Sleep -Seconds $try
+        continue
+      }
+      Write-Err "无法探测 $url：$($_.Exception.Message)。请检查网络后重试。"
       return $false
     }
-    Write-Err "无法探测 $url：$($_.Exception.Message)。请检查网络后重试。"
-    return $false
   }
 
   $advertised = @()
@@ -250,6 +275,139 @@ function Remove-Service {
   try { schtasks /Delete /TN $TaskName /F 2>$null | Out-Null; Write-Info "已移除登录自启计划任务（如有）。" } catch {}
 }
 
+# ---- 自愈：健康检查 / 端口探测 / 有限次修复循环 ----------------------------
+# Windows 版：当前窗口的 CLI 变量本就即时生效（$env:*），健康验证直接打本机 /health。
+function Get-HealthRaw {
+  try { return (Invoke-WebRequest -Uri "$AdapterBase/health" -TimeoutSec 5 -UseBasicParsing).Content } catch { return $null }
+}
+function Test-Health {
+  $h = Get-HealthRaw
+  if (-not $h) { return $false }
+  return ($h -match 'cg-mitm' -or $h -match '"ok"\s*:\s*true')
+}
+function Get-HealthUpstream {
+  $h = Get-HealthRaw
+  if (-not $h) { return $null }
+  try {
+    $j = $h | ConvertFrom-Json
+    if ($j.upstream) { return ([string]$j.upstream).TrimEnd('/') }
+  } catch {}
+  return $null
+}
+function Get-HealthSummary {
+  $h = Get-HealthRaw
+  if (-not $h) { return "" }
+  try {
+    $j = $h | ConvertFrom-Json
+    $dev = [string]$j.deviceId
+    if ($dev.Length -gt 12) { $dev = $dev.Substring(0,12) + '…' }
+    return "ok=$($j.ok) mode=$($j.mode) upstream=$($j.upstream) deviceId=$dev"
+  } catch { return $h.Trim() }
+}
+function Test-PortBusy { param($p)
+  try {
+    if (Get-Command Get-NetTCPConnection -ErrorAction SilentlyContinue) {
+      return [bool](Get-NetTCPConnection -LocalPort ([int]$p) -State Listen -ErrorAction SilentlyContinue)
+    }
+  } catch {}
+  try { Invoke-WebRequest -Uri "http://${ListenHost}:$p/health" -TimeoutSec 2 -UseBasicParsing | Out-Null; return $true } catch { return $false }
+}
+function Find-FreePort {
+  foreach ($c in 8788,8789,8790,8791,8890,9788,18788,28788) {
+    if ($c -eq [int]$ListenPort) { continue }
+    if (-not (Test-PortBusy $c)) { return $c }
+  }
+  return $null
+}
+function Stop-Adapter {
+  try {
+    Get-CimInstance Win32_Process -Filter "Name='node.exe'" -ErrorAction SilentlyContinue |
+      Where-Object { $_.CommandLine -and $_.CommandLine -match 'secure-adapter' } |
+      ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+  } catch {}
+}
+function Sync-UpstreamIfNeeded {
+  $need = $false
+  if (Test-Path $EnvFile) {
+    $saved = (Select-String -Path $EnvFile -Pattern '^CG_ADAPTER_UPSTREAM_URL=' -ErrorAction SilentlyContinue | Select-Object -First 1)
+    if ($saved) {
+      $val = ($saved.Line -split '=',2)[1].TrimEnd('/')
+      if ($val -and $val -ne $Upstream) { $need = $true }
+    }
+  }
+  if (-not $need -and (Test-Health)) {
+    $hu = Get-HealthUpstream
+    if ($hu -and $hu -ne $Upstream) { $need = $true }
+  }
+  if (-not $need) { return $false }
+  Write-Warn "检测到 upstream/BASE_URL 不一致（期望 $Upstream），重写 env 与 CLI 变量..."
+  $lb = $script:loopback
+  if (-not $lb -and (Test-Path $EnvFile)) {
+    $lbLine = Select-String -Path $EnvFile -Pattern '^CG_ADAPTER_LOOPBACK_KEY=' -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($lbLine) { $lb = ($lbLine.Line -split '=',2)[1] }
+  }
+  if (Test-Path $EnvFile) {
+    (Get-Content $EnvFile) -replace '^CG_ADAPTER_UPSTREAM_URL=.*', "CG_ADAPTER_UPSTREAM_URL=$Upstream" | Set-Content $EnvFile -Encoding UTF8
+  }
+  if ($lb) {
+    [Environment]::SetEnvironmentVariable('ANTHROPIC_BASE_URL', $AdapterBase,      'User')
+    [Environment]::SetEnvironmentVariable('ANTHROPIC_API_KEY',  $lb,             'User')
+    [Environment]::SetEnvironmentVariable('OPENAI_BASE_URL',    "$AdapterBase/v1", 'User')
+    [Environment]::SetEnvironmentVariable('OPENAI_API_KEY',     $lb,             'User')
+    $env:ANTHROPIC_BASE_URL = $AdapterBase
+    $env:ANTHROPIC_API_KEY  = $lb
+    $env:OPENAI_BASE_URL    = "$AdapterBase/v1"
+    $env:OPENAI_API_KEY     = $lb
+  }
+  return $true
+}
+function Switch-Port { param($np)
+  Write-Warn "端口 $ListenPort 仍被占用，切换到空闲端口 $np 并同步更新配置。"
+  $script:ListenPort  = "$np"
+  $script:AdapterBase = "http://${ListenHost}:${np}"
+  if (Test-Path $EnvFile) {
+    (Get-Content $EnvFile) -replace '^CG_ADAPTER_LISTEN_PORT=.*', "CG_ADAPTER_LISTEN_PORT=$np" | Set-Content $EnvFile -Encoding UTF8
+  }
+  [Environment]::SetEnvironmentVariable('ANTHROPIC_BASE_URL', $script:AdapterBase,      'User')
+  [Environment]::SetEnvironmentVariable('OPENAI_BASE_URL',    "$($script:AdapterBase)/v1", 'User')
+  $env:ANTHROPIC_BASE_URL = $script:AdapterBase
+  $env:OPENAI_BASE_URL    = "$($script:AdapterBase)/v1"
+}
+# 收尾自愈：确保 Adapter 起来且 /health 通过；失败则有限次自动修复。
+function Repair-And-Verify {
+  $max = 3
+  for ($i = 1; $i -le $max; $i++) {
+    Write-Info "自检 [$i/$max]：GET $AdapterBase/health ..."
+    if (Test-Health) { return $true }
+    Write-Warn "health 未通过，进入自动修复（第 $i/$max 次）..."
+
+    if (-not $RepoRoot -or -not (Test-Path (Join-Path $RepoRoot 'apps\secure-adapter'))) {
+      Write-Warn "缺少仓库源码（apps\secure-adapter），自动准备（clone + install）..."
+      Ensure-RepoReady | Out-Null
+    }
+    if ($RepoRoot -and -not (Test-Path (Join-Path $RepoRoot 'node_modules\.bin\tsx.cmd'))) {
+      Write-Warn "缺少 node_modules，自动重装依赖..."
+      Install-Deps -Repo $RepoRoot
+    }
+    Sync-UpstreamIfNeeded | Out-Null
+    if ($i -ge 2 -and $RepoRoot) {
+      Write-Warn "尝试编译 Secure Adapter dist（自愈 build）..."
+      $script:Build = $true
+      Install-Deps -Repo $RepoRoot
+    }
+    if ((Test-PortBusy $ListenPort) -and -not (Test-Health)) {
+      Write-Warn "端口 $ListenPort 被占用但不是健康 Adapter，尝试停旧..."
+      Stop-Adapter; Start-Sleep -Seconds 1
+      if (Test-PortBusy $ListenPort) { $np = Find-FreePort; if ($np) { Switch-Port $np } }
+    }
+    Stop-Adapter; Start-Sleep -Seconds 1
+    Start-Adapter
+    for ($w = 0; $w -lt 12; $w++) { if (Test-Health) { break }; Start-Sleep -Seconds 1 }
+    if (Test-Health) { return $true }
+  }
+  return $false
+}
+
 # ---- Setup / Uninstall / Stop / Status -------------------------------------
 if ($Setup) {
   if (Ensure-RepoReady) { Write-Info "仓库已就绪 ✅  可继续: .\install-csapi-secure.ps1 -Start" } else { exit 1 }
@@ -268,10 +426,8 @@ if ($Uninstall) {
   return
 }
 if ($Stop) {
-  Get-Process -Name node -ErrorAction SilentlyContinue |
-    Where-Object { $_.Path -and $_.CommandLine -match 'secure-adapter' } |
-    ForEach-Object { $_.Kill() } 2>$null
-  Write-Info "已尝试停止 Adapter（如有）。Windows 下建议直接关闭 Adapter 窗口。"
+  Stop-Adapter
+  Write-Info "已尝试停止 Adapter（如有）。Windows 下也可直接关闭 Adapter 窗口。"
   return
 }
 if ($Status) {
@@ -324,6 +480,7 @@ if (-not $loopback) {
   [System.Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($bytes)
   $loopback = ($bytes | ForEach-Object { $_.ToString('x2') }) -join ''
 }
+$script:loopback = $loopback
 
 if ($Print) {
   Write-Info "以下为将写入的配置（-Print：未写任何文件 / 环境变量）:"
@@ -396,20 +553,26 @@ $env:OPENAI_BASE_URL    = "$AdapterBase/v1"
 $env:OPENAI_API_KEY     = $loopback
 Write-Info "已写用户级 CLI 环境变量（指向本机 Adapter；重复运行只覆盖，不堆叠）。"
 
+# ---- 收尾：不只打印“下一步”，而是自己拉起 + 自检 + 自愈 --------------------
 if ($Service) { Install-Service }
-elseif ($Start) { Start-Adapter }
+
+if (Repair-And-Verify) {
+  Write-Host ""
+  Write-Info "已验证通过 ✅  本机 Adapter /health 正常，监听 $AdapterBase"
+  Write-Info "health: $(Get-HealthSummary)"
+  Write-Info "CLI 变量：当前窗口已即时生效；新终端自动带上。"
+  Write-Info "安全：真实 key 只在 $EnvFile 与密文 envelope 内；中间人只见 cg-mitm/1 密文。fail-closed，绝不回退明文。"
+  return
+}
 
 Write-Host ""
-Write-Info "下一步："
-if (-not $RepoRoot) {
-  Write-Info "  0) 启动 Adapter 需仓库源码：设 `$env:CSAPI_REPO_DIR，或让脚本自动 clone（去掉 -NoClone）。"
+Write-Err "已自动修复 3 次仍无法让 Adapter 通过 /health。最可能的原因（需人工处理）："
+if (-not (Get-Command node -ErrorAction SilentlyContinue)) {
+  Write-Err "  · 未安装 node（Adapter 需 node>=22）。装好 Node 后重跑本脚本，其余步骤会自动完成。"
+} elseif (-not $RepoRoot -or -not (Test-Path (Join-Path $RepoRoot 'apps\secure-adapter'))) {
+  Write-Err "  · 未能获取仓库源码（clone 失败或 -NoClone）。装好 git+网络，或设 `$env:CSAPI_REPO_DIR 后重跑。"
 } else {
-  Write-Info "  0) 依赖已就绪（如需重装: cd `"$RepoRoot`"; npm install）。"
+  Write-Err "  · Adapter 启动后 fail-closed（多为服务端未开安全通道 / 证书 / 根指纹问题）。手动运行 $Launcher 看错误。"
+  Write-Err "  · 亦可先用方案 B（明文兼容）临时试用：.\install-csapi.ps1"
 }
-if (-not $Start -and -not $Service) {
-  Write-Info "  1) 启动本机 Adapter:  .\install-csapi-secure.ps1 -Start   （或 -Service 注册登录自启）"
-}
-Write-Info "  2) 新终端自动带上 CLI 变量；当前窗口已即时生效。"
-Write-Info "  3) 验证:  Invoke-RestMethod $AdapterBase/health"
-Write-Host ""
-Write-Info "安全：真实 key 只在 $EnvFile 与密文 envelope 内；网络中间人只见 cg-mitm/1 密文。fail-closed，绝不回退明文。"
+exit 1
