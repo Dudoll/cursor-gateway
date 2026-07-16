@@ -11,6 +11,7 @@ import { registerRoutes } from "./routes.js";
 import { registerTelegram } from "./telegram.js";
 import { createDbBackend } from "./csapi/backend.js";
 import { isCsapiPath, registerCsapi } from "./csapi/server.js";
+import { loadCgSecureConfig, registerCsapiSecure } from "./csapi/secure.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -77,7 +78,7 @@ async function main() {
       app.log.warn("CSAPI_ENABLED is true but CSAPI_API_KEYS is empty; csapi routes will reject all requests");
     }
     const backend = await createDbBackend();
-    registerCsapi(app, {
+    const csapiDeps = {
       backend,
       config: {
         enabled: config.csapi.enabled,
@@ -88,8 +89,22 @@ async function main() {
         runTimeoutMs: config.csapi.runTimeoutMs,
         allowWrites: config.csapi.allowWrites
       }
-    });
-    app.log.info("csapi facade mounted at /v1/* (plaintext compat, not E2EE)");
+    };
+    if (!config.cg.requireSecure) {
+      registerCsapi(app, csapiDeps);
+      app.log.info("csapi facade mounted at /v1/* (plaintext compat, not E2EE)");
+    } else {
+      app.log.info("CG_REQUIRE_SECURE is true; plaintext /v1/* routes are not mounted");
+    }
+    if (config.cg.secureEnabled) {
+      const secureConfig = await loadCgSecureConfig();
+      if (secureConfig) {
+        registerCsapiSecure(app, { ...csapiDeps, secure: secureConfig });
+        app.log.info("cg-mitm secure channel mounted at /cg/v1/*");
+      } else {
+        app.log.warn("CG_SECURE_ENABLED is true but secure config failed to load; /cg/v1/* not mounted");
+      }
+    }
   }
 
   const webDist = join(__dirname, "../../web/dist");

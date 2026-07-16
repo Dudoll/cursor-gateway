@@ -58,7 +58,19 @@ const envSchema = z.object({
   CSAPI_DEFAULT_WORKSPACE_ID: z.string().default(""),
   CSAPI_MAX_CONCURRENCY_PER_KEY: z.coerce.number().int().positive().default(4),
   CSAPI_RUN_TIMEOUT_MS: z.coerce.number().int().positive().default(300_000),
-  CSAPI_ALLOW_WRITES: booleanEnv(false)
+  CSAPI_ALLOW_WRITES: booleanEnv(false),
+  // --- cg-mitm/1 secure csapi channel (application-layer anti-MITM). ---
+  CG_SECURE_ENABLED: booleanEnv(false),
+  CG_REQUIRE_SECURE: booleanEnv(false),
+  CG_SERVER_CERT_FILE: z.string().default(""),
+  CG_SERVER_PREVIOUS_CERT_FILE: z.string().default(""),
+  CG_SERVER_HPKE_KEY_FILE: z.string().default(""),
+  CG_SERVER_SIGNING_KEY_FILE: z.string().default(""),
+  CG_TRUST_ROOTS_JSON: z.string().default(""),
+  CG_TRUST_ROOTS_FILE: z.string().default(""),
+  CG_MASTER_KEY: z.string().default(""),
+  CG_MASTER_KEY_FILE: z.string().default(""),
+  CG_PAD_BUCKETS: z.string().default("512,2048,8192,32768,131072")
 });
 
 const splitCsv = (value: string) =>
@@ -110,6 +122,19 @@ export const config = {
     maxConcurrencyPerKey: parsed.CSAPI_MAX_CONCURRENCY_PER_KEY,
     runTimeoutMs: parsed.CSAPI_RUN_TIMEOUT_MS,
     allowWrites: parsed.CSAPI_ALLOW_WRITES
+  },
+  cg: {
+    secureEnabled: parsed.CG_SECURE_ENABLED,
+    requireSecure: parsed.CG_REQUIRE_SECURE,
+    serverCertFile: parsed.CG_SERVER_CERT_FILE.trim(),
+    previousServerCertFile: parsed.CG_SERVER_PREVIOUS_CERT_FILE.trim(),
+    serverHpkeKeyFile: parsed.CG_SERVER_HPKE_KEY_FILE.trim(),
+    serverSigningKeyFile: parsed.CG_SERVER_SIGNING_KEY_FILE.trim(),
+    trustRootsJson: parsed.CG_TRUST_ROOTS_JSON.trim(),
+    trustRootsFile: parsed.CG_TRUST_ROOTS_FILE.trim(),
+    masterKey: parsed.CG_MASTER_KEY.trim(),
+    masterKeyFile: parsed.CG_MASTER_KEY_FILE.trim(),
+    padBuckets: parsed.CG_PAD_BUCKETS.trim()
   }
 };
 

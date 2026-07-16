@@ -500,5 +500,14 @@ export function registerCsapi(app: FastifyInstance, deps: CsapiDeps) {
 export function isCsapiPath(url: string | undefined): boolean {
   if (!url) return false;
   const path = url.split("?")[0];
-  return path === "/health" || path === "/v1/models" || path === "/v1/messages" || path === "/v1/chat/completions";
+  return (
+    path === "/health" ||
+    path === "/v1/models" ||
+    path === "/v1/messages" ||
+    path === "/v1/chat/completions" ||
+    path === "/cg/v1/server-keys" ||
+    path === "/cg/v1/enroll" ||
+    path === "/cg/v1/exchange" ||
+    path === "/cg/v1/cancel"
+  );
 }
