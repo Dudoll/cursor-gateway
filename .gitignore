@@ -36,6 +36,12 @@ runner-e2ee-state.dat
 e2ee-client-state.json
 e2ee-unseal.status
 
+# cg-mitm/1 local dev material (roots, server keys/certs, adapter state)
+var/
+cg-mitm-adapter-state.json
+cg-server-*.json
+cg-trust-root-*.json
+
 data/
 logs/
 *.log

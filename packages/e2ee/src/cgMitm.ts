@@ -112,6 +112,28 @@ export function buildS2cAad(v: {
   };
 }
 
+/**
+ * Canonical transcript the Adapter's device signing key signs on every exchange
+ * (first and subsequent frames). The server verifies it with the enrolled device
+ * cert's ES256 public key. Long-term keys never enter an HTTP header — the
+ * signature travels inside the encrypted `cgExchangeInner.deviceAuth`.
+ */
+export function buildCgDeviceAuthTranscript(v: {
+  sessionId: string;
+  deviceId: string;
+  sequence: number;
+  idempotencyKey: string;
+}): JsonValue {
+  return {
+    protocol: CG_MITM_PROTOCOL,
+    purpose: "device-auth",
+    sessionId: v.sessionId,
+    deviceId: v.deviceId,
+    sequence: v.sequence,
+    idempotencyKey: v.idempotencyKey
+  };
+}
+
 export function buildEnrollContext(env: {
   serverCertId: string;
   epoch: number;

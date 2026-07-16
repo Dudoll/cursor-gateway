@@ -1,6 +1,7 @@
 # Secure Adapter 骨架（规格级伪代码）
 
-> 拟落地：**`apps/secure-adapter/`**（新 workspace，Node ≥22，`type:module`；与 `apps/windows-runner` 同栈）。
+> **已落地**：`apps/secure-adapter/`（Node ≥22，`type:module`；与 `apps/windows-runner` 同栈）。
+> 集成测试：`apps/secure-adapter/test/adapter.test.ts`；本地 dev：`scripts/csapi/dev-cg-mitm-setup.sh`。
 > 职责：在本机 loopback 暴露 Anthropic/OpenAI 兼容门面 → 封 `cg-mitm/1` envelope → 经 TLS 送 `/cg/v1/*`
 > → 解密 s2c → 本地重放标准流给 CLI。**明文只在本进程内**；**fail-closed，绝不回退明文直连 csapi**。
 

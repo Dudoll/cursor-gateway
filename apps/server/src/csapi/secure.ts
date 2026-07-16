@@ -19,6 +19,7 @@ import {
   type CgDeviceCert,
   type CgExchangeInner,
   type CgExchangeRequest,
+  type CgFrameType,
   type CgServerIdentityCert,
   type CgServerKeysResponse,
   type E2eeCiphertext,
@@ -26,6 +27,7 @@ import {
 } from "@cursor-gateway/shared";
 import {
   buildC2sAad,
+  buildCgDeviceAuthTranscript,
   buildEnrollAad,
   buildEnrollContext,
   buildHandshakeContext,
@@ -51,6 +53,7 @@ import { createCsapi } from "./server.js";
 import {
   buildAnthropicResponse,
   buildOpenAiResponse,
+  chunkText,
   extractSystem,
   matchApiKey,
   normalizeMessages
@@ -305,6 +308,9 @@ export function createCsapiSecure(deps: CsapiSecureDeps) {
   const usedEnc = new Set<string>();
   const deviceCerts = new Map<string, CgDeviceCert>();
   const idempotency = new Map<string, CompletedRunLike>();
+  // idempotencyKey -> in-flight AbortController, so /cg/v1/cancel and client
+  // disconnects can abort the underlying execute().
+  const inflight = new Map<string, AbortController>();
 
   function fail(reason: string): never {
     throw new CgSecureError(reason);
@@ -381,21 +387,61 @@ export function createCsapiSecure(deps: CsapiSecureDeps) {
     return encryptJson(session.sessionRoot, S2C_PURPOSE, aad, withPad(value as Record<string, unknown>, cfg.padBuckets));
   }
 
+  function beginCgStream(reply: FastifyReply): void {
+    reply.raw.writeHead(200, {
+      "content-type": "text/event-stream; charset=utf-8",
+      "cache-control": "no-store",
+      connection: "keep-alive",
+      "x-accel-buffering": "no"
+    });
+    reply.hijack();
+  }
+
+  // Seal one ciphertext SSE frame and write it as `event: cg / data: <json>`.
+  // The cleartext wire frame carries sessionId/sequence/frameType so the Adapter
+  // can rebuild the AAD before decrypting; the AEAD binds all three.
+  async function writeCgFrame(
+    reply: FastifyReply,
+    session: SecureSession,
+    frameType: CgFrameType,
+    data: Record<string, unknown>
+  ): Promise<void> {
+    const sequence = ++session.lastS2cSeq;
+    const aad = buildS2cAad({ sessionId: session.sessionId, sequence, frameType });
+    const inner = withPad(
+      { kind: "sse-frame-inner", frameType, sequence, data } as Record<string, unknown>,
+      cfg.padBuckets
+    );
+    const payload = await encryptJson(session.sessionRoot, S2C_PURPOSE, aad, inner);
+    const frame = {
+      protocol: CG_MITM_PROTOCOL,
+      kind: "sse-frame",
+      sessionId: session.sessionId,
+      sequence,
+      frameType,
+      payload
+    };
+    reply.raw.write(`event: cg\ndata: ${JSON.stringify(frame)}\n\n`);
+  }
+
+  function writeCgHeartbeat(reply: FastifyReply): void {
+    reply.raw.write(": keepalive\n\n");
+  }
+
   async function verifyDeviceAuth(
     env: CgExchangeRequest,
     inner: CgExchangeInner
   ): Promise<void> {
     const deviceCert = deviceCerts.get(env.deviceId);
     if (!deviceCert) fail("device_not_enrolled");
+    if (inner.deviceAuth.keyId !== deviceCert.signingKey.keyId) fail("device_auth_key_mismatch");
     const pub = await importSigningPublicKey(deviceCert.signingKey.publicKey);
-    const transcript = {
-      protocol: CG_MITM_PROTOCOL,
-      purpose: "device-auth",
+    const transcript = buildCgDeviceAuthTranscript({
       sessionId: env.sessionId,
       deviceId: env.deviceId,
       sequence: env.sequence,
       idempotencyKey: env.idempotencyKey
-    };
+    });
     const valid = await verifyValue(transcript, inner.deviceAuth, pub);
     if (!valid) fail("device_auth_invalid");
   }
@@ -469,63 +515,117 @@ export function createCsapiSecure(deps: CsapiSecureDeps) {
         return sendCgError(reply, "malformed_envelope");
       }
 
+      // --- pre-flight: handshake, decrypt, auth (all fail-closed before we
+      // commit to a streaming response so errors stay plain JSON) ---
+      let session: SecureSession;
+      let inner: CgExchangeInner;
+      let keyId: string;
       try {
-        const session = await ensureSession(env);
+        session = await ensureSession(env);
         checkC2sSequence(session, env.sequence);
-        const inner = cgExchangeInnerSchema.parse(
+        inner = cgExchangeInnerSchema.parse(
           await openC2s(session, { ...env, kind: "exchange-request" })
         );
         await verifyDeviceAuth(env, inner);
-
-        const cached = idempotency.get(env.idempotencyKey);
-        const keyId = matchApiKey(inner.apiKey, deps.config.apiKeys);
-        if (!keyId) return sendCgError(reply, "authentication_error");
-
-        const body = inner.body as Record<string, unknown>;
-        if (body.stream === true) {
-          return sendCgError(reply, "stream_not_implemented", 501);
-        }
-
-        const result =
-          cached ??
-          (await csapi.execute(toExecuteInput(keyId, inner, deps)));
-        idempotency.set(env.idempotencyKey, result);
-
-        const responseBody =
-          inner.wire === "anthropic"
-            ? buildAnthropicResponse({
-                id: `msg_${crypto.randomUUID().replace(/-/g, "").slice(0, 24)}`,
-                model: modelOf(inner),
-                text: result.text,
-                inputTokens: result.inputTokens,
-                outputTokens: result.outputTokens
-              })
-            : buildOpenAiResponse({
-                id: `chatcmpl-${crypto.randomUUID().replace(/-/g, "").slice(0, 24)}`,
-                model: modelOf(inner),
-                text: result.text,
-                inputTokens: result.inputTokens,
-                outputTokens: result.outputTokens
-              });
-
-        const payload = await sealS2c(session, "done", {
-          kind: "response-inner",
-          ok: true,
-          httpStatus: 200,
-          wire: inner.wire,
-          body: responseBody
-        });
-        return reply.send({
-          protocol: CG_MITM_PROTOCOL,
-          kind: "exchange-response",
-          sessionId: session.sessionId,
-          sequence: session.lastS2cSeq,
-          createdAt: new Date().toISOString(),
-          payload
-        });
+        const matched = matchApiKey(inner.apiKey, deps.config.apiKeys);
+        if (!matched) return sendCgError(reply, "authentication_error");
+        keyId = matched;
       } catch (error) {
         return sendCgError(reply, cgReason(error));
       }
+
+      const cached = idempotency.get(env.idempotencyKey);
+      const body = inner.body as Record<string, unknown>;
+      const wantsStream = body.stream === true;
+
+      const abort = new AbortController();
+      inflight.set(env.idempotencyKey, abort);
+      const cleanup = () => {
+        if (inflight.get(env.idempotencyKey) === abort) inflight.delete(env.idempotencyKey);
+      };
+
+      if (!wantsStream) {
+        try {
+          const result =
+            cached ?? (await csapi.execute(toExecuteInput(keyId, inner, deps, abort.signal)));
+          idempotency.set(env.idempotencyKey, result);
+
+          const responseBody =
+            inner.wire === "anthropic"
+              ? buildAnthropicResponse({
+                  id: `msg_${crypto.randomUUID().replace(/-/g, "").slice(0, 24)}`,
+                  model: modelOf(inner),
+                  text: result.text,
+                  inputTokens: result.inputTokens,
+                  outputTokens: result.outputTokens
+                })
+              : buildOpenAiResponse({
+                  id: `chatcmpl-${crypto.randomUUID().replace(/-/g, "").slice(0, 24)}`,
+                  model: modelOf(inner),
+                  text: result.text,
+                  inputTokens: result.inputTokens,
+                  outputTokens: result.outputTokens
+                });
+
+          const payload = await sealS2c(session, "done", {
+            kind: "response-inner",
+            ok: true,
+            httpStatus: 200,
+            wire: inner.wire,
+            body: responseBody
+          });
+          return reply.send({
+            protocol: CG_MITM_PROTOCOL,
+            kind: "exchange-response",
+            sessionId: session.sessionId,
+            sequence: session.lastS2cSeq,
+            createdAt: new Date().toISOString(),
+            payload
+          });
+        } catch (error) {
+          return sendCgError(reply, cgReason(error));
+        } finally {
+          cleanup();
+        }
+      }
+
+      // --- ciphertext SSE: open → delta* → usage → done (or error) ---
+      beginCgStream(reply);
+      reply.raw.on("close", () => {
+        if (!reply.raw.writableFinished) abort.abort();
+      });
+      const heartbeat = setInterval(() => writeCgHeartbeat(reply), 10_000);
+      try {
+        const result =
+          cached ?? (await csapi.execute(toExecuteInput(keyId, inner, deps, abort.signal)));
+        idempotency.set(env.idempotencyKey, result);
+        await writeCgFrame(reply, session, "open", {
+          id: `msg_${crypto.randomUUID().replace(/-/g, "").slice(0, 24)}`,
+          model: modelOf(inner),
+          inputTokens: result.inputTokens
+        });
+        for (const chunk of chunkText(result.text)) {
+          await writeCgFrame(reply, session, "delta", { text: chunk });
+        }
+        await writeCgFrame(reply, session, "usage", {
+          inputTokens: result.inputTokens,
+          outputTokens: result.outputTokens
+        });
+        await writeCgFrame(reply, session, "done", {});
+      } catch (error) {
+        if (!abort.signal.aborted) {
+          try {
+            await writeCgFrame(reply, session, "error", { errorKind: cgReason(error) });
+          } catch {
+            // connection already gone; nothing more to do.
+          }
+        }
+      } finally {
+        clearInterval(heartbeat);
+        cleanup();
+        reply.raw.end();
+      }
+      return reply;
     },
 
     async handleCancel(request: FastifyRequest, reply: FastifyReply) {
@@ -544,6 +644,8 @@ export function createCsapiSecure(deps: CsapiSecureDeps) {
         const inner = cgCancelInnerSchema.parse(
           await openC2s(session, { ...env, kind: "cancel-request" })
         );
+        const controller = inflight.get(inner.idempotencyKey);
+        if (controller) controller.abort();
         idempotency.delete(inner.idempotencyKey);
         return reply.send({ ok: true });
       } catch (error) {

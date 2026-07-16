@@ -14,6 +14,9 @@
  *                                      [--encryption-key-file PATH --signing-key-file PATH | --runner-state-file PATH]
  *                                      [--out PATH]
  *   trust-root-cli.ts init-cg-root     [--epoch N] [--out-dir DIR] [--master-key-file PATH]
+ *   trust-root-cli.ts gen-server-keys  [--out-dir DIR] [--seal --master-key-file PATH]
+ *                                      [--hpke-out PATH --hpke-pub-out PATH]
+ *                                      [--signing-out PATH --signing-pub-out PATH]
  *   trust-root-cli.ts issue-server-cert --server-id ID --allowed-origins a,b
  *                                      --hpke-key-file PATH --signing-key-file PATH
  *                                      [--validity-days N] [--epoch N]
@@ -49,9 +52,13 @@ import {
   type E2eeTrustRootPublic
 } from "@cursor-gateway/shared";
 import {
+  createKeyDescriptor,
   encodeCrockfordGrouped,
+  exportPrivateJwk,
   generateCgTrustRootKeyPair,
+  generateHpkeKeyPair,
   generateRecoverySecret,
+  generateSigningKeyPair,
   generateTrustRootKeyPair,
   importCgEd25519PrivateKey,
   importTrustRootPrivateKey,
@@ -446,6 +453,53 @@ async function cmdInitCgRoot(args: Args): Promise<void> {
   );
 }
 
+async function cmdGenServerKeys(args: Args): Promise<void> {
+  const outDir = optionalString(args, "out-dir") ?? GATEWAY_DIR;
+  const hpkePrivatePath = optionalString(args, "hpke-out") ?? join(outDir, "cg-server-hpke-key.json");
+  const hpkePubPath = optionalString(args, "hpke-pub-out") ?? join(outDir, "cg-server-hpke-pub.json");
+  const signingPrivatePath =
+    optionalString(args, "signing-out") ?? join(outDir, "cg-server-signing-key.json");
+  const signingPubPath =
+    optionalString(args, "signing-pub-out") ?? join(outDir, "cg-server-signing-pub.json");
+  const seal = args.seal === true;
+
+  const hpkePair = await generateHpkeKeyPair();
+  const signingPair = await generateSigningKeyPair(true);
+  const hpkeDescriptor = await createKeyDescriptor(hpkePair.publicKey);
+  const signingDescriptor = await createKeyDescriptor(signingPair.publicKey);
+  const hpkePrivateJwk = await exportPrivateJwk(hpkePair.privateKey);
+  const signingPrivateJwk = await exportPrivateJwk(signingPair.privateKey);
+
+  const writePrivate = (path: string, privateJwk: JsonWebKey): void => {
+    const json = JSON.stringify({ privateJwk });
+    if (seal) {
+      const masterKey = resolveMasterKey(args);
+      const sealed = sealWithMasterKey(new TextEncoder().encode(json), masterKey);
+      writeFileAtomic(path, new TextDecoder().decode(sealed), 0o600);
+    } else {
+      writeFileAtomic(path, json, 0o600);
+    }
+  };
+
+  writePrivate(hpkePrivatePath, hpkePrivateJwk);
+  writePrivate(signingPrivatePath, signingPrivateJwk);
+  writeFileAtomic(hpkePubPath, JSON.stringify(hpkeDescriptor, null, 2), 0o644);
+  writeFileAtomic(signingPubPath, JSON.stringify(signingDescriptor, null, 2), 0o644);
+
+  console.log("Generated cg-mitm server HPKE + ES256 signing keypairs");
+  console.log(`  hpke private:    ${hpkePrivatePath} (${seal ? "sealed" : "plaintext"}, 0600)`);
+  console.log(`  hpke public:     ${hpkePubPath}`);
+  console.log(`  signing private: ${signingPrivatePath} (${seal ? "sealed" : "plaintext"}, 0600)`);
+  console.log(`  signing public:  ${signingPubPath}`);
+  console.log(
+    "Next: issue-server-cert --hpke-key-file " +
+      `${hpkePubPath} --signing-key-file ${signingPubPath} ...`
+  );
+  console.log(
+    "Set CG_SERVER_HPKE_KEY_FILE / CG_SERVER_SIGNING_KEY_FILE to the private files on the Gateway."
+  );
+}
+
 async function cmdIssueServerCert(args: Args): Promise<void> {
   const outDir = optionalString(args, "out-dir") ?? GATEWAY_DIR;
   const privatePath =
@@ -586,13 +640,15 @@ async function main() {
       return cmdIssueCert(args);
     case "init-cg-root":
       return cmdInitCgRoot(args);
+    case "gen-server-keys":
+      return cmdGenServerKeys(args);
     case "issue-server-cert":
       return cmdIssueServerCert(args);
     case "recovery-code":
       return cmdRecoveryCode(args);
     default:
       console.error(
-        "Usage: trust-root-cli.ts <init-root|issue-cert|init-cg-root|issue-server-cert|recovery-code> [options]\n" +
+        "Usage: trust-root-cli.ts <init-root|issue-cert|init-cg-root|gen-server-keys|issue-server-cert|recovery-code> [options]\n" +
           "See scripts/e2ee/README.md for full option reference."
       );
       process.exit(1);

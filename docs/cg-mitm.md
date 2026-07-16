@@ -1,7 +1,7 @@
 # cg-mitm/1 — csapi 抗 MITM 应用层信道（规格 / P0 冻结）
 
-> 状态：**规格级伪代码（P0）**。本文件与 `docs/cg-mitm-spec/` 下的拆分文件只做**规格冻结**，
-> 不改动 `packages/*` / `apps/*` 的生产运行代码。落地从 **P1（密码学面）** 开始。
+> 状态：**P3 已落地**（`apps/secure-adapter/` + `/cg/v1/*` 流式 SSE + 集成测试绿）。
+> P0 规格见 `docs/cg-mitm-spec/`；P1–P3 代码已进 `packages/*` / `apps/*`。
 > 上游已批准的完整方案见「抗 MITM 完整方案」评审结论（agent `623b1aef`）；本目录把该结论
 > 细化为**可直接开工的协议规格 + 伪代码**，并与仓库真实 API 对齐。
 
@@ -154,6 +154,22 @@ Windows Runner 已是 E2EE 密文中继（`apps/windows-runner/src/e2eeProcessor
 | D1–D2 | bootstrap 篡改 / 伪 minisign 公钥 | 验签 / 指纹不匹配中止安装 |
 | E1 | padding / jitter | 长度落桶、时序抖动（仅记录降低程度，不承诺不可识别） |
 
+### P3 自动化验收（`apps/secure-adapter/test/adapter.test.ts`，2026-07-16）
+
+| # | 场景 | 结果 |
+|---|---|---|
+| A2 | 篡改 exchange ciphertext | `c2s_decrypt_failed` |
+| A3 | 重放同一 exchange envelope | `c2s_sequence_replayed` |
+| A4 | 伪造 server-keys（攻击者根冒充受害者指纹） | `FailClosedError` 启动拒绝 |
+| A5 | 未 pin 的根指纹 | `root_fingerprint_not_pinned` |
+| B1 | Anthropic 非流式 exchange | 标准 `message` 形状 |
+| B2 | OpenAI 非流式 exchange | 标准 `chat.completion` 形状 |
+| B3 | 流式 ciphertext SSE → 标准 Anthropic SSE 重放 | `open`→`delta*`→`usage`→`done` |
+| B4 | loopback facade 端到端（含 401 本地 key） | HTTP 200 + SSE 帧正确 |
+| — | 错误 API key enroll | `enroll_unauthorized` |
+
+本地 dev 端到端：`scripts/csapi/dev-cg-mitm-setup.sh` 生成信任材料 → `CG_SECURE_ENABLED=true` 启 server → `npm run dev:secure-adapter` 启 Adapter → CLI 指向 `http://127.0.0.1:8788`。
+
 ## 11. 实施阶段（P0–P5）
 
 | 阶段 | 内容 | 工作日 | 回滚 |
@@ -161,7 +177,7 @@ Windows Runner 已是 E2EE 密文中继（`apps/windows-runner/src/e2eeProcessor
 | **P0 冻结** | 威胁模型 + `cg-mitm/1` 规格 + schema 评审（**本目录**） | 2 | 无（纯文档） |
 | **P1 密码学面** | `packages/shared` 加 `cg-mitm/1` schema + `alg` 判别；`packages/e2ee` 加 Ed25519 根验签 + 新 purpose 派生；扩展 `trust-root-cli` 签发服务端证书 | 4 | 纯新增导出，删除即回滚 |
 | **P2 服务端 `/cg/v1/*`** | 新 `apps/server/src/csapi/secure.ts`；接入 `execute()`；`isCsapiPath` 放行；`CG_SECURE_ENABLED` 默认关 | 5 | 关 `CG_SECURE_ENABLED` |
-| **P3 Adapter + Runner mTLS** | 新 `apps/secure-adapter`；远程 Runner mTLS + 证书固定 | 6 | 卸载 Adapter 回明文；mTLS 开关 |
+| **P3 Adapter + Runner mTLS** | 新 `apps/secure-adapter`（**已落地**）；远程 Runner mTLS + 证书固定（**待 P3 后半**） | 6 | 卸载 Adapter 回明文；mTLS 开关 |
 | **P4 落盘 / 日志 / 再加密 / padding** | DB 密文 + at-rest key；日志 / telemetry / core dump 加固；Runner 再加密；padding+jitter | 4 | 各项独立开关 |
 | **P5 安全 bootstrap + 收敛** | minisign/Sigstore/平台签名 + 两段式安装器；灰度后开 `CG_REQUIRE_SECURE` | 4 | 保留明文端点、延后 REQUIRE |
 

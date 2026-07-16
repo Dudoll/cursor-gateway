@@ -243,6 +243,21 @@ export const cgSseFrameInnerSchema = z
   .strict();
 export type CgSseFrameInner = z.infer<typeof cgSseFrameInnerSchema>;
 
+// Cleartext envelope around each ciphertext SSE frame (event: cg / data: <json>).
+// frameType + sequence are cleartext so the Adapter can rebuild the s2c AAD
+// before decrypting; the AEAD binds them, so a MITM cannot forge/reorder frames.
+export const cgSseWireFrameSchema = z
+  .object({
+    protocol: z.literal(CG_MITM_PROTOCOL),
+    kind: z.literal("sse-frame"),
+    sessionId: base64Url(43).length(43),
+    sequence: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+    frameType: cgFrameTypeSchema,
+    payload: e2eeCiphertextSchema
+  })
+  .strict();
+export type CgSseWireFrame = z.infer<typeof cgSseWireFrameSchema>;
+
 // --- POST /cg/v1/cancel ---
 export const cgCancelInnerSchema = z
   .object({
