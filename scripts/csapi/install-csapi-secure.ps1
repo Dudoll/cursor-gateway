@@ -81,6 +81,13 @@ $CloneDir    = if ($env:CSAPI_CLONE_DIR) { $env:CSAPI_CLONE_DIR } else { Join-Pa
 $AdapterBase = "http://${ListenHost}:${ListenPort}"
 $TaskName    = 'CsapiSecureAdapter'
 
+# ---- 托管 Node（缺 node/版本不足时自动下载到用户目录，无需管理员）----------
+$NodeMinMajor   = 22
+$NodeVersion    = if ($env:CSAPI_NODE_VERSION) { $env:CSAPI_NODE_VERSION } else { 'v22.14.0' }
+$NodeMirror     = if ($env:CSAPI_NODE_MIRROR) { $env:CSAPI_NODE_MIRROR.TrimEnd('/') } else { 'https://nodejs.org/dist' }
+$NodeHome       = Join-Path $CfgDir 'node'
+$ManagedNodeBin = Join-Path $NodeHome 'current'   # Windows: node.exe / npm.cmd 直接在此目录
+
 $vars = @('ANTHROPIC_BASE_URL','ANTHROPIC_API_KEY','OPENAI_BASE_URL','OPENAI_API_KEY')
 
 function Write-Info { param($m) Write-Host "[csapi-secure] $m" -ForegroundColor Cyan }
@@ -138,13 +145,117 @@ function Invoke-CloneRepo {
   Write-Err "git clone 两次均失败（网络 / 仓库可见性 / 认证）。请手动 clone 后设 `$env:CSAPI_REPO_DIR。"; return $null
 }
 
+# ---- Node 检测 + 自动下载（缺失/版本不足时装到用户目录，无需管理员）--------
+function Test-NodeOk {
+  $n = Get-Command node -ErrorAction SilentlyContinue
+  if (-not $n) { return $false }
+  try {
+    $v = (& node -v) 2>$null    # e.g. v22.14.0
+    if ($v -match '^v?(\d+)\.') { return ([int]$Matches[1] -ge $NodeMinMajor) }
+  } catch {}
+  return $false
+}
+
+function Get-NodeArch {
+  $a = $env:PROCESSOR_ARCHITECTURE
+  if (-not $a) { $a = '' }
+  switch -Regex ($a.ToUpper()) {
+    'ARM64'        { return 'arm64' }
+    'AMD64|X64'    { return 'x64' }
+    'X86'          { return 'x86' }
+    default        { return 'x64' }
+  }
+}
+
+# 下载并解压官方 Node win zip 到 $NodeHome，刷新 current 目录联接（junction，无需管理员）。
+function Install-Node {
+  $ver = $NodeVersion
+  if ($ver -notmatch '^v') { $ver = "v$ver" }
+  $arch = Get-NodeArch
+  $name = "node-$ver-win-$arch"
+  $url  = "$NodeMirror/$ver/$name.zip"
+  if (-not (Test-Path $NodeHome)) { New-Item -ItemType Directory -Path $NodeHome -Force | Out-Null }
+  $zip = Join-Path $NodeHome "$name.zip"
+  Write-Info "自动下载 Node $ver（win-$arch）→ $NodeHome ..."
+  Write-Info "  来源: $url"
+  try {
+    $ProgressPreference = 'SilentlyContinue'
+    Invoke-WebRequest -Uri $url -OutFile $zip -TimeoutSec 300 -UseBasicParsing
+  } catch {
+    Remove-Item $zip -ErrorAction SilentlyContinue
+    Write-Err "下载 Node 失败: $url（$($_.Exception.Message)）"
+    Write-Err "可换镜像重试: `$env:CSAPI_NODE_MIRROR='https://mirrors.tuna.tsinghua.edu.cn/nodejs-release'; 再重跑本脚本。"
+    Write-Err "或手动下载 zip 解压到 $NodeHome\：https://nodejs.org/dist/$ver/"
+    return $false
+  }
+  $target = Join-Path $NodeHome $name
+  if (Test-Path $target) { Remove-Item -Recurse -Force $target -ErrorAction SilentlyContinue }
+  try {
+    Expand-Archive -Path $zip -DestinationPath $NodeHome -Force
+  } catch {
+    Write-Err "解压 Node 失败（Expand-Archive）：$($_.Exception.Message)"
+    Remove-Item $zip -ErrorAction SilentlyContinue
+    return $false
+  }
+  Remove-Item $zip -ErrorAction SilentlyContinue
+  if (-not (Test-Path (Join-Path $target 'node.exe'))) {
+    Write-Err "解压后未找到 node.exe（$target\node.exe）。"
+    return $false
+  }
+  # 刷新稳定目录联接 current → 具体版本目录（junction 无需管理员权限）。
+  if (Test-Path $ManagedNodeBin) { Remove-Item -Recurse -Force $ManagedNodeBin -ErrorAction SilentlyContinue }
+  try {
+    New-Item -ItemType Junction -Path $ManagedNodeBin -Target $target -ErrorAction Stop | Out-Null
+  } catch {
+    # 回退：无法建 junction 时直接复制（少见）。
+    try { Copy-Item -Recurse -Force $target $ManagedNodeBin } catch {
+      # 再回退：直接把 ManagedNodeBin 指到版本目录（改用脚本级变量）。
+      $script:ManagedNodeBin = $target
+    }
+  }
+  return (Test-Path (Join-Path $ManagedNodeBin 'node.exe'))
+}
+
+# 确保可用 node：满足则直接用；否则复用已托管的，再不行就下载。成功后加入本会话 PATH。
+function Ensure-Node {
+  if (Test-NodeOk) { return $true }
+  if (Test-Path (Join-Path $ManagedNodeBin 'node.exe')) {
+    $env:PATH = "$ManagedNodeBin;$env:PATH"
+    if (Test-NodeOk) { Write-Info "复用已托管的 Node: $(& node -v)（$ManagedNodeBin）"; return $true }
+  }
+  if (Get-Command node -ErrorAction SilentlyContinue) {
+    Write-Warn "检测到 node $(& node -v) 版本低于 $NodeMinMajor，自动下载 $NodeVersion 到用户目录（无需管理员）..."
+  } else {
+    Write-Warn "未找到 node（Adapter 需 node>=$NodeMinMajor），自动下载 $NodeVersion 到用户目录 $NodeHome（无需管理员）..."
+  }
+  if (-not (Install-Node)) { return $false }
+  $env:PATH = "$ManagedNodeBin;$env:PATH"
+  if (Test-NodeOk) {
+    Write-Info "已安装 Node $(& node -v) → $ManagedNodeBin（后续 npm/adapter 均用它）。"
+    # 持久化进用户级 PATH，新终端也能用。
+    try {
+      $userPath = [Environment]::GetEnvironmentVariable('PATH', 'User')
+      if (-not $userPath) { $userPath = '' }
+      if (($userPath -split ';') -notcontains $ManagedNodeBin) {
+        $newPath = if ($userPath) { "$ManagedNodeBin;$userPath" } else { $ManagedNodeBin }
+        [Environment]::SetEnvironmentVariable('PATH', $newPath, 'User')
+        Write-Info "已把托管 Node 目录加入用户级 PATH（新终端自动生效）。"
+      }
+    } catch { Write-Warn "无法持久化 PATH；本会话可用，新终端请手动把 $ManagedNodeBin 加进 PATH。" }
+    return $true
+  }
+  Write-Err "自动安装 Node 后仍不可用（$ManagedNodeBin）。请手动安装 node>=$NodeMinMajor。"
+  return $false
+}
+
 # ---- npm install / build ---------------------------------------------------
 function Install-Deps { param($Repo)
-  if (-not (Get-Command node -ErrorAction SilentlyContinue)) {
-    Write-Warn "未找到 node（Adapter 需 node>=22）。请安装 Node 后重试；仅写配置不受影响。"; return
+  # 缺 node 或版本不足：自动下载目标版本到用户目录（不再直接报错让用户自己装）。
+  if (-not (Ensure-Node)) {
+    Write-Warn "无法准备可用的 Node（>=$NodeMinMajor）；仅写配置不受影响，但 Adapter 需要 node 才能启动。"; return
   }
   if (-not (Get-Command npm -ErrorAction SilentlyContinue)) {
-    Write-Warn "未找到 npm。请在仓库根执行: npm install"; return
+    Write-Warn "未找到 npm（通常随 Node 一起提供）。请确认 Node 安装完整后在仓库根执行: npm install"; return
   }
   $tsx = Join-Path $Repo 'node_modules\.bin\tsx.cmd'
   if ((Test-Path $tsx) -and (-not $Build)) {
@@ -529,6 +640,8 @@ $cmdLines = @(
   '@echo off'
   'setlocal enabledelayedexpansion'
   "set ""ENVFILE=$EnvFile"""
+  "set ""MANAGED_NODE_BIN=$ManagedNodeBin"""
+  'if exist "%MANAGED_NODE_BIN%\node.exe" set "PATH=%MANAGED_NODE_BIN%;%PATH%"'
   "if not defined CSAPI_REPO_DIR set ""CSAPI_REPO_DIR=$repoForCmd"""
   'if not exist "%ENVFILE%" ( echo [secure-adapter] missing %ENVFILE% & exit /b 1 )'
   'if not exist "%CSAPI_REPO_DIR%\apps\secure-adapter" ( echo [secure-adapter] set CSAPI_REPO_DIR to the repo root & exit /b 1 )'
@@ -567,8 +680,10 @@ if (Repair-And-Verify) {
 
 Write-Host ""
 Write-Err "已自动修复 3 次仍无法让 Adapter 通过 /health。最可能的原因（需人工处理）："
-if (-not (Get-Command node -ErrorAction SilentlyContinue)) {
-  Write-Err "  · 未安装 node（Adapter 需 node>=22）。装好 Node 后重跑本脚本，其余步骤会自动完成。"
+if (-not (Test-NodeOk)) {
+  Write-Err "  · 未获得可用 node（>=$NodeMinMajor）：自动下载 $NodeVersion 失败（网络/镜像/平台）。"
+  Write-Err "    可换镜像重试: `$env:CSAPI_NODE_MIRROR='https://mirrors.tuna.tsinghua.edu.cn/nodejs-release'; 再重跑。"
+  Write-Err "    或手动装 node>=$NodeMinMajor 后重跑；也可把官方 zip 解压到 $NodeHome\ 再重跑。"
 } elseif (-not $RepoRoot -or -not (Test-Path (Join-Path $RepoRoot 'apps\secure-adapter'))) {
   Write-Err "  · 未能获取仓库源码（clone 失败或 -NoClone）。装好 git+网络，或设 `$env:CSAPI_REPO_DIR 后重跑。"
 } else {

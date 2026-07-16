@@ -2,7 +2,9 @@
 
 ## 一键安装（方案 A，推荐 · 抗 MITM）
 
-复制下面一行即可：**自动探测根指纹 → clone 仓库 → npm install → 写配置 → 启动 Adapter → curl /health 验证**。成功会打印「已验证通过」；仅缺 key / node / 服务端未开安全通道时才需人工处理。
+复制下面一行即可：**自动探测根指纹 →（缺 node 则自动下载到用户目录）→ clone 仓库 → npm install → 写配置 → 启动 Adapter → curl /health 验证**。成功会打印「已验证通过」；仅缺 key / 服务端未开安全通道时才需人工处理。
+
+> 缺 `node`（或版本 < 22）时脚本会**自动下载官方 Node 二进制到用户目录**（Linux/macOS/WSL → `~/.cursor-gateway/node/`；Windows → `%USERPROFILE%\.cursor-gateway\node\`），**无需 root/管理员**，并把它持久化进 PATH（rc 受管块 / 用户级环境变量）。目标版本可用 `CSAPI_NODE_VERSION` 覆盖（默认 `v22.14.0`），镜像用 `CSAPI_NODE_MIRROR` 覆盖。
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Dudoll/cursor-gateway/main/scripts/csapi/install-csapi-secure.sh \
@@ -60,9 +62,10 @@ curl -fsSL https://raw.githubusercontent.com/Dudoll/cursor-gateway/main/scripts/
 
 1. **离线固定（pin）Ed25519 根指纹**：内置常量 + 优先读取 `trust/csapi-trust-root-public.json`（**仅公钥**）。
 2. **探测并核对** `/cg/v1/server-keys`：服务端下发的身份证书必须由该固定根签发；指纹不匹配即 fail-closed。
-3. **自动备好仓库**：找不到 `apps/secure-adapter` 源码时，`git clone` 公开仓库到
-   `~/.cursor-gateway/cursor-gateway`（`--no-clone` 关闭、`--yes` 免确认）；缺依赖时在仓库根 `npm install`
-   （`--no-install` 关闭；`--build` 额外编译 dist）。已有本地仓库自动复用，或 `CSAPI_REPO_DIR=/path` 指定。
+3. **自动备好运行时**：缺 `node`（或 < 22）时**自动下载官方 Node 二进制到用户目录**（`~/.cursor-gateway/node/`，
+   无需 root，`CSAPI_NODE_VERSION` / `CSAPI_NODE_MIRROR` 可覆盖）并持久化进 PATH；找不到 `apps/secure-adapter`
+   源码时，`git clone` 公开仓库到 `~/.cursor-gateway/cursor-gateway`（`--no-clone` 关闭、`--yes` 免确认）；缺依赖时在仓库根
+   `npm install`（`--no-install` 关闭；`--build` 额外编译 dist）。已有本地仓库自动复用，或 `CSAPI_REPO_DIR=/path` 指定。
 4. 写本机配置 `~/.cursor-gateway/secure-adapter.env`（0600，含**真实 key**）+ 启动器 `start-secure-adapter.sh`。
 5. **幂等**写 shell 受管块：把 CLI 的 `ANTHROPIC_*/OPENAI_*` 指向本机 Adapter（用本地 loopback key，非真实 key）。
 6. **收尾自动完成**：启动 Adapter → curl `/health` 验证 → 失败则有限次自愈（重启、重装依赖、编译 dist、清端口、
@@ -101,7 +104,7 @@ curl -fsSL https://raw.githubusercontent.com/Dudoll/cursor-gateway/main/scripts/
 ```
 
 - 已在本机 clone 过仓库、想跳过自动 clone，就在仓库目录内直接跑本脚本，或设 `CSAPI_REPO_DIR=/path/to/repo`。
-  需要 node≥22 + git。
+  需要 git；`node≥22` 缺失时脚本会**自动下载到用户目录**（可 `CSAPI_NODE_VERSION` / `CSAPI_NODE_MIRROR` 覆盖）。
 - 指纹为**离线信任锚**：即便首包被企业 CA 篡改，指纹不匹配也会 fail-closed（并可多渠道 out-of-band 核对
   `sha256:E9OuniLwYNCVLPPwbG_aMimeFG3Ly1OFnhDplyQwy9g`）。
 
@@ -232,7 +235,7 @@ curl -sS -H "Authorization: Bearer $OPENAI_API_KEY" \
 | CLI 指向 | 本机 `http://127.0.0.1:8788`（Adapter） | `https://csapi.joelzt.org` 直连 |
 | 真实 key 位置 | 只在 `~/.cursor-gateway/secure-adapter.env`(0600) + 密文 envelope | 写进 shell rc（明文可见） |
 | 中间人可见 | 仅 cg-mitm/1 密文 | prompt/response 明文 |
-| 依赖 | 需仓库源码 + `npm install`（node≥22）跑 Adapter（脚本会**自动 clone + install**） | 零依赖，**单文件可分发** |
+| 依赖 | 需仓库源码 + `npm install`（node≥22）跑 Adapter（脚本会**自动装 node + clone + install**） | 零依赖，**单文件可分发** |
 | 收尾 | 自动启动 + `/health` 验证 + 有限次自愈 | 写配置 + 探测门面连通 |
 | 受管块 | `csapi secure adapter env`（在 rc 靠后，覆盖前者） | `csapi env` |
 
@@ -242,6 +245,10 @@ curl -sS -H "Authorization: Bearer $OPENAI_API_KEY" \
 ## 常见问题
 
 - **想换门面地址？** 运行前设 `CSAPI_BASE_URL=https://your-host`，脚本会自动派生 `/v1` 并同步 upstream/rc。
+- **本机没装 node / 版本太旧？** 方案 A 脚本会**自动下载官方 Node 到用户目录**（无需 root/管理员）：
+  Linux/macOS/WSL 装到 `~/.cursor-gateway/node/`、Windows 装到 `%USERPROFILE%\.cursor-gateway\node\`，并持久化进 PATH。
+  想固定版本/换镜像：`CSAPI_NODE_VERSION=v22.14.0`、`CSAPI_NODE_MIRROR=https://mirrors.tuna.tsinghua.edu.cn/nodejs-release`。
+  下载失败会给出手动链接 `https://nodejs.org/dist/<版本>/`。
 - **方案 A 探测报 404/426？** 服务端尚未开启安全通道，见上面「生产运维前置」；或先用方案 B 试用。
 - **方案 A 已验证通过？** 终端会打印 health 摘要；新终端自动带上 CLI 变量，当前终端可 `. ~/.bashrc`。
 - **方案 B health 失败但变量已写入？** 属正常降级：网络/门面临时不可达不影响写配置，稍后重试探测即可。

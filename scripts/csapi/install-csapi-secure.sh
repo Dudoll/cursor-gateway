@@ -75,6 +75,14 @@ PID_FILE="$CFG_DIR/secure-adapter.pid"
 LOG_FILE="$CFG_DIR/secure-adapter.log"
 CLONE_DIR="${CSAPI_CLONE_DIR:-$CFG_DIR/cursor-gateway}"
 
+# ---- 托管 Node（缺 node/版本不足时自动下载到用户目录，无需 root）----------
+# 目标版本可用 CSAPI_NODE_VERSION 覆盖（如 v22.14.0）；镜像用 CSAPI_NODE_MIRROR 覆盖。
+NODE_MIN_MAJOR=22
+CSAPI_NODE_VERSION="${CSAPI_NODE_VERSION:-v22.14.0}"
+NODE_DIST_MIRROR="${CSAPI_NODE_MIRROR:-https://nodejs.org/dist}"
+NODE_HOME="$CFG_DIR/node"            # 托管 node 安装根目录
+MANAGED_NODE_BIN="$NODE_HOME/current/bin"  # 稳定软链，写入 PATH
+
 SERVICE_NAME="csapi-secure-adapter"
 SERVICE_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
 SERVICE_FILE="$SERVICE_DIR/$SERVICE_NAME.service"
@@ -180,20 +188,124 @@ clone_repo() {
   return 1
 }
 
+# ---- Node 检测 + 自动下载（缺失/版本不足时装到用户目录）--------------------
+# node 是否存在且主版本 >= NODE_MIN_MAJOR。
+node_ok() {
+  have node || return 1
+  _mj="$(node -e 'process.stdout.write(String(process.versions.node.split(".")[0]))' 2>/dev/null || echo 0)"
+  [ "$_mj" -ge "$NODE_MIN_MAJOR" ] 2>/dev/null
+}
+
+# 输出 "<os> <arch>"（node dist 命名）；不支持的平台返回非 0。
+detect_node_platform() {
+  _os=""; _arch=""
+  case "$(uname -s 2>/dev/null)" in
+    Linux)  _os="linux" ;;
+    Darwin) _os="darwin" ;;
+    *) return 1 ;;
+  esac
+  case "$(uname -m 2>/dev/null)" in
+    x86_64|amd64)   _arch="x64" ;;
+    aarch64|arm64)  _arch="arm64" ;;
+    armv7l)         _arch="armv7l" ;;
+    ppc64le)        _arch="ppc64le" ;;
+    s390x)          _arch="s390x" ;;
+    *) return 1 ;;
+  esac
+  printf '%s %s' "$_os" "$_arch"
+}
+
+# 下载并解压官方 Node 二进制 tarball 到 $NODE_HOME，刷新 current 软链。
+install_node() {
+  _ver="$CSAPI_NODE_VERSION"
+  case "$_ver" in v*) ;; *) _ver="v$_ver" ;; esac
+  if ! have curl; then
+    err "未找到 curl，无法自动下载 Node。请装 curl，或手动安装 node>=$NODE_MIN_MAJOR 后重跑。"
+    return 1
+  fi
+  if ! have tar; then
+    err "未找到 tar，无法解压 Node。请装 tar，或手动安装 node>=$NODE_MIN_MAJOR 后重跑。"
+    return 1
+  fi
+  _plat="$(detect_node_platform || true)"
+  if [ -z "$_plat" ]; then
+    err "不支持的 OS/架构（$(uname -s 2>/dev/null)/$(uname -m 2>/dev/null)），无法自动下载 Node。"
+    err "请手动安装 node>=$NODE_MIN_MAJOR：https://nodejs.org/download/"
+    return 1
+  fi
+  # shellcheck disable=SC2086
+  set -- $_plat
+  _os="$1"; _arch="$2"
+  _name="node-$_ver-$_os-$_arch"
+  # 用 .tar.gz（tar -z 即可解，免依赖 xz）。
+  _url="$NODE_DIST_MIRROR/$_ver/$_name.tar.gz"
+  mkdir -p "$NODE_HOME" 2>/dev/null || { err "无法创建 $NODE_HOME"; return 1; }
+  _tgz="$NODE_HOME/$_name.tar.gz"
+  info "自动下载 Node $_ver（$_os-$_arch）→ $NODE_HOME ..."
+  info "  来源: $_url"
+  if ! curl -fL --retry 2 --connect-timeout 20 --max-time 300 -o "$_tgz" "$_url" >&2; then
+    rm -f "$_tgz" 2>/dev/null || true
+    err "下载 Node 失败: $_url"
+    err "可换镜像重试: CSAPI_NODE_MIRROR=https://mirrors.tuna.tsinghua.edu.cn/nodejs-release sh $0"
+    err "或手动下载对应包后解压到 $NODE_HOME/：https://nodejs.org/dist/$_ver/"
+    return 1
+  fi
+  info "解压 Node ..."
+  rm -rf "$NODE_HOME/$_name" 2>/dev/null || true
+  if ! tar -xzf "$_tgz" -C "$NODE_HOME" 2>/dev/null; then
+    err "解压 Node 失败（tar -xzf $_tgz）。文件可能损坏，请重试或换镜像。"
+    rm -f "$_tgz" 2>/dev/null || true
+    return 1
+  fi
+  rm -f "$_tgz" 2>/dev/null || true
+  if [ ! -x "$NODE_HOME/$_name/bin/node" ]; then
+    err "解压后未找到 node 可执行文件（$NODE_HOME/$_name/bin/node）。"
+    return 1
+  fi
+  # 刷新稳定软链 current → 具体版本目录（PATH 只需固定指向 current/bin）。
+  rm -rf "$NODE_HOME/current" 2>/dev/null || true
+  ln -s "$_name" "$NODE_HOME/current" 2>/dev/null || ln -s "$NODE_HOME/$_name" "$NODE_HOME/current" 2>/dev/null || true
+  [ -x "$MANAGED_NODE_BIN/node" ] || return 1
+  return 0
+}
+
+# 确保有可用 node：满足则直接用；否则复用已托管的、再不行就下载。成功后把 PATH 导出到当前进程。
+ensure_node() {
+  if node_ok; then return 0; fi
+  # 之前托管安装过 → 加进 PATH 复用。
+  if [ -x "$MANAGED_NODE_BIN/node" ]; then
+    PATH="$MANAGED_NODE_BIN:$PATH"; export PATH
+    if node_ok; then
+      info "复用已托管的 Node: $(node -v 2>/dev/null)（$MANAGED_NODE_BIN）"
+      return 0
+    fi
+  fi
+  if have node; then
+    warn "检测到 node $(node -v 2>/dev/null) 版本低于 $NODE_MIN_MAJOR，自动下载 $CSAPI_NODE_VERSION 到用户目录（无需 root）..."
+  else
+    warn "未找到 node（Adapter 需 node>=$NODE_MIN_MAJOR），自动下载 $CSAPI_NODE_VERSION 到用户目录 $NODE_HOME（无需 root）..."
+  fi
+  install_node || return 1
+  PATH="$MANAGED_NODE_BIN:$PATH"; export PATH
+  if node_ok; then
+    info "已安装 Node $(node -v 2>/dev/null) → $MANAGED_NODE_BIN（后续 npm/adapter 均用它）。"
+    return 0
+  fi
+  err "自动安装 Node 后仍不可用（PATH: $MANAGED_NODE_BIN）。请手动安装 node>=$NODE_MIN_MAJOR。"
+  return 1
+}
+
 # ---- 安装依赖 + 可选编译 ---------------------------------------------------
 npm_install_repo() {
   _repo="$1"
-  if ! have node; then
-    warn "未找到 node（Adapter 需 node>=22）。请安装 Node 后重试；仅写配置不受影响。"
+  # 缺 node 或版本不足：自动下载目标版本到用户目录（不再直接报错让用户自己装）。
+  if ! ensure_node; then
+    warn "无法准备可用的 Node（>=$NODE_MIN_MAJOR）；仅写配置不受影响，但 Adapter 需要 node 才能启动。"
     return 1
   fi
   if ! have npm; then
-    warn "未找到 npm。请安装 npm 后在仓库根执行: npm install"
+    warn "未找到 npm（通常随 Node 一起提供）。请确认 Node 安装完整后在仓库根执行: npm install"
     return 1
-  fi
-  _node_major="$(node -e 'console.log(process.versions.node.split(".")[0])' 2>/dev/null || echo 0)"
-  if [ "$_node_major" -lt 22 ] 2>/dev/null; then
-    warn "检测到 node 版本较低（<22）。Adapter 需要 node>=22，可能启动失败，建议升级。"
   fi
   if [ -x "$_repo/node_modules/.bin/tsx" ] && [ "$DO_BUILD" -ne 1 ]; then
     info "依赖已就绪（存在 node_modules/.bin/tsx），跳过 npm install。"
@@ -381,16 +493,19 @@ resolve_key() {
 # ---- 组装 rc 受管块（CLI 指向本机 Adapter）--------------------------------
 render_rc_block() {
   _lk="$1"
-  cat <<EOF
-$MARK_BEGIN
-# cg-mitm/1 Secure Adapter：CLI 指向本机 loopback 门面，密文发往 csapi。
-# 真实 CSAPI key 不在这里（在 $ENV_FILE，0600）；这里用的是本地 loopback key。
-export ANTHROPIC_BASE_URL="$ADAPTER_LOCAL_BASE"
-export ANTHROPIC_API_KEY="$_lk"
-export OPENAI_BASE_URL="$ADAPTER_LOCAL_BASE/v1"
-export OPENAI_API_KEY="$_lk"
-$MARK_END
-EOF
+  printf '%s\n' "$MARK_BEGIN"
+  printf '%s\n' "# cg-mitm/1 Secure Adapter：CLI 指向本机 loopback 门面，密文发往 csapi。"
+  printf '%s\n' "# 真实 CSAPI key 不在这里（在 $ENV_FILE，0600）；这里用的是本地 loopback key。"
+  # 托管 Node（自动下载到用户目录）→ 持久化进 PATH，新终端也能跑 node/npm。
+  if [ -x "$MANAGED_NODE_BIN/node" ]; then
+    printf '%s\n' "# 托管 Node（缺 node 时自动下载到用户目录）加入 PATH。"
+    printf '%s\n' "export PATH=\"$MANAGED_NODE_BIN:\$PATH\""
+  fi
+  printf '%s\n' "export ANTHROPIC_BASE_URL=\"$ADAPTER_LOCAL_BASE\""
+  printf '%s\n' "export ANTHROPIC_API_KEY=\"$_lk\""
+  printf '%s\n' "export OPENAI_BASE_URL=\"$ADAPTER_LOCAL_BASE/v1\""
+  printf '%s\n' "export OPENAI_API_KEY=\"$_lk\""
+  printf '%s\n' "$MARK_END"
 }
 
 write_rc_block() {
@@ -457,6 +572,11 @@ write_launcher() {
 set -euo pipefail
 ENV_FILE="$ENV_FILE"
 REPO_ROOT="\${CSAPI_REPO_DIR:-$REPO_ROOT}"
+# 托管 Node（缺 node 时由安装器自动下载到用户目录）优先加入 PATH。
+MANAGED_NODE_BIN="$MANAGED_NODE_BIN"
+if [ -x "\$MANAGED_NODE_BIN/node" ]; then
+  PATH="\$MANAGED_NODE_BIN:\$PATH"; export PATH
+fi
 if [ ! -f "\$ENV_FILE" ]; then
   echo "[secure-adapter] 缺少配置 \$ENV_FILE，请先运行 install-csapi-secure.sh" >&2
   exit 1
@@ -880,8 +1000,10 @@ fi
 # 到这里：已自动修复 3 次仍未通过 /health → 给出最可能的“真·不可自愈”原因（需人工）。
 echo
 err "已自动修复 3 次仍无法让 Adapter 通过 /health。最可能的原因（需人工处理）："
-if ! have node; then
-  err "  · 未安装 node（Adapter 需 node>=22）。装好 Node 后重跑本脚本，其余步骤会自动完成。"
+if ! node_ok; then
+  err "  · 未获得可用 node（>=$NODE_MIN_MAJOR）：自动下载 $CSAPI_NODE_VERSION 失败（网络/镜像/平台不支持）。"
+  err "    可换镜像重试：CSAPI_NODE_MIRROR=https://mirrors.tuna.tsinghua.edu.cn/nodejs-release sh $0"
+  err "    或手动装 node>=$NODE_MIN_MAJOR 后重跑；也可把官方包解压到 $NODE_HOME/ 再重跑。"
 elif [ -z "$REPO_ROOT" ] || [ ! -d "$REPO_ROOT/apps/secure-adapter" ]; then
   err "  · 未能获取仓库源码（clone 失败或被 --no-clone 关闭）。装好 git+网络、或设 CSAPI_REPO_DIR 后重跑。"
 else
