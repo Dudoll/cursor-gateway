@@ -190,8 +190,12 @@ export function createCsapi(deps: CsapiDeps) {
     const online = backend.listModelIds();
     const windows = online.filter((id) => !id.startsWith("hermes:"));
     if (windows.length > 0) return "auto";
-    const hermes = online.find((id) => id.startsWith("hermes:"));
-    return hermes ?? "auto";
+    const hermesOnline = online.find((id) => id.startsWith("hermes:"));
+    if (hermesOnline) return hermesOnline;
+    // Heartbeat registry can be empty briefly after a restart while Hermes is
+    // already claiming; honour an explicit hermes default so jobs stay claimable.
+    if (config.defaultModel.startsWith("hermes:")) return config.defaultModel;
+    return "auto";
   }
 
   /** Core execution: serialize per-session, enqueue a run, wait for completion. */
