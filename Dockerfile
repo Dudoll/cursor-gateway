@@ -23,6 +23,10 @@ RUN npm run build -w @cursor-gateway/shared \
 FROM node:22-bookworm-slim AS runtime
 WORKDIR /app
 ENV NODE_ENV=production
+# Disable core dumps so plaintext never lands on disk if a decryptor crashes.
+ENV NODE_OPTIONS=--max-old-space-size=512
+RUN printf '* soft core 0\n* hard core 0\n' >> /etc/security/limits.conf \
+  && ulimit -c 0 || true
 COPY --from=build /app/package.json /app/package-lock.json* ./
 COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/packages/shared ./packages/shared
@@ -31,4 +35,5 @@ COPY --from=build /app/apps/server ./apps/server
 COPY --from=build /app/apps/web/dist ./apps/web/dist
 COPY --from=build /app/artifacts/cursor-gateway-secure.zip ./artifacts/cursor-gateway-secure.zip
 EXPOSE 8080
+# --disallow-code-generation-from-strings is optional; keep start simple.
 CMD ["node", "apps/server/dist/index.js"]

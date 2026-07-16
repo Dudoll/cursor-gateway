@@ -64,6 +64,10 @@ async function main() {
       "permissions-policy",
       "camera=(), microphone=(), geolocation=(), payment=(), usb=()"
     );
+    const url = _request.raw.url ?? "";
+    if (url.startsWith("/cg/v1/")) {
+      reply.header("cache-control", "no-store");
+    }
     return payload;
   });
 
