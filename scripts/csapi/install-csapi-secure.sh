@@ -1038,6 +1038,9 @@ fi
 
 # 到这里：已自动修复 3 次仍未通过 /health → 给出最可能的“真·不可自愈”原因（需人工）。
 echo
+# 避免 fail-closed 服务无限重启；下次重跑安装器会重新启动。
+ADAPTER_LOGS="$(show_adapter_logs || true)"
+stop_adapter >/dev/null 2>&1 || true
 err "已自动修复 3 次仍无法让 Adapter 通过 /health。最可能的原因（需人工处理）："
 if ! node_ok; then
   err "  · 未获得可用 node（>=$NODE_MIN_MAJOR）：自动下载 $CSAPI_NODE_VERSION 失败（网络/镜像/平台不支持）。"
@@ -1045,9 +1048,12 @@ if ! node_ok; then
   err "    或手动装 node>=$NODE_MIN_MAJOR 后重跑；也可把官方包解压到 $NODE_HOME/ 再重跑。"
 elif [ -z "$REPO_ROOT" ] || [ ! -d "$REPO_ROOT/apps/secure-adapter" ]; then
   err "  · 未能获取仓库源码（clone 失败或被 --no-clone 关闭）。装好 git+网络、或设 CSAPI_REPO_DIR 后重跑。"
+elif printf '%s\n' "$ADAPTER_LOGS" | grep -qF "enroll_api_key_disabled_in_production"; then
+  err "  · 服务端生产策略尚未允许 API Key 设备注册。请管理员设置 CG_ALLOW_API_KEY_ENROLL=true 并重启 Gateway。"
+  err "    Adapter 已停止，避免 systemd 无限重启；服务端修复后重新运行本安装器即可。"
 else
   err "  · Adapter 启动后 fail-closed（多为服务端未开安全通道 / 证书 / 根指纹问题）。日志尾部："
-  show_adapter_logs | sed 's/^/      /' >&2 || true
+  printf '%s\n' "$ADAPTER_LOGS" | sed 's/^/      /' >&2 || true
   err "  · 亦可先用方案 B（明文兼容）临时试用：sh scripts/csapi/install-csapi.sh"
 fi
 exit 1

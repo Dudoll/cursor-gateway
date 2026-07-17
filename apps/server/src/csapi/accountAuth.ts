@@ -17,21 +17,21 @@ export type ResolvedAccount = {
 
 export type AccountAuthContext = {
   apiKeys: Set<string>;
-  /** When true (tests only), allow api-key enroll without CF/OIDC config. */
-  allowApiKeyTransition?: boolean;
+  /** Explicitly allow enrollment with a valid CSAPI key. */
+  allowApiKeyEnroll?: boolean;
 };
 
 export async function resolveAccountAuth(input: {
   accountAuth?: CgAccountAuth;
   apiKey?: string;
   apiKeys: Set<string>;
-  allowApiKeyTransition?: boolean;
+  allowApiKeyEnroll?: boolean;
 }): Promise<ResolvedAccount> {
   const auth = input.accountAuth;
-  const allowApiKey = input.allowApiKeyTransition !== false;
+  const allowApiKey = input.allowApiKeyEnroll === true;
 
   if (auth?.kind === "api-key" || (!auth && input.apiKey)) {
-    if (!allowApiKey && appConfig.nodeEnv === "production") {
+    if (!allowApiKey) {
       throw new Error("enroll_api_key_disabled_in_production");
     }
     const apiKey = auth?.kind === "api-key" ? auth.apiKey : input.apiKey!;

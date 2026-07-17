@@ -87,7 +87,8 @@ Local Runner / Hermes / 模型                               ← 信任域内
 | GET | `/health` | 保留现有明文健康检查（不含敏感信息）。 |
 
 - `isCsapiPath()`（`apps/server/src/csapi/server.ts`）需扩展放行 `/cg/v1/*`，使其继续豁免 Cloudflare Access。
-- 环境开关：`CG_SECURE_ENABLED`（挂载 `/cg/v1/*`，默认关）、`CG_REQUIRE_SECURE`（收敛后关闭明文 `/v1/*`）。
+- 环境开关：`CG_SECURE_ENABLED`（挂载 `/cg/v1/*`，默认关）、`CG_REQUIRE_SECURE`（收敛后关闭明文 `/v1/*`）、
+  `CG_ALLOW_API_KEY_ENROLL`（生产环境显式允许有效 CSAPI Key 完成首次设备注册，默认关；不放宽设备数据库持久化）。
 
 ## 5. 规格拆分文件（本目录）
 

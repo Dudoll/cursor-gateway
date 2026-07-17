@@ -71,6 +71,7 @@ import {
   softDeleteRelayConversation
 } from "../csRelayHistory.js";
 import { resolveAccountAuth } from "./accountAuth.js";
+import { apiKeyEnrollEnabled } from "./enrollPolicy.js";
 import { createCgEnrollChallenge } from "./passkeyEnroll.js";
 import { CsRelayExecuteError, executeCsRelayReencrypt } from "./csRelayExecute.js";
 import { subscribeSyncAccount } from "./syncBus.js";
@@ -722,7 +723,10 @@ export function createCsapiSecure(deps: CsapiSecureDeps) {
             ...(inner.accountAuth ? { accountAuth: inner.accountAuth } : {}),
             ...(inner.apiKey ? { apiKey: inner.apiKey } : {}),
             apiKeys: deps.config.apiKeys,
-            allowApiKeyTransition: appConfig.csRelay.allowMemoryDevices || appConfig.nodeEnv !== "production"
+            allowApiKeyEnroll:
+              apiKeyEnrollEnabled() ||
+              appConfig.csRelay.allowMemoryDevices ||
+              appConfig.nodeEnv !== "production"
           });
           accountId = resolved.accountId;
           keyIdHint = resolved.keyIdHint;

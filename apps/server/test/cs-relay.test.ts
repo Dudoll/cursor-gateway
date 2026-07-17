@@ -8,18 +8,34 @@ process.env.RUNNER_SHARED_SECRET ??= "test-runner-shared-secret-min-32-character
 process.env.CS_RELAY_ALLOW_MEMORY_DEVICES ??= "true";
 
 const { resolveAccountAuth } = await import("../src/csapi/accountAuth.js");
+const { apiKeyEnrollEnabled } = await import("../src/csapi/enrollPolicy.js");
 const { truncateHistoryForRunner } = await import("../src/csapi/runnerSeal.js");
 const { verifyRs256Jwt } = await import("../src/csapi/jwtVerify.js");
 
-test("resolveAccountAuth api-key transition scope", async () => {
+test("resolveAccountAuth allows explicitly enabled api-key enrollment", async () => {
   const keys = new Set(["deadbeefdeadbeefdeadbeefdeadbeef"]);
   const resolved = await resolveAccountAuth({
     apiKey: "deadbeefdeadbeefdeadbeefdeadbeef",
     apiKeys: keys,
-    allowApiKeyTransition: true
+    allowApiKeyEnroll: true
   });
   assert.equal(resolved.authScope, "api-key");
   assert.equal(resolved.accountId.startsWith("apikey:"), true);
+});
+
+test("resolveAccountAuth rejects api-key enrollment without an explicit opt-in", async () => {
+  const apiKey = "deadbeefdeadbeefdeadbeefdeadbeef";
+  await assert.rejects(
+    () => resolveAccountAuth({ apiKey, apiKeys: new Set([apiKey]) }),
+    /enroll_api_key_disabled_in_production/
+  );
+});
+
+test("apiKeyEnrollEnabled is explicit and fail-closed", () => {
+  assert.equal(apiKeyEnrollEnabled("true"), true);
+  assert.equal(apiKeyEnrollEnabled("ON"), true);
+  assert.equal(apiKeyEnrollEnabled("false"), false);
+  assert.equal(apiKeyEnrollEnabled(undefined), false);
 });
 
 test("resolveAccountAuth rejects unsigned oidc without config", async () => {
