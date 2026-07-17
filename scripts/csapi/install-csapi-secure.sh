@@ -571,7 +571,9 @@ write_launcher() {
 # managed by install-csapi-secure.sh — 加载本机 Adapter 配置并启动 cg-mitm/1 Adapter。
 set -euo pipefail
 ENV_FILE="$ENV_FILE"
-REPO_ROOT="\${CSAPI_REPO_DIR:-$REPO_ROOT}"
+# 安装时已经验证并规范化仓库路径。启动器固定使用该路径，避免 systemd
+# 环境中遗留的 CSAPI_REPO_DIR 把有效路径覆盖成 Windows 路径或旧目录。
+REPO_ROOT="$REPO_ROOT"
 # 托管 Node（缺 node 时由安装器自动下载到用户目录）优先加入 PATH。
 MANAGED_NODE_BIN="$MANAGED_NODE_BIN"
 if [ -x "\$MANAGED_NODE_BIN/node" ]; then

@@ -1,17 +1,17 @@
 # csapi 懒人安装脚本
 
-## 一键安装（方案 A，推荐 · 抗 MITM）
+## Agent 使用方一键安装（方案 A，推荐 · 抗 MITM）
 
-复制下面一行即可：**自动探测根指纹 →（缺 node 则自动下载到用户目录）→ clone 仓库 → npm install → 写配置 → 启动 Adapter → curl /health 验证**。成功会打印「已验证通过」；仅缺 key / 服务端未开安全通道时才需人工处理。
-
-> 缺 `node`（或版本 < 22）时脚本会**自动下载官方 Node 二进制到用户目录**（Linux/macOS/WSL → `~/.cursor-gateway/node/`；Windows → `%USERPROFILE%\.cursor-gateway\node\`），**无需 root/管理员**，并把它持久化进 PATH（rc 受管块 / 用户级环境变量）。目标版本可用 `CSAPI_NODE_VERSION` 覆盖（默认 `v22.14.0`），镜像用 `CSAPI_NODE_MIRROR` 覆盖。
+复制下面一行即可。首次运行会自动 clone 到
+`~/.cursor-gateway/cursor-gateway`，重复运行会先执行 `git pull --ff-only`，随后自动进入项目安装、注册自启并验证。用户只需输入 API Key（输入不回显）。
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Dudoll/cursor-gateway/main/scripts/csapi/install-csapi-secure.sh \
-  | CSAPI_API_KEY=sk-xxxx sh -s -- --yes
+curl -fsSL https://raw.githubusercontent.com/Dudoll/cursor-gateway/main/scripts/csapi/install-agent-secure.sh | sh
 ```
 
-> 把 `sk-xxxx` 换成你的真实 CSAPI key。不想把 key 写进命令行？去掉 `CSAPI_API_KEY=...`，脚本会交互提示（输入不回显）。
+> 缺 `node`（或版本 < 22）时会自动下载官方 Node 到用户目录，无需 root。真实 API Key 不会进入命令行历史。
+>
+> 高级用法：可通过 `CSAPI_BASE_URL` 指定服务地址，通过 `CSAPI_CLONE_DIR` 指定项目目录。
 >
 > Windows（PowerShell）：
 >
