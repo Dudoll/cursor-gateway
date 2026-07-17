@@ -3,7 +3,7 @@
 ## Agent 使用方一键安装（方案 A，推荐 · 抗 MITM）
 
 复制下面一行即可。首次运行会自动 clone 到
-`~/.cursor-gateway/cursor-gateway`，重复运行会先执行 `git pull --ff-only`，随后自动进入项目安装、注册自启并验证。用户只需输入 API Key（输入不回显）。
+`~/.cursor-gateway/cursor-gateway`，重复运行会先执行 `git pull --ff-only`，随后自动进入项目安装、按依赖顺序构建、注册自启并验证。首次安装只需输入 API Key（输入不回显）；升级会复用本机 `0600` 配置中已经保存的 Key，不会重复询问。
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Dudoll/cursor-gateway/main/scripts/csapi/install-agent-secure.sh | sh

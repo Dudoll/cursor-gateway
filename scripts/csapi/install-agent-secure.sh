@@ -46,4 +46,4 @@ cd "$PROJECT_DIR"
 CSAPI_REPO_DIR="$PROJECT_DIR"
 export CSAPI_REPO_DIR
 
-exec sh scripts/csapi/install-csapi-secure.sh --service --yes --no-clone
+exec sh scripts/csapi/install-csapi-secure.sh --service --yes --no-clone --build

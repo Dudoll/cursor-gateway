@@ -321,10 +321,20 @@ npm_install_repo() {
       fi
     fi
   fi
-  if [ "$DO_BUILD" -eq 1 ]; then
-    info "编译 Secure Adapter dist: npm run build -w @cursor-gateway/secure-adapter ..."
-    ( cd "$_repo" && npm run build -w @cursor-gateway/secure-adapter ) >&2 || \
-      warn "build 失败（不致命：启动器会回退 tsx 直接跑 TS）。"
+  if [ "$DO_BUILD" -eq 1 ] ||
+     [ ! -f "$_repo/packages/shared/dist/index.js" ] ||
+     [ ! -f "$_repo/packages/e2ee/dist/index.js" ] ||
+     [ ! -f "$_repo/apps/secure-adapter/dist/index.js" ]; then
+    info "按依赖顺序编译 shared → e2ee → Secure Adapter ..."
+    if ! (
+      cd "$_repo" &&
+      npm run build -w @cursor-gateway/shared &&
+      npm run build -w @cursor-gateway/e2ee &&
+      npm run build -w @cursor-gateway/secure-adapter
+    ) >&2; then
+      err "Secure Adapter 构建失败。已按依赖顺序尝试 shared → e2ee → adapter。"
+      return 1
+    fi
   fi
   return 0
 }
@@ -476,6 +486,11 @@ gen_loopback_key() {
 resolve_key() {
   _k="${CSAPI_API_KEY:-${CG_ADAPTER_API_KEY:-${API_KEY:-}}}"
   if [ -n "$_k" ]; then printf '%s' "$_k"; return 0; fi
+  # 升级/修复时复用之前以 0600 保存的真实 key，避免再次询问用户。
+  if [ -f "$ENV_FILE" ]; then
+    _k="$(grep '^CG_ADAPTER_API_KEY=' "$ENV_FILE" 2>/dev/null | head -n1 | cut -d= -f2- || true)"
+    if [ -n "$_k" ]; then printf '%s' "$_k"; return 0; fi
+  fi
   if [ -r /dev/tty ]; then
     printf '\033[1;36m[csapi-secure]\033[0m 请输入你的真实 CSAPI API key（输入不显示，仅存本机 0600）: ' > /dev/tty
     _old_stty="$(stty -g 2>/dev/null || true)"
