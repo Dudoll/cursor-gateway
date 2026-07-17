@@ -431,6 +431,31 @@ export async function migrate() {
       created_at timestamptz not null default now()
     );
 
+    -- Runner-assisted manual code (RAMC) enrollments. The one-time code lives
+    -- ONLY on the Runner; this table persists public envelopes + an HMAC
+    -- transcript tag, plus attempt/TTL bookkeeping. No cleartext secret here.
+    create table if not exists e2ee_runner_code_enrollments (
+      enroll_id uuid primary key,
+      user_id uuid not null references app_users(id),
+      email text,
+      status text not null,
+      start_envelope jsonb not null,
+      offer_envelope jsonb,
+      confirm_envelope jsonb,
+      ack_envelope jsonb,
+      device_cert jsonb,
+      runner_id text,
+      attempts int not null default 0,
+      max_attempts int not null default 3,
+      expires_at timestamptz not null,
+      created_at timestamptz not null default now(),
+      updated_at timestamptz not null default now()
+    );
+
+    create index if not exists e2ee_runner_code_pending_idx
+      on e2ee_runner_code_enrollments(status, created_at)
+      where status in ('requested', 'confirm_submitted');
+
     -- relay-P1: account-bound cg-mitm devices
     create table if not exists cg_devices (
       device_id uuid primary key,

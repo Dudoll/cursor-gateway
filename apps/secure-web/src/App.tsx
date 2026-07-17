@@ -33,6 +33,11 @@ import {
   parseRecoveryFragment
 } from "./recoveryPairingClient.js";
 import {
+  confirmRunnerCode,
+  startRunnerCodeEnrollment
+} from "./runnerCodePairingClient.js";
+import type { E2eeRunnerCodePairingOffer } from "@cursor-gateway/shared";
+import {
   CS_AUTH_RETURNING_NOTICE,
   captureCsAuthRedirectParams,
   completeCsAuthReturn,
@@ -61,7 +66,7 @@ type BootState =
   | { kind: "ready"; keys: SecureWebKeyStore; device: DeviceRecord };
 
 type Step = 1 | 2 | 3;
-type PairingPanel = "passkey" | "approval" | "recovery" | "mail";
+type PairingPanel = "runnercode" | "approval" | "passkey" | "recovery" | "mail";
 
 function errorText(error: unknown) {
   if (error instanceof GatewayApiError) return error.code;
@@ -84,6 +89,10 @@ export function App() {
   >([]);
   const [recoveryIdInput, setRecoveryIdInput] = useState("");
   const [recoverySecretInput, setRecoverySecretInput] = useState("");
+  const [runnerCodeEnabled, setRunnerCodeEnabled] = useState(false);
+  const [runnerCodeEnrollId, setRunnerCodeEnrollId] = useState<string | null>(null);
+  const [runnerCodeOffer, setRunnerCodeOffer] = useState<E2eeRunnerCodePairingOffer | null>(null);
+  const [runnerCodeInput, setRunnerCodeInput] = useState("");
   const [runners, setRunners] = useState<E2eeRunnerDirectoryEntry[]>([]);
   const [conversations, setConversations] = useState<E2eeConversationRecord[]>([]);
   const [titles, setTitles] = useState<Record<string, string>>({});
@@ -133,11 +142,16 @@ export function App() {
       if (saved) {
         try {
           const clientApi = new GatewayApi(saved);
-          const policy = await clientApi.get<{ cfAccessLogoutUrl?: string | null }>(
-            "/api/e2ee-policy"
-          );
+          const policy = await clientApi.get<{
+            cfAccessLogoutUrl?: string | null;
+            runnerCodePairingEnabled?: boolean;
+          }>("/api/e2ee-policy");
           if (!cancelled && policy.cfAccessLogoutUrl) {
             setCfAccessLogoutUrl(policy.cfAccessLogoutUrl);
+          }
+          if (!cancelled && policy.runnerCodePairingEnabled) {
+            setRunnerCodeEnabled(true);
+            if (!device.pairedRunnerId) setPairingPanel("runnercode");
           }
         } catch {
           // Optional.
@@ -315,8 +329,13 @@ export function App() {
         const clientApi = new GatewayApi(origin);
         const policy = await clientApi.get<{
           cfAccessLogoutUrl?: string | null;
+          runnerCodePairingEnabled?: boolean;
         }>("/api/e2ee-policy");
         if (policy.cfAccessLogoutUrl) setCfAccessLogoutUrl(policy.cfAccessLogoutUrl);
+        if (policy.runnerCodePairingEnabled) {
+          setRunnerCodeEnabled(true);
+          if (boot.kind === "ready" && !boot.device.pairedRunnerId) setPairingPanel("runnercode");
+        }
       } catch {
         // Policy is optional for logout link.
       }
@@ -490,6 +509,74 @@ export function App() {
       await finishPairingThenMaybeReturnToCs(api, boot.keys, result.runnerId);
     } catch (error) {
       setStatus({ tone: "error", text: `恢复码配对失败：${errorText(error)}` });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function onStartRunnerCode() {
+    if (boot.kind !== "ready" || !api) return;
+    setBusy(true);
+    setRunnerCodeOffer(null);
+    setRunnerCodeInput("");
+    try {
+      saveGatewayOrigin(gatewayInput);
+      setStatus({ tone: "info", text: "正在请求 Runner 设备码…请查看 Runner 终端。" });
+      const { enrollId, offer } = await startRunnerCodeEnrollment({
+        api,
+        keys: boot.keys,
+        label: boot.device.clientId.slice(0, 16),
+        onStatus: (text) => setStatus({ tone: "info", text })
+      });
+      setRunnerCodeEnrollId(enrollId);
+      setRunnerCodeOffer(offer);
+      setStatus({
+        tone: "warn",
+        text: "Runner 已生成一次性设备码。请在 Runner 终端查看「CODE」并输入到下方，然后核对 6 词 SAS。"
+      });
+    } catch (error) {
+      setStatus({ tone: "error", text: `设备码请求失败：${errorText(error)}` });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function onConfirmRunnerCode() {
+    if (boot.kind !== "ready" || !api || !runnerCodeEnrollId || !runnerCodeOffer) return;
+    if (!runnerCodeInput.trim()) {
+      setStatus({ tone: "error", text: "请输入 Runner 终端显示的设备码" });
+      return;
+    }
+    setBusy(true);
+    try {
+      const result = await confirmRunnerCode({
+        api,
+        keys: boot.keys,
+        enrollId: runnerCodeEnrollId,
+        offer: runnerCodeOffer,
+        code: runnerCodeInput,
+        onStatus: (text) => setStatus({ tone: "info", text })
+      });
+      setRunnerCodeOffer(null);
+      setRunnerCodeEnrollId(null);
+      setRunnerCodeInput("");
+      await finishPairingThenMaybeReturnToCs(api, boot.keys, result.runnerId);
+    } catch (error) {
+      const raw = errorText(error);
+      const mismatch = raw.match(/^runner_code_code_mismatch_(\d+)$/);
+      if (mismatch) {
+        setStatus({
+          tone: "error",
+          text: `设备码不匹配。剩余尝试次数：${mismatch[1]}。请重新核对 Runner 终端的 CODE。`
+        });
+        setRunnerCodeInput("");
+      } else if (raw === "runner_code_locked") {
+        setStatus({ tone: "error", text: "尝试次数过多，本次配对已锁定。请在 Runner 重新发起。" });
+        setRunnerCodeOffer(null);
+        setRunnerCodeEnrollId(null);
+      } else {
+        setStatus({ tone: "error", text: `设备码配对失败：${raw}` });
+      }
     } finally {
       setBusy(false);
     }
@@ -680,10 +767,29 @@ export function App() {
       <section className="panel">
         <h2>2. 设备配对</h2>
         <p className="meta">
-          主通道不依赖外部邮件：Cloudflare Access 身份 + Passkey（User Verification）+ Runner
-          离线证书。Passkey 只证明你在场，不会成为 E2EE 私钥。
+          推荐主通道：<strong>Runner 设备码</strong>（无需扫码、无需邮箱）。在 Runner 终端读取一次性
+          高熵码并输入到本页，再核对 6 词 SAS。Cloudflare Access 身份 + Runner 离线证书共同锚定信任。
+          其余方式作为备选保留。
         </p>
         <div className="row" style={{ marginBottom: 12 }}>
+          {runnerCodeEnabled ? (
+            <button
+              type="button"
+              className={pairingPanel === "runnercode" ? undefined : "secondary"}
+              disabled={busy}
+              onClick={() => setPairingPanel("runnercode")}
+            >
+              Runner 设备码（推荐）
+            </button>
+          ) : null}
+          <button
+            type="button"
+            className={pairingPanel === "approval" ? undefined : "secondary"}
+            disabled={busy}
+            onClick={() => setPairingPanel("approval")}
+          >
+            已授权设备批准
+          </button>
           <button
             type="button"
             className={pairingPanel === "passkey" ? undefined : "secondary"}
@@ -694,19 +800,11 @@ export function App() {
           </button>
           <button
             type="button"
-            className={pairingPanel === "approval" ? undefined : "secondary"}
-            disabled={busy}
-            onClick={() => setPairingPanel("approval")}
-          >
-            已配对设备批准
-          </button>
-          <button
-            type="button"
             className={pairingPanel === "recovery" ? undefined : "secondary"}
             disabled={busy}
             onClick={() => setPairingPanel("recovery")}
           >
-            高级：二维码 / 恢复码
+            恢复码 / 二维码
           </button>
           <button
             type="button"
@@ -714,9 +812,59 @@ export function App() {
             disabled={busy}
             onClick={() => setPairingPanel("mail")}
           >
-            其他方式（需外部邮箱）
+            邮箱 magic-link
           </button>
         </div>
+
+        {pairingPanel === "runnercode" ? (
+          <>
+            <p className="meta">
+              在已运行 Runner 的机器（WSL/终端）上，Runner 会打印一次性 <code>CODE</code> 与 6 词{" "}
+              <code>SAS</code>（Gateway 看不到明文）。点「请求设备码」，然后把终端上的 CODE 输入下方并
+              核对 SAS 一致，再提交。若 Runner 为手动批准模式，还需在终端执行{" "}
+              <code>runner-code approve &lt;enrollId&gt;</code>。
+            </p>
+            {!runnerCodeOffer ? (
+              <div className="row">
+                <button type="button" disabled={busy || !api} onClick={onStartRunnerCode}>
+                  请求设备码
+                </button>
+              </div>
+            ) : (
+              <>
+                <label htmlFor="runnerCode">Runner 终端显示的设备码</label>
+                <input
+                  id="runnerCode"
+                  value={runnerCodeInput}
+                  onChange={(event) => setRunnerCodeInput(event.target.value)}
+                  placeholder="XXXXX-XXXXX-XXXXX-XXXXX"
+                  autoComplete="off"
+                  autoCapitalize="characters"
+                />
+                <p className="meta">
+                  enrollId：<code>{runnerCodeEnrollId}</code>
+                </p>
+                <div className="row">
+                  <button type="button" disabled={busy || !api} onClick={onConfirmRunnerCode}>
+                    核对 SAS 并提交
+                  </button>
+                  <button
+                    type="button"
+                    className="secondary"
+                    disabled={busy}
+                    onClick={() => {
+                      setRunnerCodeOffer(null);
+                      setRunnerCodeEnrollId(null);
+                      setRunnerCodeInput("");
+                    }}
+                  >
+                    取消
+                  </button>
+                </div>
+              </>
+            )}
+          </>
+        ) : null}
 
         {pairingPanel === "passkey" ? (
           <>

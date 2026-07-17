@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { e2eeClientPairingBundleSchema } from "@cursor-gateway/shared";
 import { decodeBase64Url, decodeUtf8, encodeBase64Url, utf8 } from "@cursor-gateway/e2ee";
 import { RunnerE2eeState } from "./e2eeState.js";
+import { listRunnerCodeApprovals, writeRunnerCodeDecision } from "./runnerCodePairing.js";
 
 function encodeBundle(value: unknown) {
   return encodeBase64Url(utf8(JSON.stringify(value)));
@@ -58,8 +59,30 @@ async function main() {
     return;
   }
 
+  // --- Runner-assisted manual code (RAMC) operator approvals ---
+  if (command === "approve-code" || command === "reject-code") {
+    const enrollId = process.argv[3]?.trim();
+    if (!enrollId || !/^[0-9a-f-]{36}$/i.test(enrollId)) {
+      throw new Error("Pass a valid enrollId uuid");
+    }
+    writeRunnerCodeDecision(enrollId, command === "approve-code" ? "approve" : "reject");
+    console.log(`${command === "approve-code" ? "Approved" : "Rejected"} runner-code enrollment ${enrollId}`);
+    return;
+  }
+
+  if (command === "list-code-approvals") {
+    const markers = listRunnerCodeApprovals();
+    if (markers.length === 0) {
+      console.log("No pending runner-code approval markers.");
+      return;
+    }
+    for (const marker of markers) console.log(marker);
+    return;
+  }
+
   throw new Error(
-    "Usage: pair.ts runner | client <client-bundle> | list-clients | revoke-client <client-id>"
+    "Usage: pair.ts runner | client <client-bundle> | list-clients | revoke-client <client-id> " +
+      "| approve-code <enrollId> | reject-code <enrollId> | list-code-approvals"
   );
 }
 

@@ -43,6 +43,11 @@ const envSchema = z.object({
   E2EE_PASSKEY_PAIRING_TTL_SECONDS: z.coerce.number().int().positive().default(300),
   E2EE_DEVICE_APPROVAL_TTL_SECONDS: z.coerce.number().int().positive().default(600),
   E2EE_RECOVERY_PAIRING_TTL_SECONDS: z.coerce.number().int().positive().default(1_800),
+  // Runner-assisted manual code (RAMC) — primary no-QR/no-email flow. Default
+  // off for gray rollout; turn on per-environment. TTL 5m, 3 attempts.
+  RUNNER_CODE_PAIRING_ENABLED: booleanEnv(false),
+  E2EE_RUNNER_CODE_TTL_SECONDS: z.coerce.number().int().positive().default(300),
+  E2EE_RUNNER_CODE_MAX_ATTEMPTS: z.coerce.number().int().positive().max(10).default(3),
   // Optional Cloudflare Access team domain for client logout links, e.g.
   // https://yourteam.cloudflareaccess.com → …/cdn-cgi/access/logout
   CF_ACCESS_TEAM_DOMAIN: z.string().default(""),
@@ -129,6 +134,9 @@ export const config = {
   e2eePasskeyPairingTtlSeconds: parsed.E2EE_PASSKEY_PAIRING_TTL_SECONDS,
   e2eeDeviceApprovalTtlSeconds: parsed.E2EE_DEVICE_APPROVAL_TTL_SECONDS,
   e2eeRecoveryPairingTtlSeconds: parsed.E2EE_RECOVERY_PAIRING_TTL_SECONDS,
+  runnerCodePairingEnabled: parsed.RUNNER_CODE_PAIRING_ENABLED,
+  e2eeRunnerCodeTtlSeconds: parsed.E2EE_RUNNER_CODE_TTL_SECONDS,
+  e2eeRunnerCodeMaxAttempts: parsed.E2EE_RUNNER_CODE_MAX_ATTEMPTS,
   cfAccessTeamDomain: parsed.CF_ACCESS_TEAM_DOMAIN.trim().replace(/\/$/, ""),
   webDefaultModel: parsed.WEB_DEFAULT_MODEL,
   reportModelId: parsed.REPORT_MODEL_ID,

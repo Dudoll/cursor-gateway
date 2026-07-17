@@ -33,6 +33,10 @@ import {
   e2eeRecoveryPairingOfferSchema,
   e2eeRecoveryPairingAckSchema,
   e2eeRecoveryHandleSchema,
+  e2eeRunnerCodePairingStartRequestSchema,
+  e2eeRunnerCodePairingConfirmRequestSchema,
+  e2eeRunnerCodePairingOfferSchema,
+  e2eeRunnerCodePairingAckSchema,
   reportIdSchema,
   reportQuestionSchema,
   runnerJobResultSchema,
@@ -157,6 +161,18 @@ import {
   publishRecoveryPairingOffer,
   submitRecoveryPairingComplete
 } from "./recoveryPairingDb.js";
+import {
+  RunnerCodeConflictError,
+  attachRunnerCodeDeviceCert,
+  claimNextRunnerCodeConfirm,
+  claimNextRunnerCodeStart,
+  createRunnerCodeStart,
+  getRunnerCodeForUser,
+  publishRunnerCodeAck,
+  publishRunnerCodeOffer,
+  submitRunnerCodeConfirm
+} from "./runnerCodeEnrollDb.js";
+import { maybeIssueRunnerCodeDeviceCert } from "./runnerCodeCert.js";
 import {
   consumeEphemeralAccessJwt,
   peekEphemeralAccessJwt,
@@ -304,6 +320,7 @@ export async function registerRoutes(app: FastifyInstance) {
         secureClientOrigin: config.secureClientOrigin || null,
         webE2eeReturnOrigins: [...config.webE2eeReturnOrigins],
         csAuthTtlSeconds: config.e2eeCsAuthTtlSeconds,
+        runnerCodePairingEnabled: config.runnerCodePairingEnabled,
         cfAccessTeamDomain: team || null,
         cfAccessLogoutUrl,
         trustRoots: loadServerTrustRoots()
@@ -1342,6 +1359,89 @@ export async function registerRoutes(app: FastifyInstance) {
             throw error;
           }
         });
+
+        // --- Runner-assisted manual code (RAMC): primary no-QR/no-email flow ---
+
+        secure.post("/runner-code/start", async (request, reply) => {
+          if (!config.runnerCodePairingEnabled) {
+            return reply.code(404).send({ error: "runner_code_pairing_disabled" });
+          }
+          const body = e2eeRunnerCodePairingStartRequestSchema.parse(request.body);
+          if (
+            config.secureClientOrigin &&
+            body.start.secureOrigin !== config.secureClientOrigin
+          ) {
+            return reply.code(400).send({ error: "secure_origin_mismatch" });
+          }
+          try {
+            const row = await createRunnerCodeStart({
+              userId: request.principal!.id,
+              email: request.principal!.email ?? null,
+              start: body.start,
+              ttlSeconds: config.e2eeRunnerCodeTtlSeconds,
+              maxAttempts: config.e2eeRunnerCodeMaxAttempts
+            });
+            await appendAudit({
+              actorUserId: request.principal!.id,
+              eventType: "e2ee.runner_code.started",
+              details: { enrollId: body.start.enrollId, clientId: body.start.clientId }
+            });
+            return reply
+              .code(202)
+              .send({ enrollId: row.enrollId, status: row.status, expiresAt: row.expiresAt });
+          } catch (error) {
+            if (error instanceof RunnerCodeConflictError) {
+              return reply.code(409).send({ error: error.code });
+            }
+            throw error;
+          }
+        });
+
+        secure.get("/runner-code/:enrollId", async (request, reply) => {
+          if (!config.runnerCodePairingEnabled) {
+            return reply.code(404).send({ error: "runner_code_pairing_disabled" });
+          }
+          const params = z.object({ enrollId: z.string().uuid() }).parse(request.params);
+          const row = await getRunnerCodeForUser(params.enrollId, request.principal!.id);
+          if (!row) return reply.code(404).send({ error: "enrollment_not_found" });
+          return {
+            enrollId: row.enrollId,
+            status: row.status,
+            offer: row.offer,
+            ack: row.ack,
+            deviceCert: row.deviceCert,
+            attemptsRemaining: Math.max(0, row.maxAttempts - row.attempts),
+            expiresAt: row.expiresAt
+          };
+        });
+
+        secure.post("/runner-code/:enrollId/confirm", async (request, reply) => {
+          if (!config.runnerCodePairingEnabled) {
+            return reply.code(404).send({ error: "runner_code_pairing_disabled" });
+          }
+          const params = z.object({ enrollId: z.string().uuid() }).parse(request.params);
+          const body = e2eeRunnerCodePairingConfirmRequestSchema.parse(request.body);
+          if (body.confirm.enrollId !== params.enrollId) {
+            return reply.code(400).send({ error: "enroll_id_mismatch" });
+          }
+          try {
+            const row = await submitRunnerCodeConfirm({
+              userId: request.principal!.id,
+              confirm: body.confirm
+            });
+            await appendAudit({
+              actorUserId: request.principal!.id,
+              eventType: "e2ee.runner_code.confirm_submitted",
+              details: { enrollId: body.confirm.enrollId, clientId: body.confirm.clientId }
+            });
+            return { enrollId: row.enrollId, status: row.status };
+          } catch (error) {
+            if (error instanceof RunnerCodeConflictError) {
+              return reply.code(409).send({ error: error.code });
+            }
+            throw error;
+          }
+        });
       },
       { prefix: "/e2ee/v1" }
     );
@@ -2002,6 +2102,110 @@ export async function registerRoutes(app: FastifyInstance) {
         .parse(request.body);
       await publishRecoveryHandle({ runnerId: body.runnerId, handle: body.handle });
       return reply.code(204).send();
+    });
+
+    // --- Runner-assisted manual code (RAMC) ---
+
+    runner.post("/e2ee/v1/runner-code/claim-start", async (request, reply) => {
+      if (!config.runnerCodePairingEnabled) return reply.code(204).send();
+      const body = z.object({ runnerId: z.string().trim().min(1).max(128) }).parse(request.body);
+      const row = await claimNextRunnerCodeStart({ runnerId: body.runnerId });
+      return row
+        ? {
+            enrollment: {
+              enrollId: row.enrollId,
+              status: row.status,
+              start: row.start,
+              email: row.email,
+              expiresAt: row.expiresAt
+            }
+          }
+        : reply.code(204).send();
+    });
+
+    runner.post("/e2ee/v1/runner-code/offer", async (request, reply) => {
+      const body = z
+        .object({ runnerId: z.string().trim().min(1).max(128), offer: e2eeRunnerCodePairingOfferSchema })
+        .parse(request.body);
+      try {
+        const row = await publishRunnerCodeOffer({ runnerId: body.runnerId, offer: body.offer });
+        await appendAudit({
+          eventType: "e2ee.runner_code.offer_published",
+          details: { enrollId: body.offer.enrollId, runnerId: body.runnerId, clientId: body.offer.clientId }
+        });
+        return { status: row.status, expiresAt: row.expiresAt };
+      } catch (error) {
+        if (error instanceof RunnerCodeConflictError) {
+          return reply.code(409).send({ error: error.code });
+        }
+        throw error;
+      }
+    });
+
+    runner.post("/e2ee/v1/runner-code/claim-confirm", async (request, reply) => {
+      const body = z.object({ runnerId: z.string().trim().min(1).max(128) }).parse(request.body);
+      const row = await claimNextRunnerCodeConfirm({ runnerId: body.runnerId });
+      return row && row.offer && row.confirm
+        ? {
+            enrollment: {
+              enrollId: row.enrollId,
+              status: row.status,
+              start: row.start,
+              offer: row.offer,
+              confirm: row.confirm,
+              expiresAt: row.expiresAt
+            }
+          }
+        : reply.code(204).send();
+    });
+
+    runner.post("/e2ee/v1/runner-code/ack", async (request, reply) => {
+      const body = z
+        .object({ runnerId: z.string().trim().min(1).max(128), ack: e2eeRunnerCodePairingAckSchema })
+        .parse(request.body);
+      try {
+        const row = await publishRunnerCodeAck({ runnerId: body.runnerId, ack: body.ack });
+        await appendAudit({
+          eventType: "e2ee.runner_code.acked",
+          details: {
+            enrollId: body.ack.enrollId,
+            runnerId: body.runnerId,
+            clientId: body.ack.clientId,
+            status: body.ack.status,
+            ...(body.ack.reason ? { reason: body.ack.reason } : {})
+          }
+        });
+        // On successful pairing, best-effort sign an account-bound cg-device-cert/2
+        // so the browser can retrieve it over the cg-mitm ciphertext channel.
+        if (row.status === "paired") {
+          try {
+            const cert = await maybeIssueRunnerCodeDeviceCert({
+              accountId: row.email ?? row.userId,
+              signingKey: row.start.signingKey,
+              encryptionKey: row.start.encryptionKey,
+              label: row.start.label ?? null
+            });
+            if (cert) {
+              await attachRunnerCodeDeviceCert({ enrollId: row.enrollId, deviceCert: cert });
+              await appendAudit({
+                eventType: "e2ee.runner_code.cert_issued",
+                details: { enrollId: row.enrollId, accountId: row.email ?? row.userId }
+              });
+            }
+          } catch (error) {
+            console.warn(
+              "[ramc] cg-device-cert issuance failed (pairing still succeeded):",
+              error instanceof Error ? error.message : "unknown"
+            );
+          }
+        }
+        return { status: row.status };
+      } catch (error) {
+        if (error instanceof RunnerCodeConflictError) {
+          return reply.code(409).send({ error: error.code });
+        }
+        throw error;
+      }
     });
   }, { prefix: "/api/runner" });
 

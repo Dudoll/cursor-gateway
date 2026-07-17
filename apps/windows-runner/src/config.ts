@@ -118,6 +118,14 @@ const envSchema = z.object({
   DEVICE_APPROVAL_TTL_SECONDS: z.coerce.number().int().positive().default(600),
   // Recovery pairing (local high-entropy code, never sent to Gateway)
   RECOVERY_TTL_SECONDS: z.coerce.number().int().positive().default(1_800),
+  // Runner-assisted manual code (RAMC) — primary no-QR/no-email flow. The code
+  // is generated live on the Runner and shown on its terminal/TTY only.
+  RUNNER_CODE_ENABLED: booleanEnv(false),
+  RUNNER_CODE_APPROVAL: z.enum(["auto", "manual"]).default("manual"),
+  RUNNER_CODE_TTL_SECONDS: z.coerce.number().int().positive().default(300),
+  // When stdout is captured by journald, mirror the code to this 0600 file
+  // (shown once then deleted) instead of the persistent structured log.
+  RUNNER_CODE_TTY: optionalEnvString,
   // CS relay client (cs-relay) signing public JWK JSON for runner verification
   RUNNER_CS_RELAY_SIGNING_PUBLIC_JWK: optionalEnvString
 });
@@ -230,5 +238,9 @@ export const config = {
   webauthnChallengeTtlSeconds: parsed.WEBAUTHN_CHALLENGE_TTL_SECONDS,
   deviceApprovalTtlSeconds: parsed.DEVICE_APPROVAL_TTL_SECONDS,
   recoveryTtlSeconds: parsed.RECOVERY_TTL_SECONDS,
-  csRelaySigningPublicJwk: parsed.RUNNER_CS_RELAY_SIGNING_PUBLIC_JWK
+  csRelaySigningPublicJwk: parsed.RUNNER_CS_RELAY_SIGNING_PUBLIC_JWK,
+  runnerCodeEnabled: parsed.RUNNER_CODE_ENABLED,
+  runnerCodeApproval: parsed.RUNNER_CODE_APPROVAL,
+  runnerCodeTtlSeconds: parsed.RUNNER_CODE_TTL_SECONDS,
+  runnerCodeTty: parsed.RUNNER_CODE_TTY
 };

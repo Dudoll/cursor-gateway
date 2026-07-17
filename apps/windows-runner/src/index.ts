@@ -27,6 +27,7 @@ import { assertPairingMailConfigOrThrow } from "./pairingMail.js";
 import { processWebauthnPairingCycle } from "./webauthnPairing.js";
 import { processDeviceApprovalCycle } from "./deviceApproval.js";
 import { processRecoveryPairingCycle } from "./recoveryPairing.js";
+import { processRunnerCodePairingCycle } from "./runnerCodePairing.js";
 
 const GATEWAY_REQUEST_TIMEOUT_MS = 30_000;
 const HEARTBEAT_INTERVAL_MS = 60_000;
@@ -504,6 +505,17 @@ async function pairingLoop(state: RunnerE2eeState) {
         error instanceof Error ? error.message : "unknown"
       );
     }
+    try {
+      await processRunnerCodePairingCycle({
+        state,
+        gatewayFetch
+      });
+    } catch (error) {
+      console.warn(
+        "Runner-code pairing cycle failed:",
+        error instanceof Error ? error.message : "unknown"
+      );
+    }
     await sleep(Math.max(config.pollIntervalMs, 3_000));
   }
 }
@@ -538,7 +550,8 @@ async function main() {
   if (state) {
     console.log(
       `Secure-web pairing enabled (mail=${config.pairingMailMode}, ttl=${config.pairingTtlSeconds}s, ` +
-        `webauthn=${config.webauthnEnabled}, rpId=${config.webauthnRpId})`
+        `webauthn=${config.webauthnEnabled}, rpId=${config.webauthnRpId}, ` +
+        `runnerCode=${config.runnerCodeEnabled}/${config.runnerCodeApproval})`
     );
     loops.push(pairingLoop(state));
   }
