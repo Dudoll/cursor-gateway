@@ -34,6 +34,7 @@ import {
 } from "./recoveryPairingClient.js";
 import {
   confirmRunnerCode,
+  deriveRunnerCodeSas,
   startRunnerCodeEnrollment
 } from "./runnerCodePairingClient.js";
 import type { E2eeRunnerCodePairingOffer } from "@cursor-gateway/shared";
@@ -93,6 +94,7 @@ export function App() {
   const [runnerCodeEnrollId, setRunnerCodeEnrollId] = useState<string | null>(null);
   const [runnerCodeOffer, setRunnerCodeOffer] = useState<E2eeRunnerCodePairingOffer | null>(null);
   const [runnerCodeInput, setRunnerCodeInput] = useState("");
+  const [runnerCodeSasWords, setRunnerCodeSasWords] = useState<string[] | null>(null);
   const [runners, setRunners] = useState<E2eeRunnerDirectoryEntry[]>([]);
   const [conversations, setConversations] = useState<E2eeConversationRecord[]>([]);
   const [titles, setTitles] = useState<Record<string, string>>({});
@@ -466,6 +468,27 @@ export function App() {
     };
   }, [boot, api, pairingPanel]);
 
+  // RAMC: recompute the browser-side 6-word SAS as the operator types the code,
+  // so they can compare it against the SAS shown on the Runner terminal before
+  // submitting (P2 mode-B human channel).
+  useEffect(() => {
+    if (!runnerCodeOffer || !runnerCodeInput.trim()) {
+      setRunnerCodeSasWords(null);
+      return;
+    }
+    let cancelled = false;
+    deriveRunnerCodeSas(runnerCodeOffer, runnerCodeInput)
+      .then((words) => {
+        if (!cancelled) setRunnerCodeSasWords(words);
+      })
+      .catch(() => {
+        if (!cancelled) setRunnerCodeSasWords(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [runnerCodeOffer, runnerCodeInput]);
+
   async function onDecideApproval(
     request: E2eeDeviceApprovalRequest,
     decision: "approved" | "rejected"
@@ -519,6 +542,7 @@ export function App() {
     setBusy(true);
     setRunnerCodeOffer(null);
     setRunnerCodeInput("");
+    setRunnerCodeSasWords(null);
     try {
       saveGatewayOrigin(gatewayInput);
       setStatus({ tone: "info", text: "正在请求 Runner 设备码…请查看 Runner 终端。" });
@@ -560,6 +584,7 @@ export function App() {
       setRunnerCodeOffer(null);
       setRunnerCodeEnrollId(null);
       setRunnerCodeInput("");
+      setRunnerCodeSasWords(null);
       await finishPairingThenMaybeReturnToCs(api, boot.keys, result.runnerId);
     } catch (error) {
       const raw = errorText(error);
@@ -844,9 +869,26 @@ export function App() {
                 <p className="meta">
                   enrollId：<code>{runnerCodeEnrollId}</code>
                 </p>
+                {runnerCodeSasWords ? (
+                  <div className="status" style={{ marginTop: 8 }}>
+                    本页 SAS（须与 Runner 终端一致）：
+                    <br />
+                    <strong style={{ fontSize: "1.1em", letterSpacing: "0.5px" }}>
+                      {runnerCodeSasWords.join(" ")}
+                    </strong>
+                    <br />
+                    <span className="meta">
+                      若两侧 SAS 不一致，请勿提交——可能存在中继篡改。
+                    </span>
+                  </div>
+                ) : null}
                 <div className="row">
-                  <button type="button" disabled={busy || !api} onClick={onConfirmRunnerCode}>
-                    核对 SAS 并提交
+                  <button
+                    type="button"
+                    disabled={busy || !api || !runnerCodeSasWords}
+                    onClick={onConfirmRunnerCode}
+                  >
+                    SAS 一致，提交配对
                   </button>
                   <button
                     type="button"
@@ -856,6 +898,7 @@ export function App() {
                       setRunnerCodeOffer(null);
                       setRunnerCodeEnrollId(null);
                       setRunnerCodeInput("");
+                      setRunnerCodeSasWords(null);
                     }}
                   >
                     取消

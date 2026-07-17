@@ -189,6 +189,22 @@ Secure Web presents, in order:
 
 All fallbacks remain fully functional and regression-tested.
 
+## 10a. P2 status — SAS mode B (shipped) vs short-code PAKE (deferred)
+
+- **Shipped (enabled):** double-ended 6-word SAS. The browser computes and
+  displays the SAS as the operator types the code; the operator compares it
+  with the SAS on the Runner terminal and only then submits. The Runner
+  recomputes the SAS over its authentic offer, rejects `sas_mismatch`, and in
+  `manual` mode requires an explicit `code:approve`. This detects a relay that
+  tampers with the transcript (keys/origins) even though the 128-bit code alone
+  already provides the primary authentication.
+- **Deferred (NOT enabled), by design:** a *short* primary code (e.g. 10 digits
+  / 6 words) would be brute-forceable against a plain HMAC transcript tag and is
+  therefore **forbidden** here. Introducing one MUST use a PAKE
+  (SPAKE2-P256 over WebCrypto, or an audited OPAQUE) so the transcript is not
+  offline-verifiable. This is tracked as future work behind a separate flag; the
+  current 128-bit high-entropy code makes it unnecessary for the primary flow.
+
 ## 11. Feature flags
 
 - Server: `RUNNER_CODE_PAIRING_ENABLED` (default off for gray rollout),
