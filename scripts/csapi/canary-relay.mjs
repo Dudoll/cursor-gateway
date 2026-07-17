@@ -1,15 +1,29 @@
-import { readFileSync } from "node:fs";
-import { migrate, pool } from "../apps/server/dist/db.js";
+import { readFileSync, writeFileSync } from "node:fs";
+import { migrate, pool } from "../../apps/server/dist/db.js";
 import { FileMasterKeyProvider } from "@cursor-gateway/e2ee";
 import {
   appendRelayMessage,
   ensureRelayConversation,
   listRelayMessages
-} from "../apps/server/dist/csRelayHistory.js";
+} from "../../apps/server/dist/csRelayHistory.js";
+
+await migrate();
+
+if (process.env.CANARY_CLEANUP_STATE) {
+  const state = JSON.parse(readFileSync(process.env.CANARY_CLEANUP_STATE, "utf8"));
+  await pool.query(`delete from cs_relay_messages where conversation_id=$1`, [
+    state.conversationId
+  ]);
+  await pool.query(`delete from conversations where id=$1`, [state.conversationId]);
+  await pool.query(`delete from account_keks where account_id=$1`, [state.accountId]);
+  await pool.query(`delete from app_users where id=$1`, [state.userId]);
+  await pool.end();
+  console.log("PASS_CLEANED");
+  process.exit(0);
+}
 
 const canary = process.env.CANARY;
 if (!canary) throw new Error("CANARY required");
-await migrate();
 const master = readFileSync(
   process.env.CS_RELAY_MASTER_KEY_FILE || process.env.CG_MASTER_KEY_FILE,
   "utf8"
@@ -60,6 +74,23 @@ if (blob.includes(canary)) {
   process.exit(2);
 }
 console.log("PASS_DB_NO_PLAINTEXT");
+if (process.env.KEEP_CANARY === "1") {
+  const stateFile = process.env.CANARY_STATE_FILE;
+  if (!stateFile) throw new Error("CANARY_STATE_FILE required with KEEP_CANARY=1");
+  writeFileSync(
+    stateFile,
+    JSON.stringify({
+      accountId,
+      conversationId,
+      userId: String(user.rows[0].id)
+    }),
+    { mode: 0o600 }
+  );
+  await pool.end();
+  console.log("PASS_KEPT_FOR_EXTERNAL_SCAN");
+  process.exit(0);
+}
+
 await pool.query(`delete from cs_relay_messages where conversation_id=$1`, [conversationId]);
 await pool.query(`delete from conversations where id=$1`, [conversationId]);
 await pool.query(`delete from account_keks where account_id=$1`, [accountId]);

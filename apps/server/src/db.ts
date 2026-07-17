@@ -526,8 +526,39 @@ export async function migrate() {
             )
           ) not valid;
       end if;
+
+      if not exists (
+        select 1 from pg_constraint where conname = 'runs_cs_relay_plaintext_empty'
+      ) then
+        alter table runs
+          add constraint runs_cs_relay_plaintext_empty
+          check (
+            content_mode <> 'cs-relay-v1'
+            or (
+              protocol_version = 'cg-e2ee/1'
+              and prompt is null
+              and response is null
+              and error is null
+              and progress is null
+              and progress_kind is null
+              and input_tokens is null
+              and output_tokens is null
+              and client_request_id is not null
+              and client_id is not null
+              and client_key_id is not null
+              and target_runner_id is not null
+              and runner_key_id is not null
+              and request_envelope is not null
+            )
+          ) not valid;
+      end if;
     end
     $cs_relay_constraints$;
+
+    alter table conversations
+      validate constraint conversations_cs_relay_plaintext_empty;
+    alter table runs
+      validate constraint runs_cs_relay_plaintext_empty;
   `);
 }
 

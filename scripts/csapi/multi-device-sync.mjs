@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { migrate, pool } from "../apps/server/dist/db.js";
+import { migrate, pool } from "../../apps/server/dist/db.js";
 import {
   FileMasterKeyProvider,
   issueCgDeviceCertV2,
@@ -7,13 +7,13 @@ import {
   generateHpkeKeyPair,
   generateSigningKeyPair
 } from "@cursor-gateway/e2ee";
-import { upsertCgDevice, revokeCgDevice, CgDeviceStatusCache } from "../apps/server/dist/cgDevicesDb.js";
+import { upsertCgDevice, revokeCgDevice, CgDeviceStatusCache } from "../../apps/server/dist/cgDevicesDb.js";
 import {
   appendRelayMessage,
   ensureRelayConversation,
   listRelayMessages,
   listRelayConversations
-} from "../apps/server/dist/csRelayHistory.js";
+} from "../../apps/server/dist/csRelayHistory.js";
 
 await migrate();
 const master = readFileSync(process.env.CS_RELAY_MASTER_KEY_FILE, "utf8").trim();
