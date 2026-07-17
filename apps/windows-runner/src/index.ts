@@ -28,6 +28,8 @@ import { processWebauthnPairingCycle } from "./webauthnPairing.js";
 import { processDeviceApprovalCycle } from "./deviceApproval.js";
 import { processRecoveryPairingCycle } from "./recoveryPairing.js";
 import { processRunnerCodePairingCycle } from "./runnerCodePairing.js";
+import { trustRootSas } from "@cursor-gateway/e2ee";
+import { loadTrustRoots as loadRunnerTrustRoots } from "./runnerCert.js";
 
 const GATEWAY_REQUEST_TIMEOUT_MS = 30_000;
 const HEARTBEAT_INTERVAL_MS = 60_000;
@@ -538,6 +540,17 @@ async function main() {
   if (state) {
     console.log(`E2EE runner encryption key: ${state.encryptionKey.fingerprint}`);
     console.log(`E2EE runner signing key: ${state.signingKey.fingerprint}`);
+    // RAMC P4: print the trust-root SAS so operators can read it into the mobile
+    // PWA over an independent channel on first install.
+    try {
+      const roots = loadRunnerTrustRoots();
+      for (const root of roots) {
+        const sas = await trustRootSas(root.fingerprint);
+        console.log(`Trust-root SAS (${root.fingerprint.slice(7, 19)}…): ${sas.join(" ")}`);
+      }
+    } catch {
+      // trust roots optional at startup
+    }
   }
 
   const workers = Array.from({ length: config.maxConcurrentJobs }, (_, index) =>

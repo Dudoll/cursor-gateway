@@ -1405,6 +1405,18 @@ export async function runnerCodeSas(
   return Array.from(mac.subarray(0, 6), (byte) => RAMC_SAS_WORDLIST[byte]!);
 }
 
+/**
+ * Deterministic 6-word SAS over a PUBLIC trust-root fingerprint (RAMC P4).
+ * No secret involved — this is a human-comparable encoding of which offline
+ * root the client is pinned to. The mobile PWA and the Runner terminal (or an
+ * already-authorized device) compute the same words from the same fingerprint;
+ * the human compares them on first install to detect a swapped rogue root.
+ */
+export async function trustRootSas(fingerprint: string): Promise<string[]> {
+  const digest = await sha256(utf8(`cursor-gateway:trust-root-sas:${fingerprint}`));
+  return Array.from(digest.subarray(0, 6), (byte) => RAMC_SAS_WORDLIST[byte]!);
+}
+
 export function runnerCodeSasEqual(a: readonly string[], b: readonly string[]): boolean {
   if (a.length !== b.length) return false;
   let mismatch = 0;

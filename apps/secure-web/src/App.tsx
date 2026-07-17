@@ -39,6 +39,14 @@ import {
 } from "./runnerCodePairingClient.js";
 import type { E2eeRunnerCodePairingOffer } from "@cursor-gateway/shared";
 import {
+  ackRootSas,
+  computeRootSas,
+  isRootSasAcked,
+  matchRootSas,
+  normalizeSasInput,
+  type RootSasEntry
+} from "./rootSasVerify.js";
+import {
   CS_AUTH_RETURNING_NOTICE,
   captureCsAuthRedirectParams,
   completeCsAuthReturn,
@@ -95,6 +103,9 @@ export function App() {
   const [runnerCodeOffer, setRunnerCodeOffer] = useState<E2eeRunnerCodePairingOffer | null>(null);
   const [runnerCodeInput, setRunnerCodeInput] = useState("");
   const [runnerCodeSasWords, setRunnerCodeSasWords] = useState<string[] | null>(null);
+  const [rootSasEntries, setRootSasEntries] = useState<RootSasEntry[]>([]);
+  const [rootSasInput, setRootSasInput] = useState("");
+  const [rootSasState, setRootSasState] = useState<"unknown" | "verified" | "failed">("unknown");
   const [runners, setRunners] = useState<E2eeRunnerDirectoryEntry[]>([]);
   const [conversations, setConversations] = useState<E2eeConversationRecord[]>([]);
   const [titles, setTitles] = useState<Record<string, string>>({});
@@ -489,6 +500,40 @@ export function App() {
     };
   }, [runnerCodeOffer, runnerCodeInput]);
 
+  // RAMC P4: compute the pinned trust-root SAS for first-install verification.
+  useEffect(() => {
+    if (boot.kind !== "ready" || !api) return;
+    let cancelled = false;
+    computeRootSas(api)
+      .then((entries) => {
+        if (cancelled) return;
+        setRootSasEntries(entries);
+        if (entries.some((e) => isRootSasAcked(e.fingerprint))) setRootSasState("verified");
+      })
+      .catch(() => {
+        // Trust roots may be unavailable before Access login; panel stays hidden.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [boot, api]);
+
+  function onVerifyRootSas() {
+    const typed = normalizeSasInput(rootSasInput);
+    const matched = matchRootSas(rootSasEntries, typed);
+    if (matched) {
+      ackRootSas(matched.fingerprint);
+      setRootSasState("verified");
+      setStatus({ tone: "ok", text: "信任根 SAS 校验通过：本页锚定的离线根与 Runner 一致。" });
+    } else {
+      setRootSasState("failed");
+      setStatus({
+        tone: "error",
+        text: "信任根 SAS 不匹配！请勿在本页配对——可能是被替换的页面/根。请改用可信 PWA 或桌面 localhost verifier。"
+      });
+    }
+  }
+
   async function onDecideApproval(
     request: E2eeDeviceApprovalRequest,
     decision: "approved" | "rejected"
@@ -796,6 +841,53 @@ export function App() {
           高熵码并输入到本页，再核对 6 词 SAS。Cloudflare Access 身份 + Runner 离线证书共同锚定信任。
           其余方式作为备选保留。
         </p>
+
+        {rootSasEntries.length > 0 ? (
+          <div
+            className={`status ${rootSasState === "failed" ? "error" : rootSasState === "verified" ? "" : "warn"}`}
+            style={{ marginBottom: 12 }}
+          >
+            <strong>首次安装信任边界：校验信任根 SAS</strong>
+            <p className="meta" style={{ marginTop: 4 }}>
+              本页锚定的离线信任根 SAS（须与 Runner 终端启动日志或已授权设备显示的一致）：
+            </p>
+            {rootSasEntries.map((entry) => (
+              <div key={entry.fingerprint} style={{ margin: "4px 0" }}>
+                <strong style={{ letterSpacing: "0.5px" }}>{entry.words.join(" ")}</strong>{" "}
+                <span className="meta">（{entry.fingerprint.slice(7, 19)}…）</span>
+              </div>
+            ))}
+            {rootSasState === "verified" ? (
+              <p className="meta">✓ 已校验：信任根与独立渠道一致。</p>
+            ) : (
+              <>
+                <p className="meta" style={{ marginTop: 6 }}>
+                  从 <strong>Runner 终端 / 已授权设备</strong>（独立渠道，非本页）读取 6 词 root SAS
+                  并输入校验。不通过则不要在本页配对（fail-closed）。首次通过 PWA
+                  安装后，后续从本地缓存加载可减少被替换风险。
+                </p>
+                <input
+                  value={rootSasInput}
+                  onChange={(event) => setRootSasInput(event.target.value)}
+                  placeholder="six word root sas"
+                  autoComplete="off"
+                  style={{ marginTop: 6 }}
+                />
+                <div className="row" style={{ marginTop: 6 }}>
+                  <button type="button" disabled={busy} onClick={onVerifyRootSas}>
+                    校验 root SAS
+                  </button>
+                </div>
+                {rootSasState === "failed" ? (
+                  <p className="meta" style={{ color: "#f87171" }}>
+                    ✗ 不匹配。配对入口已禁用，请改用可信 PWA 或桌面 localhost verifier 后重试。
+                  </p>
+                ) : null}
+              </>
+            )}
+          </div>
+        ) : null}
+
         <div className="row" style={{ marginBottom: 12 }}>
           {runnerCodeEnabled ? (
             <button
@@ -851,7 +943,11 @@ export function App() {
             </p>
             {!runnerCodeOffer ? (
               <div className="row">
-                <button type="button" disabled={busy || !api} onClick={onStartRunnerCode}>
+                <button
+                  type="button"
+                  disabled={busy || !api || rootSasState === "failed"}
+                  onClick={onStartRunnerCode}
+                >
                   请求设备码
                 </button>
               </div>
@@ -885,7 +981,7 @@ export function App() {
                 <div className="row">
                   <button
                     type="button"
-                    disabled={busy || !api || !runnerCodeSasWords}
+                    disabled={busy || !api || !runnerCodeSasWords || rootSasState === "failed"}
                     onClick={onConfirmRunnerCode}
                   >
                     SAS 一致，提交配对
