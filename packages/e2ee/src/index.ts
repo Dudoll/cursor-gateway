@@ -1283,7 +1283,7 @@ export const RAMC_SAS_WORDLIST: readonly string[] = (
   "igloo image indgo input iris iron ivory ivy jade jazz jelly jewel joker jolly juice july jumbo " +
   "juno kayak kebab kelp kettle key kiwi knight koala label lace lake lamp lance larch laser latch " +
   "lava layer leaf ledge lemon lens level lever lilac lily lime linen lion llama lobby locus lotus " +
-  "lunar lynx macro magic mango maple march mask maze meadow melon"
+  "lunar lynx macro magic mango maple march mask maze meadow"
 ).trim().split(/\s+/);
 
 /** 128-bit one-time device code as base64url (22 chars). Generated on the Runner. */
