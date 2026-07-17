@@ -1,0 +1,11 @@
+{
+  "kind": "secure-web-asset-manifest-public/1",
+  "alg": "Ed25519",
+  "publicKey": {
+    "crv": "Ed25519",
+    "x": "0A23eAVNFmep1Te3NbmwaGS2NL1xHociKaQtafmhLuw",
+    "kty": "OKP"
+  },
+  "fingerprint": "sha256:nhR0RyCYjdh6SjodR7nOELz2QPEOsNKh-7MQ3JbGhLk",
+  "createdAt": "2026-07-17T14:05:05.251Z"
+}

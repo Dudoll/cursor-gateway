@@ -55,6 +55,18 @@ tsx ../../scripts/e2ee/verify-secure-web.ts --serve --port 8790 \
 # GET http://127.0.0.1:8790/verify?origin=https://secure.joelzt.org
 ```
 
+## Hosting caveat (SPA fallback / Cloudflare Pages)
+
+The verifier fetches `<origin>/asset-manifest.json` and each asset as **real
+files**. If the origin uses an SPA catch-all (`try_files … /index.html`, or a
+Cloudflare Pages/Worker single-page rewrite) that returns `index.html` for
+unknown paths, `/asset-manifest.json` and hashed asset paths must be **excluded**
+from that rewrite so they resolve to the actual files. On the VPS nginx origin
+the files resolve correctly (`200 application/json`). When Secure Web is hosted
+on Cloudflare Pages, deploy the built `apps/secure-web/dist` (which now includes
+`asset-manifest.json`) via `wrangler pages deploy apps/secure-web/dist` and
+ensure `_headers`/routing serve the manifest as a static asset.
+
 ## Security properties
 
 - **Loopback bind only** (`127.0.0.1`); not reachable off-host.
