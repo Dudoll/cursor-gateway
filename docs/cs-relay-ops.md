@@ -25,6 +25,24 @@
 6. 开 `CS_RELAY_RUNNER_REENCRYPT`（CS decrypt → truncate → HPKE 封 Runner → 队列只存 envelope；Runner 从 `/cg/v1/server-keys` 自动拉 CS 签名公钥）。远程 mTLS 可用 `scripts/csapi/gen-internal-mtls.sh` 生成内部 CA（应用层主路径不阻塞）。
 7. **最后**再考虑 `CG_REQUIRE_SECURE`。
 
+## P4 再封装闭环验证（默认仍关，可一键启用）
+
+`CS_RELAY_RUNNER_REENCRYPT` **默认 false**（安全默认）。开启前先在容器内跑受控 runner 闭环，
+证明服务端「结果回解密」链路正确、且队列/DB 无明文（不依赖真实 runner 的长 agent 任务）：
+
+```bash
+# 容器内：注册受控 runner → CS 建 cg-e2ee/1 envelope → 回封结果 → CS 验签并解密
+sudo docker cp scripts/csapi/p4-reencrypt-loop.mjs infra-app-1:/app/scripts/csapi/
+sudo docker exec infra-app-1 sh -lc 'node /app/scripts/csapi/p4-reencrypt-loop.mjs'
+# 期望：P4_CS_DECRYPTED ... echoed_canary=true / P4_QUEUE_NO_PLAINTEXT / PASS_RELAY_P4_LOOP
+```
+
+一键灰度开启（小流量）：在 `.env` 设 `CS_RELAY_RUNNER_REENCRYPT=true` 后
+`docker compose up -d --no-deps app`。真实 runner 需能从 `/cg/v1/server-keys` 拉到 CS 签名公钥
+（`RUNNER_CS_RELAY_SIGNING_PUBLIC_JWK` 未配置时自动拉取）。
+注意：真实 runner 对复杂 prompt 的 agent 任务可能耗时较长（环境因素），灰度期建议配合
+`CSAPI_RUN_TIMEOUT_MS` 调大并小流量观察；回滚只需将开关置回 false 并重启 app。
+
 ## 回滚
 
 - 关 `CS_RELAY_HISTORY_ENABLED` / `CG_REQUIRE_SECURE` 即可回旧路径。
