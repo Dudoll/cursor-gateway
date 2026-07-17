@@ -14,6 +14,7 @@ import {
   listRelayMessages,
   listRelayConversations
 } from "../../apps/server/dist/csRelayHistory.js";
+import { closeSyncBus } from "../../apps/server/dist/csapi/syncBus.js";
 
 await migrate();
 const master = readFileSync(process.env.CS_RELAY_MASTER_KEY_FILE, "utf8").trim();
@@ -110,5 +111,6 @@ await pool.query(`delete from conversations where id=$1`, [conversationId]);
 await pool.query(`delete from cg_devices where account_id in ($1,$2)`, [accountA, accountB]);
 await pool.query(`delete from account_keks where account_id in ($1,$2)`, [accountA, accountB]);
 await pool.query(`delete from app_users where id=$1`, [user.rows[0].id]);
+await closeSyncBus();
 await pool.end();
 console.log("PASS_MULTI_DEVICE_SYNC");

@@ -142,4 +142,8 @@ test("cg_devices enroll/revoke + relay history isolation", { skip: !databaseUrl 
   await pool.query(`delete from conversations where id = $1`, [conversationId]);
   await pool.query(`delete from cg_devices where device_id = $1`, [deviceId]);
   await pool.query(`delete from account_keks where account_id = $1`, [accountA]);
+
+  const { closeSyncBus } = await import("../src/csapi/syncBus.js");
+  await closeSyncBus();
+  await pool.end();
 });

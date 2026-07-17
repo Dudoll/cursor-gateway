@@ -6,6 +6,7 @@ import {
   ensureRelayConversation,
   listRelayMessages
 } from "../../apps/server/dist/csRelayHistory.js";
+import { closeSyncBus } from "../../apps/server/dist/csapi/syncBus.js";
 
 await migrate();
 
@@ -17,6 +18,7 @@ if (process.env.CANARY_CLEANUP_STATE) {
   await pool.query(`delete from conversations where id=$1`, [state.conversationId]);
   await pool.query(`delete from account_keks where account_id=$1`, [state.accountId]);
   await pool.query(`delete from app_users where id=$1`, [state.userId]);
+  await closeSyncBus();
   await pool.end();
   console.log("PASS_CLEANED");
   process.exit(0);
@@ -86,6 +88,7 @@ if (process.env.KEEP_CANARY === "1") {
     }),
     { mode: 0o600 }
   );
+  await closeSyncBus();
   await pool.end();
   console.log("PASS_KEPT_FOR_EXTERNAL_SCAN");
   process.exit(0);
@@ -95,5 +98,6 @@ await pool.query(`delete from cs_relay_messages where conversation_id=$1`, [conv
 await pool.query(`delete from conversations where id=$1`, [conversationId]);
 await pool.query(`delete from account_keks where account_id=$1`, [accountId]);
 await pool.query(`delete from app_users where id=$1`, [user.rows[0].id]);
+await closeSyncBus();
 await pool.end();
 console.log("PASS_CLEANED");

@@ -13,6 +13,7 @@ export type SyncNotifyPayload = {
 };
 
 let publisher: Redis | null = null;
+let publisherConnect: Promise<void> | null = null;
 const subscriberByAccount = new Map<string, Set<(payload: SyncNotifyPayload) => void>>();
 
 function redisEnabled(): boolean {
@@ -62,7 +63,18 @@ export async function publishSyncNotify(payload: SyncNotifyPayload): Promise<voi
     sequence: payload.sequence
   };
   try {
-    if (pub.status !== "ready") await pub.connect();
+    if (pub.status === "wait" || pub.status === "end") {
+      // Serialize connects so concurrent publishes never hit
+      // "Redis is already connecting/connected".
+      if (!publisherConnect) {
+        publisherConnect = pub.connect().finally(() => {
+          publisherConnect = null;
+        });
+      }
+      await publisherConnect;
+    } else if (pub.status !== "ready") {
+      await new Promise<void>((resolve) => pub.once("ready", () => resolve()));
+    }
     await pub.publish(CHANNEL, JSON.stringify(safe));
   } catch (error) {
     console.warn("[cs-relay-sync] publish failed", error);
@@ -84,4 +96,21 @@ export async function subscribeSyncAccount(
     set!.delete(listener);
     if (set!.size === 0) subscriberByAccount.delete(accountId);
   };
+}
+
+/** Close pub/sub sockets so short-lived scripts / tests can exit cleanly. */
+export async function closeSyncBus(): Promise<void> {
+  const closers: Promise<unknown>[] = [];
+  if (publisher) {
+    const pub = publisher;
+    closers.push(pub.quit().catch(() => pub.disconnect()));
+    publisher = null;
+  }
+  if (subscriber) {
+    const sub = subscriber;
+    closers.push(sub.quit().catch(() => sub.disconnect()));
+    subscriber = null;
+  }
+  subscriberByAccount.clear();
+  await Promise.allSettled(closers);
 }
