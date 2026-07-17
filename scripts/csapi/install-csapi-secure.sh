@@ -663,7 +663,7 @@ EOF
       warn "如希望登出后仍运行，可执行: loginctl enable-linger $USER"
     fi
   else
-    err "systemctl --user enable --now 失败。看日志: journalctl --user -u $SERVICE_NAME -e"
+    err "systemctl --user enable/restart 失败。看日志: journalctl --user -u $SERVICE_NAME -e"
     return 1
   fi
 }
