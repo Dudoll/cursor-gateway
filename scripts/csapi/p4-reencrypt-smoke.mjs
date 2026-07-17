@@ -62,7 +62,7 @@ try {
     turns: [{ role: "user", content: `Reply with exactly this token: ${canary}` }],
     csSigningPrivateKey: secure.signingPrivateKey,
     csSigningKeyId: secure.signingKeyId,
-    timeoutMs: 60_000,
+    timeoutMs: Number(process.env.P4_TIMEOUT_MS || 60_000),
     pollIntervalMs: 500
   });
   runId = result.runId;
