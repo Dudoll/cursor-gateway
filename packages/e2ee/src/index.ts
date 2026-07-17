@@ -6,6 +6,7 @@ import {
   E2EE_PROTOCOL,
   E2EE_RECOVERY_PAIRING_KIND,
   E2EE_RUNNER_CERT_KIND,
+  E2EE_RUNNER_CODE_PAIRING_KIND,
   E2EE_TRUST_ROOT_KIND,
   e2eeCsAuthGrantSchema,
   e2eeRunnerIdentityCertSchema,
@@ -22,6 +23,7 @@ import {
   type E2eeProgressEnvelope,
   type E2eePublicKey,
   type E2eeRecoveryPairingOffer,
+  type E2eeRunnerCodePairingOffer,
   type E2eeResultEnvelope,
   type E2eeRunRequestEnvelope,
   type E2eeRunnerIdentityCert,
@@ -1255,6 +1257,161 @@ export async function verifyRecoveryTranscriptMac(
   } catch {
     return false;
   }
+}
+
+// --- Runner-assisted manual code (RAMC): secure-web-runner-code/1 ---
+
+/**
+ * 256-word SAS lexicon (1 byte → 1 word). Short, phonetically distinct common
+ * words so an operator can read a 6-word code aloud / compare it on-screen.
+ * Index = byte value; the list MUST stay exactly 256 entries and MUST NOT be
+ * reordered (it is part of the wire-visible SAS derivation).
+ */
+export const RAMC_SAS_WORDLIST: readonly string[] = (
+  "acid acorn actor agent alarm album alert alien alpha amber angel apple april arena armor arrow " +
+  "aspen atlas atom aura axis bacon badge baker banjo basil beach beacon beans beard beast begin " +
+  "bench berry bison black blade blaze bliss block bloom board bonus boost booth brave bread brick " +
+  "broom brush cabin cable cacao cadet camel candy canoe canon cargo carol catch cedar chalk charm " +
+  "chess chief chili chord cider cigar civic clamp clay cliff cloak clock cloud clover coach cobra " +
+  "cocoa comet coral cover crane crate cream crest crisp crown cube curve dance dawn debut decoy " +
+  "delta demon depot diary diver dodge donor dough dozen draft drama dream drift drum eagle early " +
+  "earth easel ebony echo edge eject elbow elder elf ember emu envoy epic equal ether ever exit " +
+  "fable fairy fancy fang feast fern fever fiber field flame flash fleet flint float flood flora " +
+  "flour focus forge fox frame frost fruit fuel gamma garlic gate gecko genie ghost giant glade " +
+  "glass globe glory glove gnome grade grain grape grass green grill grove guard guest gulf habit " +
+  "harp hazel heart hedge helm herb hero hive honey hood horn hotel hound hue human ice icon idea " +
+  "igloo image indgo input iris iron ivory ivy jade jazz jelly jewel joker jolly juice july jumbo " +
+  "juno kayak kebab kelp kettle key kiwi knight koala label lace lake lamp lance larch laser latch " +
+  "lava layer leaf ledge lemon lens level lever lilac lily lime linen lion llama lobby locus lotus " +
+  "lunar lynx macro magic mango maple march mask maze meadow melon"
+).trim().split(/\s+/);
+
+/** 128-bit one-time device code as base64url (22 chars). Generated on the Runner. */
+export function generateRunnerDeviceCode(): string {
+  return encodeBase64Url(globalThis.crypto.getRandomValues(new Uint8Array(16)));
+}
+
+/** Human display form: Crockford base32 in groups (e.g. XXXX-XXXX-XXXX-XXXX). */
+export function runnerDeviceCodeDisplay(codeBase64Url: string): string {
+  return encodeCrockfordGrouped(codeBase64Url, 5);
+}
+
+/** Accept the raw base64url code or its Crockford display form; returns base64url. */
+export function normalizeRunnerDeviceCodeInput(raw: string): string {
+  const trimmed = raw.trim();
+  if (/^[A-Za-z0-9_-]{22}$/.test(trimmed)) return trimmed;
+  const crockfordLike = /^[0-9A-HJKMNPQRSTVWXYZa-hjmnpqrstvwxyzILOilo\s-]+$/;
+  if (crockfordLike.test(trimmed) && trimmed.replace(/[\s-]/g, "").length >= 20) {
+    return decodeCrockfordGrouped(trimmed, 16);
+  }
+  throw new Error("invalid_runner_device_code_format");
+}
+
+/**
+ * Canonical transcript authenticated by the one-time code. Binds every field
+ * the P0 spec requires: enrollId, serverNonce, both parties' signing +
+ * encryption fingerprints, the Runner cert id, the root id/fingerprint/epoch,
+ * and the origins. The Gateway never sees the code; only this public material.
+ */
+export function runnerCodePairingTranscript(offer: E2eeRunnerCodePairingOffer): JsonValue {
+  return {
+    protocol: E2EE_PROTOCOL,
+    pairingKind: E2EE_RUNNER_CODE_PAIRING_KIND,
+    purpose: "secure-web-runner-code-transcript",
+    enrollId: offer.enrollId,
+    serverNonce: offer.serverNonce,
+    runnerId: offer.runnerId,
+    runnerChallenge: offer.runnerChallenge,
+    runnerEncryptionFingerprint: offer.runnerEncryptionKey.fingerprint,
+    runnerSigningFingerprint: offer.runnerSigningKey.fingerprint,
+    runnerCertId: offer.runnerCertificate.certId,
+    rootKeyId: offer.runnerCertificate.rootKeyId,
+    rootFingerprint: offer.runnerCertificate.rootFingerprint,
+    rootEpoch: offer.runnerCertificate.epoch,
+    clientId: offer.clientId,
+    clientChallenge: offer.clientChallenge,
+    clientSigningFingerprint: offer.clientSigningFingerprint,
+    clientEncryptionFingerprint: offer.clientEncryptionFingerprint,
+    secureOrigin: offer.secureOrigin,
+    gatewayOrigin: offer.gatewayOrigin,
+    expiresAt: offer.expiresAt
+  };
+}
+
+async function deriveRunnerCodeKey(
+  code: string,
+  purpose: "mac" | "sas"
+): Promise<CryptoKey> {
+  const raw = decodeBase64Url(code);
+  if (raw.length !== 16) throw new Error("invalid_runner_device_code_length");
+  const ikm = await subtle.importKey("raw", toArrayBuffer(raw), "HKDF", false, ["deriveKey"]);
+  return subtle.deriveKey(
+    {
+      name: "HKDF",
+      hash: "SHA-256",
+      salt: toArrayBuffer(encoder.encode(E2EE_PROTOCOL)),
+      info: toArrayBuffer(encoder.encode(`cursor-gateway:secure-web-runner-code-${purpose}`))
+    },
+    ikm,
+    { name: "HMAC", hash: "SHA-256", length: 256 },
+    false,
+    ["sign", "verify"]
+  );
+}
+
+export async function macRunnerCodeTranscript(
+  code: string,
+  offer: E2eeRunnerCodePairingOffer
+): Promise<string> {
+  const key = await deriveRunnerCodeKey(code, "mac");
+  const mac = new Uint8Array(
+    await subtle.sign("HMAC", key, toArrayBuffer(canonicalBytes(runnerCodePairingTranscript(offer))))
+  );
+  return encodeBase64Url(mac);
+}
+
+export async function verifyRunnerCodeTranscriptMac(
+  code: string,
+  offer: E2eeRunnerCodePairingOffer,
+  expectedMac: string
+): Promise<boolean> {
+  try {
+    const key = await deriveRunnerCodeKey(code, "mac");
+    return subtle.verify(
+      "HMAC",
+      key,
+      toArrayBuffer(decodeBase64Url(expectedMac)),
+      toArrayBuffer(canonicalBytes(runnerCodePairingTranscript(offer)))
+    );
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * 6-word Short Authentication String bound to the code AND the full transcript.
+ * Both the Runner terminal and the browser compute it independently; they match
+ * iff the same code was used over the same (untampered) transcript — this is the
+ * human channel that detects a relay tampering with public keys/origins.
+ */
+export async function runnerCodeSas(
+  code: string,
+  offer: E2eeRunnerCodePairingOffer
+): Promise<string[]> {
+  const key = await deriveRunnerCodeKey(code, "sas");
+  const mac = new Uint8Array(
+    await subtle.sign("HMAC", key, toArrayBuffer(canonicalBytes(runnerCodePairingTranscript(offer))))
+  );
+  return Array.from(mac.subarray(0, 6), (byte) => RAMC_SAS_WORDLIST[byte]!);
+}
+
+export function runnerCodeSasEqual(a: readonly string[], b: readonly string[]): boolean {
+  if (a.length !== b.length) return false;
+  let mismatch = 0;
+  for (let i = 0; i < a.length; i += 1) {
+    if (a[i]!.toLowerCase() !== b[i]!.toLowerCase()) mismatch += 1;
+  }
+  return mismatch === 0;
 }
 
 /** Device-approval transcript signed by an already-paired device. */

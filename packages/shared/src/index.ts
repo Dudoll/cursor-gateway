@@ -1023,6 +1023,122 @@ export const e2eeRecoveryHandleSchema = z
   .strict();
 export type E2eeRecoveryHandle = z.infer<typeof e2eeRecoveryHandleSchema>;
 
+/* -------------------------------------------------------------------------- */
+/* Runner-assisted manual code (RAMC) pairing — secure-web-runner-code/1.      */
+/*                                                                             */
+/* Primary no-QR / no-email device verification. The Runner generates a live   */
+/* 128-bit one-time code, shows it (plus a 6-word SAS) on its own terminal /   */
+/* TTY; the operator types the code into the browser. The code is NEVER        */
+/* uploaded and NEVER stored server-side in cleartext — only public envelopes  */
+/* + an HMAC transcript tag cross the wire. Roles are the mirror image of      */
+/* recovery pairing: here the *Runner* holds the secret and the *browser*      */
+/* proves knowledge by MAC-ing the transcript with the typed code.            */
+/* -------------------------------------------------------------------------- */
+export const E2EE_RUNNER_CODE_PAIRING_KIND = "secure-web-runner-code/1" as const;
+
+export const e2eeRunnerCodeStatusSchema = z.enum([
+  "requested",
+  "offered",
+  "confirm_submitted",
+  "paired",
+  "cert_issued",
+  "locked",
+  "expired",
+  "rejected"
+]);
+export type E2eeRunnerCodeStatus = z.infer<typeof e2eeRunnerCodeStatusSchema>;
+
+/** Browser → Gateway: begin an enrollment. accountId/email come from CF Access, never here. */
+export const e2eeRunnerCodePairingStartSchema = z
+  .object({
+    protocol: z.literal(E2EE_PROTOCOL),
+    pairingKind: z.literal(E2EE_RUNNER_CODE_PAIRING_KIND),
+    enrollId: z.string().uuid(),
+    clientId: z.string().trim().min(8).max(128),
+    clientChallenge: base64UrlSchema(43).length(43),
+    signingKey: e2eeKeyDescriptorSchema,
+    encryptionKey: e2eeKeyDescriptorSchema,
+    label: z.string().trim().min(1).max(128).nullable().optional(),
+    secureOrigin: z.string().url().max(512),
+    gatewayOrigin: z.string().url().max(512),
+    createdAt: z.string().min(1).max(64)
+  })
+  .strict();
+export type E2eeRunnerCodePairingStart = z.infer<typeof e2eeRunnerCodePairingStartSchema>;
+
+/** Runner → Gateway → Browser: publish the enrollment offer (public material only). */
+export const e2eeRunnerCodePairingOfferSchema = z
+  .object({
+    protocol: z.literal(E2EE_PROTOCOL),
+    pairingKind: z.literal(E2EE_RUNNER_CODE_PAIRING_KIND),
+    enrollId: z.string().uuid(),
+    runnerId: z.string().trim().min(1).max(128),
+    /** Server/Runner freshness nonce bound into the transcript. */
+    serverNonce: base64UrlSchema(43).length(43),
+    runnerChallenge: base64UrlSchema(43).length(43),
+    runnerEncryptionKey: e2eeKeyDescriptorSchema,
+    runnerSigningKey: e2eeKeyDescriptorSchema,
+    runnerCertificate: e2eeRunnerIdentityCertSchema,
+    clientId: z.string().trim().min(8).max(128),
+    clientChallenge: base64UrlSchema(43).length(43),
+    clientSigningFingerprint: z.string().regex(/^sha256:[A-Za-z0-9_-]{43}$/),
+    clientEncryptionFingerprint: z.string().regex(/^sha256:[A-Za-z0-9_-]{43}$/),
+    secureOrigin: z.string().url().max(512),
+    gatewayOrigin: z.string().url().max(512),
+    expiresAt: z.string().min(1).max(64),
+    createdAt: z.string().min(1).max(64)
+  })
+  .strict();
+export type E2eeRunnerCodePairingOffer = z.infer<typeof e2eeRunnerCodePairingOfferSchema>;
+
+/** Browser → Gateway → Runner: prove knowledge of the typed code via HMAC transcript tag. */
+export const e2eeRunnerCodePairingConfirmSchema = z
+  .object({
+    protocol: z.literal(E2EE_PROTOCOL),
+    pairingKind: z.literal(E2EE_RUNNER_CODE_PAIRING_KIND),
+    enrollId: z.string().uuid(),
+    clientId: z.string().trim().min(8).max(128),
+    /** HMAC(code, transcript) — the code itself never crosses the wire. */
+    transcriptMac: base64UrlSchema(43).length(43),
+    /** 6-word SAS the browser displayed, for the operator to compare (P2 mode B). */
+    sas: z.array(z.string().trim().min(1).max(24)).length(6),
+    signature: e2eeSignatureSchema,
+    createdAt: z.string().min(1).max(64)
+  })
+  .strict();
+export type E2eeRunnerCodePairingConfirm = z.infer<typeof e2eeRunnerCodePairingConfirmSchema>;
+
+/** Runner → Gateway → Browser: final signed outcome; carries the account-bound cg cert when issued. */
+export const e2eeRunnerCodePairingAckSchema = z
+  .object({
+    protocol: z.literal(E2EE_PROTOCOL),
+    pairingKind: z.literal(E2EE_RUNNER_CODE_PAIRING_KIND),
+    enrollId: z.string().uuid(),
+    clientId: z.string().trim().min(8).max(128),
+    runnerId: z.string().trim().min(1).max(128),
+    status: z.enum(["paired", "rejected"]),
+    /** Safe machine-readable reject code (no secrets); omitted on success. */
+    reason: z
+      .string()
+      .trim()
+      .regex(/^[a-z][a-z0-9_]{1,127}$/)
+      .optional(),
+    runnerEncryptionKey: e2eeKeyDescriptorSchema,
+    runnerSigningKey: e2eeKeyDescriptorSchema,
+    runnerCertificate: e2eeRunnerIdentityCertSchema,
+    createdAt: z.string().min(1).max(64),
+    signature: e2eeSignatureSchema
+  })
+  .strict();
+export type E2eeRunnerCodePairingAck = z.infer<typeof e2eeRunnerCodePairingAckSchema>;
+
+export const e2eeRunnerCodePairingStartRequestSchema = z
+  .object({ start: e2eeRunnerCodePairingStartSchema })
+  .strict();
+export const e2eeRunnerCodePairingConfirmRequestSchema = z
+  .object({ confirm: e2eeRunnerCodePairingConfirmSchema })
+  .strict();
+
 // cg-mitm/1 application-layer anti-MITM channel schema (P1). Re-exported last so the
 // base e2ee* schemas above are fully initialized before cgMitm.ts consumes them.
 export * from "./cgMitm.js";
