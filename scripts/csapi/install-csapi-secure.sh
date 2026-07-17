@@ -589,6 +589,17 @@ ENV_FILE="$ENV_FILE"
 # 安装时已经验证并规范化仓库路径。启动器固定使用该路径，避免 systemd
 # 环境中遗留的 CSAPI_REPO_DIR 把有效路径覆盖成 Windows 路径或旧目录。
 REPO_ROOT="$REPO_ROOT"
+if [ ! -d "\$REPO_ROOT/apps/secure-adapter" ]; then
+  # 仓库被移动或旧启动器记录了失效路径时，自动寻找安装器的托管 clone。
+  # 仅接受实际包含 apps/secure-adapter 的候选，错误环境变量不会覆盖有效路径。
+  for CANDIDATE in "\${CSAPI_REPO_DIR:-}" "$CLONE_DIR" "\$HOME/.cursor-gateway/cursor-gateway"; do
+    if [ -n "\$CANDIDATE" ] && [ -d "\$CANDIDATE/apps/secure-adapter" ]; then
+      REPO_ROOT="\$(cd "\$CANDIDATE" && pwd)"
+      break
+    fi
+  done
+  unset CANDIDATE
+fi
 # 托管 Node（缺 node 时由安装器自动下载到用户目录）优先加入 PATH。
 MANAGED_NODE_BIN="$MANAGED_NODE_BIN"
 if [ -x "\$MANAGED_NODE_BIN/node" ]; then
@@ -643,7 +654,10 @@ WantedBy=default.target
 EOF
   info "已写 systemd --user 单元: $SERVICE_FILE"
   systemctl --user daemon-reload 2>/dev/null || true
-  if systemctl --user enable --now "$SERVICE_NAME" 2>/dev/null; then
+  # enable --now 对已经 active 的旧服务不会重启；安装/升级后必须显式 restart，
+  # 确保它重新读取刚生成的启动器和仓库路径。
+  if systemctl --user enable "$SERVICE_NAME" >/dev/null 2>&1 &&
+     systemctl --user restart "$SERVICE_NAME" 2>/dev/null; then
     info "已注册并启动服务（开机自启）: systemctl --user status $SERVICE_NAME"
     if have loginctl; then
       warn "如希望登出后仍运行，可执行: loginctl enable-linger $USER"
@@ -671,7 +685,7 @@ service_active() {
 start_adapter() {
   # 优先 systemd 服务（已安装）。
   if systemd_user_ok && [ -f "$SERVICE_FILE" ]; then
-    systemctl --user start "$SERVICE_NAME" 2>/dev/null && { info "已通过 systemd 启动服务。"; return 0; }
+    systemctl --user restart "$SERVICE_NAME" 2>/dev/null && { info "已通过 systemd 重启服务。"; return 0; }
   fi
   [ -f "$LAUNCHER" ] || { err "缺少启动器 $LAUNCHER，请先安装。"; exit 1; }
   if adapter_running; then info "Adapter 已在运行 (pid $(cat "$PID_FILE"))。"; return 0; fi
@@ -717,6 +731,14 @@ status_adapter() {
   fi
   [ -f "$ENV_FILE" ] && info "配置: $ENV_FILE" || info "尚无配置（未安装）。"
   [ -f "$SERVICE_FILE" ] && info "服务单元: $SERVICE_FILE"
+}
+
+show_adapter_logs() {
+  if systemd_user_ok && [ -f "$SERVICE_FILE" ] && have journalctl; then
+    journalctl --user -u "$SERVICE_NAME" -n 30 --no-pager 2>/dev/null
+  else
+    tail -n 30 "$LOG_FILE" 2>/dev/null
+  fi
 }
 
 remove_service() {
@@ -1025,7 +1047,7 @@ elif [ -z "$REPO_ROOT" ] || [ ! -d "$REPO_ROOT/apps/secure-adapter" ]; then
   err "  · 未能获取仓库源码（clone 失败或被 --no-clone 关闭）。装好 git+网络、或设 CSAPI_REPO_DIR 后重跑。"
 else
   err "  · Adapter 启动后 fail-closed（多为服务端未开安全通道 / 证书 / 根指纹问题）。日志尾部："
-  tail -n 20 "$LOG_FILE" 2>/dev/null | sed 's/^/      /' >&2 || true
+  show_adapter_logs | sed 's/^/      /' >&2 || true
   err "  · 亦可先用方案 B（明文兼容）临时试用：sh scripts/csapi/install-csapi.sh"
 fi
 exit 1
