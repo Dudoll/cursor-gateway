@@ -8,7 +8,11 @@
     "dev": "vite --host 127.0.0.1 --port 5174",
     "preview": "vite preview --host 127.0.0.1 --port 5174",
     "test": "tsx --test test/*.test.ts",
-    "typecheck": "tsc --noEmit -p tsconfig.json"
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "manifest:init": "tsx ../../scripts/e2ee/asset-manifest-cli.ts init-key",
+    "manifest:sign": "tsx ../../scripts/e2ee/asset-manifest-cli.ts sign --dist dist",
+    "manifest:verify-local": "tsx ../../scripts/e2ee/asset-manifest-cli.ts verify-local --dist dist",
+    "verify:secure-web": "tsx ../../scripts/e2ee/verify-secure-web.ts"
   },
   "dependencies": {
     "@cursor-gateway/e2ee": "file:../../packages/e2ee",
