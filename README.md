@@ -80,6 +80,29 @@ relay ciphertext, use the signed **Secure Gateway** browser extension
 runner. Prompts, history, Memory, progress, and results are encrypted on the
 endpoints; the runner decrypts locally before calling the Cursor SDK.
 
+### Device verification (no QR, no email) — recommended order
+
+The Secure Web PWA verifies a new device against a Runner + Cloudflare Access
+account. Recommended order (each fallback stays fully supported):
+
+1. **Runner device code (RAMC)** — *primary, no QR / no email.* The Runner
+   shows a one-time high-entropy code + a 6-word SAS on its own terminal; you
+   type the code into the browser and compare the SAS. See
+   [`docs/runner-manual-code-pairing.md`](docs/runner-manual-code-pairing.md).
+   Enable with `RUNNER_CODE_PAIRING_ENABLED=true` (server) and
+   `RUNNER_CODE_ENABLED=true` (runner).
+2. **Already-authorized device approval** — an existing paired device signs off.
+3. **Passkey** (WebAuthn / Windows Hello / Face ID).
+4. **Recovery code** (high-entropy, Runner-generated).
+5. **Email magic-link** / **QR** (fallback for environments without a Runner
+   terminal at hand).
+
+First-install integrity (mobile PWA) is anchored by a **trust-root SAS** you
+compare out-of-band, and optionally by the **desktop localhost verifier**
+([`docs/secure-web-verifier.md`](docs/secure-web-verifier.md)) which attests the
+served assets independently of the page JS. RAMC alone does not attest first-load
+JS — that requires the trusted PWA bootstrap or the localhost verifier.
+
 Setup order, server/runner environment variables (`E2EE_REQUIRED_FOR_WEB`,
 `E2EE_EXTENSION_ORIGINS`, `SECURE_CLIENT_ORIGIN`, `RUNNER_E2EE_ENABLED`, …),
 offline / magic-link pairing, key rotation/revocation, the extension build +
