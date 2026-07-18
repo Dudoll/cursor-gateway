@@ -77,7 +77,58 @@ fn bridge_url(origin: &str) -> Result<url::Url, String> {
     url::Url::parse(&base).map_err(|e| format!("invalid_bridge_url:{e}"))
 }
 
+/// WebView2 (Windows) throttles and eventually suspends the renderer of a
+/// hidden / minimized / occluded WebView. That silently stalled the Access
+/// bridge's `fetch()` — the injected request never ran, so the POST to
+/// `/api/e2ee/v1/approvals/request` never reached the Gateway and the command
+/// timed out with `access_bridge_fetch_timeout` (surfaced as the generic
+/// "设备批准失败：unknown_error" before the error-mapping fix).
+///
+/// Tauri's `backgroundThrottling` config only takes effect on WebKit
+/// (macOS/iOS), so on Windows we disable throttling through Chromium's startup
+/// flags. WebView2 reads these from `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS`
+/// when its environment is created, so this must be set before any window (and
+/// thus the shared WebView2 environment) is built.
+const WEBVIEW2_ARGS_ENV: &str = "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS";
+
+const WEBVIEW2_NO_THROTTLE_FLAGS: &[&str] = &[
+    "--disable-background-timer-throttling",
+    "--disable-renderer-backgrounding",
+    "--disable-backgrounding-occluded-windows",
+];
+
+/// Merge our no-throttle flags into any pre-existing WebView2 argument string
+/// without duplicating flags already present. Pure so it can be unit-tested.
+fn webview2_browser_args(existing: Option<&str>) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    if let Some(existing) = existing {
+        let trimmed = existing.trim();
+        if !trimmed.is_empty() {
+            parts.push(trimmed.to_string());
+        }
+    }
+    for flag in WEBVIEW2_NO_THROTTLE_FLAGS {
+        let already = parts.iter().any(|p| p.split_whitespace().any(|t| t == *flag));
+        if !already {
+            parts.push((*flag).to_string());
+        }
+    }
+    parts.join(" ")
+}
+
+/// Ensure the hidden Access-bridge WebView keeps running (no background
+/// throttling) so it can proxy API calls while parked in the tray.
+fn ensure_webview2_no_throttle() {
+    let existing = std::env::var(WEBVIEW2_ARGS_ENV).ok();
+    let combined = webview2_browser_args(existing.as_deref());
+    std::env::set_var(WEBVIEW2_ARGS_ENV, combined);
+}
+
+/// Park the bridge out of the user's way after login. The WebView2 renderer is
+/// kept alive (throttling is disabled globally, see `ensure_webview2_no_throttle`)
+/// so the hidden window can still proxy API calls.
 fn hide_bridge_to_tray(window: &WebviewWindow) {
+    let _ = window.set_skip_taskbar(true);
     let _ = window.hide();
 }
 
@@ -506,6 +557,11 @@ fn setup_tray(app: &AppHandle) -> tauri::Result<()> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Must run before the WebView2 environment is created (i.e. before any
+    // window is built) so the hidden Access bridge keeps proxying fetches
+    // instead of being suspended in the tray.
+    ensure_webview2_no_throttle();
+
     tauri::Builder::default()
         .manage(BridgeState::default())
         .invoke_handler(tauri::generate_handler![
@@ -521,4 +577,61 @@ pub fn run() {
         })
         .run(tauri::generate_context!())
         .expect("error while running Cursor Gateway desktop application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn browser_args_injects_no_throttle_flags_when_empty() {
+        let args = webview2_browser_args(None);
+        for flag in WEBVIEW2_NO_THROTTLE_FLAGS {
+            assert!(args.contains(flag), "missing {flag} in `{args}`");
+        }
+    }
+
+    #[test]
+    fn browser_args_preserves_existing_and_dedupes() {
+        let existing = "--disable-background-timer-throttling --foo=bar";
+        let args = webview2_browser_args(Some(existing));
+        // Pre-existing flags are kept.
+        assert!(args.contains("--foo=bar"));
+        // Already-present flag is not duplicated.
+        assert_eq!(args.matches("--disable-background-timer-throttling").count(), 1);
+        // Missing flags are appended.
+        assert!(args.contains("--disable-renderer-backgrounding"));
+        assert!(args.contains("--disable-backgrounding-occluded-windows"));
+    }
+
+    #[test]
+    fn browser_args_ignores_blank_existing() {
+        let args = webview2_browser_args(Some("   "));
+        assert!(!args.starts_with(' '));
+        assert!(args.contains("--disable-renderer-backgrounding"));
+    }
+
+    #[test]
+    fn normalize_gateway_origin_strips_path_and_lowercases() {
+        assert_eq!(
+            normalize_gateway_origin("https://secure.joelzt.org/foo?x=1").unwrap(),
+            "https://secure.joelzt.org"
+        );
+    }
+
+    #[test]
+    fn normalize_gateway_origin_rejects_bad_scheme_and_credentials() {
+        assert!(normalize_gateway_origin("ftp://example.com").is_err());
+        assert!(normalize_gateway_origin("https://user:pw@example.com").is_err());
+        assert!(normalize_gateway_origin("not a url").is_err());
+    }
+
+    #[test]
+    fn bridge_url_targets_desktop_access_bridge() {
+        let url = bridge_url("https://secure.joelzt.org").unwrap();
+        assert_eq!(
+            url.as_str(),
+            "https://secure.joelzt.org/api/desktop/access/bridge"
+        );
+    }
 }

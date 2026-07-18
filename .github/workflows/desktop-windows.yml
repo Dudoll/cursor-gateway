@@ -54,6 +54,9 @@ jobs:
       - name: Generate application icons
         run: npm run icon -w @cursor-gateway/desktop
 
+      - name: Run desktop shell unit tests
+        run: cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml
+
       - name: Build NSIS installer
         run: npm run tauri -w @cursor-gateway/desktop -- build --bundles nsis
 
