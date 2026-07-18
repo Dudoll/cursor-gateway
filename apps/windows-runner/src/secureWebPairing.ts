@@ -18,7 +18,7 @@ import {
 } from "@cursor-gateway/e2ee";
 import { join } from "node:path";
 import { homedir } from "node:os";
-import { config } from "./config.js";
+import { config, isAllowedSecureOrigin } from "./config.js";
 import { RunnerE2eeState } from "./e2eeState.js";
 import { sendPairingEmail } from "./pairingMail.js";
 import { buildPairingMailContent } from "./mail/pairingMailTemplate.js";
@@ -80,10 +80,7 @@ async function claimAndOffer(input: {
     return;
   }
 
-  if (
-    config.secureClientOrigin &&
-    start.secureOrigin !== config.secureClientOrigin
-  ) {
+  if (!isAllowedSecureOrigin(start.secureOrigin)) {
     console.warn(`Rejecting pairing ${start.pairId}: secure origin mismatch`);
     return;
   }

@@ -11,7 +11,7 @@ import {
   signValue,
   verifyDeviceApprovalDecision
 } from "@cursor-gateway/e2ee";
-import { config } from "./config.js";
+import { config, isAllowedSecureOrigin } from "./config.js";
 import { RunnerE2eeState } from "./e2eeState.js";
 import { getRunnerCertificate } from "./runnerCert.js";
 
@@ -54,10 +54,7 @@ export async function processDeviceApprovalCycle(input: {
     ) {
       throw new Error("device_approval_fingerprint_mismatch");
     }
-    if (
-      config.secureClientOrigin &&
-      request.secureOrigin !== config.secureClientOrigin
-    ) {
+    if (!isAllowedSecureOrigin(request.secureOrigin)) {
       throw new Error("device_approval_secure_origin_mismatch");
     }
 

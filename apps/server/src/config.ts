@@ -125,7 +125,14 @@ export const config = {
   runnerMaxConcurrentJobs: parsed.RUNNER_MAX_CONCURRENT_JOBS,
   e2eeRequiredForWeb: parsed.E2EE_REQUIRED_FOR_WEB,
   e2eeExtensionOrigins: new Set(splitCsv(parsed.E2EE_EXTENSION_ORIGINS)),
-  secureClientOrigin: parsed.SECURE_CLIENT_ORIGIN.trim(),
+  // SECURE_CLIENT_ORIGIN accepts a comma-separated allowlist so the same
+  // Secure Web bundle can run from more than one origin (e.g. the hosted PWA
+  // at https://secure.joelzt.org AND the Tauri desktop shell, which serves the
+  // bundled assets from http://tauri.localhost on Windows / tauri://localhost
+  // on macOS+Linux). The first entry stays the canonical origin advertised to
+  // clients; every entry is honoured for CORS and secureOrigin checks.
+  secureClientOrigin: splitCsv(parsed.SECURE_CLIENT_ORIGIN)[0] ?? "",
+  secureClientOrigins: new Set(splitCsv(parsed.SECURE_CLIENT_ORIGIN)),
   webE2eeReturnOrigins: new Set(splitCsv(parsed.WEB_E2EE_RETURN_ORIGINS)),
   e2eePairingTtlSeconds: parsed.E2EE_PAIRING_TTL_SECONDS,
   e2eeCsAuthTtlSeconds: parsed.E2EE_CS_AUTH_TTL_SECONDS,
@@ -185,3 +192,14 @@ export const config = {
 };
 
 export const isProduction = config.nodeEnv === "production";
+
+/**
+ * True when `origin` is an allowlisted Secure Web origin. Used for both CORS
+ * and for validating the `secureOrigin` field embedded in E2EE pairing /
+ * approval envelopes. When no allowlist is configured, every origin passes so
+ * local/dev deployments are not blocked.
+ */
+export function isAllowedSecureOrigin(origin: string | undefined | null): boolean {
+  if (config.secureClientOrigins.size === 0) return true;
+  return !!origin && config.secureClientOrigins.has(origin);
+}

@@ -40,12 +40,16 @@ async function main() {
       if (
         !origin ||
         origin === config.publicOrigin ||
-        (config.secureClientOrigin && origin === config.secureClientOrigin) ||
+        config.secureClientOrigins.has(origin) ||
         config.e2eeExtensionOrigins.has(origin)
       ) {
         callback(null, true);
         return;
       }
+      // Log denied origins (non-sensitive) so misconfigured clients — e.g. the
+      // Tauri desktop shell posting from http://tauri.localhost — are visible
+      // instead of silently failing the CORS preflight with a 404.
+      app.log.warn({ origin, event: "cors.origin_denied" }, "CORS origin denied");
       callback(null, false);
     },
     credentials: true

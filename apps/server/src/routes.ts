@@ -51,7 +51,7 @@ import {
   requireRunner,
   requireRole
 } from "./auth.js";
-import { config } from "./config.js";
+import { config, isAllowedSecureOrigin } from "./config.js";
 
 const serverRoot = dirname(fileURLToPath(import.meta.url));
 const extensionZipPath = join(serverRoot, "../../../artifacts/cursor-gateway-secure.zip");
@@ -911,10 +911,7 @@ export async function registerRoutes(app: FastifyInstance) {
 
         secure.post("/pairings/start", async (request, reply) => {
           const body = e2eePairingStartRequestSchema.parse(request.body);
-          if (
-            config.secureClientOrigin &&
-            body.start.secureOrigin !== config.secureClientOrigin
-          ) {
+          if (!isAllowedSecureOrigin(body.start.secureOrigin)) {
             return reply.code(400).send({ error: "secure_origin_mismatch" });
           }
           try {
@@ -1152,10 +1149,7 @@ export async function registerRoutes(app: FastifyInstance) {
 
         secure.post("/passkey/start", async (request, reply) => {
           const body = e2eePasskeyPairingStartRequestSchema.parse(request.body);
-          if (
-            config.secureClientOrigin &&
-            body.start.secureOrigin !== config.secureClientOrigin
-          ) {
+          if (!isAllowedSecureOrigin(body.start.secureOrigin)) {
             return reply.code(400).send({ error: "secure_origin_mismatch" });
           }
           try {
@@ -1228,10 +1222,7 @@ export async function registerRoutes(app: FastifyInstance) {
 
         secure.post("/approvals/request", async (request, reply) => {
           const body = e2eeDeviceApprovalRequestBodySchema.parse(request.body);
-          if (
-            config.secureClientOrigin &&
-            body.request.secureOrigin !== config.secureClientOrigin
-          ) {
+          if (!isAllowedSecureOrigin(body.request.secureOrigin)) {
             return reply.code(400).send({ error: "secure_origin_mismatch" });
           }
           try {
@@ -1313,10 +1304,7 @@ export async function registerRoutes(app: FastifyInstance) {
 
         secure.post("/recovery/start", async (request, reply) => {
           const body = e2eeRecoveryPairingStartRequestSchema.parse(request.body);
-          if (
-            config.secureClientOrigin &&
-            body.start.secureOrigin !== config.secureClientOrigin
-          ) {
+          if (!isAllowedSecureOrigin(body.start.secureOrigin)) {
             return reply.code(400).send({ error: "secure_origin_mismatch" });
           }
           try {
@@ -1393,10 +1381,7 @@ export async function registerRoutes(app: FastifyInstance) {
             return reply.code(404).send({ error: "runner_code_pairing_disabled" });
           }
           const body = e2eeRunnerCodePairingStartRequestSchema.parse(request.body);
-          if (
-            config.secureClientOrigin &&
-            body.start.secureOrigin !== config.secureClientOrigin
-          ) {
+          if (!isAllowedSecureOrigin(body.start.secureOrigin)) {
             return reply.code(400).send({ error: "secure_origin_mismatch" });
           }
           try {

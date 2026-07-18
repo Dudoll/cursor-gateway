@@ -194,7 +194,20 @@ export const config = {
   defaultModel: parsed.DEFAULT_MODEL,
   cloudflareAccessClientId: parsed.CF_ACCESS_CLIENT_ID,
   cloudflareAccessClientSecret: parsed.CF_ACCESS_CLIENT_SECRET,
-  secureClientOrigin: parsed.SECURE_CLIENT_ORIGIN,
+  // Comma-separated allowlist. First entry stays canonical; every entry is
+  // accepted for the secureOrigin embedded in pairing/approval envelopes so the
+  // Tauri desktop shell (http://tauri.localhost / tauri://localhost) works
+  // alongside the hosted PWA.
+  secureClientOrigin: (parsed.SECURE_CLIENT_ORIGIN ?? "")
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean)[0] ?? "",
+  secureClientOrigins: new Set(
+    (parsed.SECURE_CLIENT_ORIGIN ?? "")
+      .split(",")
+      .map((item) => item.trim())
+      .filter(Boolean)
+  ),
   pairingTtlSeconds: parsed.PAIRING_TTL_SECONDS,
   pairingMailMode: parsed.PAIRING_MAIL_MODE,
   pairingMailTo: parsed.PAIRING_MAIL_TO,
@@ -244,3 +257,13 @@ export const config = {
   runnerCodeTtlSeconds: parsed.RUNNER_CODE_TTL_SECONDS,
   runnerCodeTty: parsed.RUNNER_CODE_TTY
 };
+
+/**
+ * True when `origin` is an allowlisted Secure Web origin (or when no allowlist
+ * is configured). Mirrors the Gateway's check so pairing/approval envelopes
+ * from the desktop shell are not rejected as `secure_origin_mismatch`.
+ */
+export function isAllowedSecureOrigin(origin: string | undefined | null): boolean {
+  if (config.secureClientOrigins.size === 0) return true;
+  return !!origin && config.secureClientOrigins.has(origin);
+}
