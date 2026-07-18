@@ -114,7 +114,11 @@ export class GatewayApi {
       if (code.includes("cloudflare_login_required")) {
         throw new GatewayApiError(401, "cloudflare_login_required");
       }
-      throw error;
+      // Tauri's `invoke` rejects with a plain string when the Rust bridge
+      // returns `Err(String)`. Re-throwing it raw let callers collapse the real
+      // Access-bridge code into a generic "unknown_error". Wrap it so the true
+      // reason (e.g. access_bridge_fetch_timeout) always survives.
+      throw error instanceof Error ? error : new Error(code);
     }
 
     if (result.opaqueRedirect || result.status === 0) {

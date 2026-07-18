@@ -21,6 +21,7 @@ import {
 } from "./pairing.js";
 import { pairWithPasskey } from "./passkeyPairing.js";
 import { formatPasskeyError } from "./passkeyErrors.js";
+import { errorText } from "./errorText.js";
 import {
   decideDeviceApproval,
   listPendingApprovals,
@@ -84,12 +85,6 @@ type BootState =
 
 type Step = 1 | 2 | 3;
 type PairingPanel = "runnercode" | "approval" | "passkey" | "recovery" | "mail";
-
-function errorText(error: unknown) {
-  if (error instanceof GatewayApiError) return error.code;
-  if (error instanceof Error) return error.message;
-  return "unknown_error";
-}
 
 type DesktopAccessPolicy = {
   cfAccessLogoutUrl?: string | null;
