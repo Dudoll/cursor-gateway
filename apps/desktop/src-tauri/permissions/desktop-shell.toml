@@ -1,0 +1,24 @@
+[[permission]]
+identifier = "allow-desktop-app-version"
+description = "Allow reading the installed desktop app version."
+commands.allow = ["desktop_app_version"]
+
+[[permission]]
+identifier = "allow-desktop-access-ensure"
+description = "Allow ensuring the Cloudflare Access bridge window is ready."
+commands.allow = ["desktop_access_ensure"]
+
+[[permission]]
+identifier = "allow-desktop-access-show"
+description = "Allow showing the Cloudflare Access login bridge window."
+commands.allow = ["desktop_access_show"]
+
+[[permission]]
+identifier = "allow-desktop-bridge-fetch"
+description = "Allow proxying Gateway API requests through the Access bridge WebView."
+commands.allow = ["desktop_bridge_fetch"]
+
+[[permission]]
+identifier = "allow-desktop-install-update"
+description = "Allow downloading and launching the desktop installer update."
+commands.allow = ["desktop_install_update"]

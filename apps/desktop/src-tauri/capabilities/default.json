@@ -5,29 +5,21 @@
   "windows": ["main", "access-bridge"],
   "permissions": [
     "core:default",
+    "core:event:allow-listen",
+    "core:event:allow-emit",
+    "core:event:allow-emit-to",
     "core:webview:allow-create-webview-window",
     "core:webview:allow-webview-close",
     "core:webview:allow-webview-show",
     "core:webview:allow-webview-hide",
-    "core:event:allow-listen",
-    "core:event:allow-emit",
-    "core:event:allow-emit-to",
     "core:window:allow-show",
     "core:window:allow-hide",
     "core:window:allow-set-focus",
     "core:window:allow-close",
-    {
-      "identifier": "allow-desktop-shell-commands",
-      "description": "Desktop Access bridge + updater IPC",
-      "commands": {
-        "allow": [
-          "desktop_app_version",
-          "desktop_access_ensure",
-          "desktop_access_show",
-          "desktop_bridge_fetch",
-          "desktop_install_update"
-        ]
-      }
-    }
+    "allow-desktop-app-version",
+    "allow-desktop-access-ensure",
+    "allow-desktop-access-show",
+    "allow-desktop-bridge-fetch",
+    "allow-desktop-install-update"
   ]
 }
