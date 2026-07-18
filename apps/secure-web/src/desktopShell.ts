@@ -101,9 +101,9 @@ export async function desktopInstallUpdate(gatewayOrigin: string): Promise<void>
  * remote version to display when an upgrade is available, otherwise null.
  */
 export function desktopUpgradeTarget(input: {
-  remoteVersion?: string | null;
+  remoteVersion?: string | null | undefined;
   localVersion: string;
-  installerAvailable?: boolean;
+  installerAvailable?: boolean | undefined;
 }): string | null {
   const { remoteVersion, localVersion, installerAvailable } = input;
   if (!installerAvailable) return null;
