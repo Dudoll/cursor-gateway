@@ -118,38 +118,30 @@ async fn wait_bridge_ready(
     result
 }
 
-async fn ensure_bridge_window(
-    app: &AppHandle,
-    origin: &str,
-    interactive: bool,
-) -> Result<WebviewWindow, String> {
+/// Create the Access bridge window if missing, then show + focus it.
+///
+/// This deliberately does **not** wait for Cloudflare Access login to complete:
+/// the window must pop up immediately when the user clicks "登录 Cloudflare
+/// Access". Login completion is observed separately (frontend polling of
+/// `/api/e2ee-policy`, or `wait_bridge_ready` in `desktop_access_ensure`).
+///
+/// Window creation runs from an `async` command, which is required on Windows —
+/// `WebviewWindowBuilder::build()` deadlocks inside synchronous commands
+/// (WebView2 UI-thread reentrancy).
+async fn open_bridge_window(app: &AppHandle, origin: &str) -> Result<WebviewWindow, String> {
     let url = bridge_url(origin)?;
 
     if let Some(existing) = app.get_webview_window(BRIDGE_LABEL) {
+        // Already logged in and hidden to tray → nothing to show; the next API
+        // call through the bridge will succeed. Otherwise surface the window so
+        // the user can complete Access login.
         let ready = eval_bridge_ready(&existing).await.unwrap_or(false);
-        if ready {
-            if !interactive {
-                hide_bridge_to_tray(&existing);
-            }
-            return Ok(existing);
+        if !ready {
+            let _ = existing.show();
+            let _ = existing.unminimize();
+            let _ = existing.set_focus();
         }
-        if !interactive {
-            return Err("cloudflare_login_required".into());
-        }
-        existing
-            .navigate(url)
-            .map_err(|e| format!("access_bridge_navigate:{e}"))?;
-        existing.show().map_err(|e| format!("access_bridge_show:{e}"))?;
-        existing
-            .set_focus()
-            .map_err(|e| format!("access_bridge_focus:{e}"))?;
-        wait_bridge_ready(app, &existing, Duration::from_secs(300)).await?;
-        hide_bridge_to_tray(&existing);
         return Ok(existing);
-    }
-
-    if !interactive {
-        return Err("cloudflare_login_required".into());
     }
 
     let window = WebviewWindowBuilder::new(app, BRIDGE_LABEL, WebviewUrl::External(url))
@@ -157,13 +149,29 @@ async fn ensure_bridge_window(
         .inner_size(520.0, 780.0)
         .resizable(true)
         .center()
-        .skip_taskbar(true)
+        .visible(true)
+        .focused(true)
         .build()
         .map_err(|e| format!("access_bridge_create:{e}"))?;
 
-    wait_bridge_ready(app, &window, Duration::from_secs(300)).await?;
-    hide_bridge_to_tray(&window);
+    // Explicit show/focus: external-URL windows on Windows do not always appear
+    // in the foreground on build alone.
+    let _ = window.show();
+    let _ = window.set_focus();
     Ok(window)
+}
+
+/// Return the bridge window only if it exists and Access login is complete.
+/// Used by non-interactive API proxying — never creates a window.
+async fn require_ready_bridge_window(app: &AppHandle, _origin: &str) -> Result<WebviewWindow, String> {
+    if let Some(existing) = app.get_webview_window(BRIDGE_LABEL) {
+        if eval_bridge_ready(&existing).await.unwrap_or(false) {
+            // Login is done: keep the WebView alive for cookies but out of the way.
+            hide_bridge_to_tray(&existing);
+            return Ok(existing);
+        }
+    }
+    Err("cloudflare_login_required".into())
 }
 
 async fn eval_bridge_ready(window: &WebviewWindow) -> Result<bool, String> {
@@ -358,16 +366,20 @@ async fn desktop_app_version(app: AppHandle) -> Result<DesktopVersionInfo, Strin
 #[tauri::command]
 async fn desktop_access_ensure(app: AppHandle, gateway_origin: String) -> Result<(), String> {
     let origin = normalize_gateway_origin(&gateway_origin)?;
-    let _ = ensure_bridge_window(&app, &origin, true).await?;
+    let window = open_bridge_window(&app, &origin).await?;
+    wait_bridge_ready(&app, &window, Duration::from_secs(300)).await?;
+    // Login completed — keep WebView alive but out of the way (tray).
+    hide_bridge_to_tray(&window);
     Ok(())
 }
 
+/// Open (or reveal) the Access login window and return immediately. The window
+/// must pop up on click; the frontend then polls the Gateway until Access login
+/// succeeds. Blocking here risks the click appearing to "do nothing".
 #[tauri::command]
 async fn desktop_access_show(app: AppHandle, gateway_origin: String) -> Result<(), String> {
     let origin = normalize_gateway_origin(&gateway_origin)?;
-    let window = ensure_bridge_window(&app, &origin, true).await?;
-    // Login completed — keep WebView alive but out of the way (tray).
-    hide_bridge_to_tray(&window);
+    let _ = open_bridge_window(&app, &origin).await?;
     Ok(())
 }
 
@@ -378,7 +390,7 @@ async fn desktop_bridge_fetch(
     request: BridgeFetchRequest,
 ) -> Result<BridgeFetchResponse, String> {
     let origin = normalize_gateway_origin(&request.gateway_origin)?;
-    let window = ensure_bridge_window(&app, &origin, false).await?;
+    let window = require_ready_bridge_window(&app, &origin).await?;
     let mut req = request;
     req.gateway_origin = origin;
     bridge_fetch_via_window(&app, &window, &state, &req).await
@@ -391,7 +403,7 @@ async fn desktop_install_update(
     gateway_origin: String,
 ) -> Result<(), String> {
     let origin = normalize_gateway_origin(&gateway_origin)?;
-    let window = ensure_bridge_window(&app, &origin, false).await?;
+    let window = require_ready_bridge_window(&app, &origin).await?;
     let response = bridge_fetch_via_window(
         &app,
         &window,

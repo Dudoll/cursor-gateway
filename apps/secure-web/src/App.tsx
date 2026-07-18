@@ -72,8 +72,8 @@ import {
   desktopAccessShow,
   desktopAppVersion,
   desktopInstallUpdate,
-  isDesktopShell,
-  isNewerDesktopVersion
+  desktopUpgradeTarget,
+  isDesktopShell
 } from "./desktopShell.js";
 import { ArrowUpCircle, KeyRound } from "lucide-react";
 
@@ -89,6 +89,37 @@ function errorText(error: unknown) {
   if (error instanceof GatewayApiError) return error.code;
   if (error instanceof Error) return error.message;
   return "unknown_error";
+}
+
+type DesktopAccessPolicy = {
+  cfAccessLogoutUrl?: string | null;
+  runnerCodePairingEnabled?: boolean;
+};
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * Desktop: after the Access bridge window pops, poll the Gateway until Cloudflare
+ * Access login completes (the bridge stops returning `cloudflare_login_required`).
+ * The Rust `desktop_access_show` command returns immediately so the window is
+ * visible right away; login is detected here instead of blocking the invoke.
+ */
+async function waitForDesktopAccessLogin(
+  clientApi: GatewayApi,
+  timeoutMs = 300_000
+): Promise<DesktopAccessPolicy> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    try {
+      return await clientApi.get<DesktopAccessPolicy>("/api/e2ee-policy");
+    } catch (error) {
+      const stillWaiting =
+        error instanceof GatewayApiError && error.code === "cloudflare_login_required";
+      if (!stillWaiting) throw error;
+      if (Date.now() >= deadline) throw new Error("access_bridge_login_timeout");
+      await sleep(2_000);
+    }
+  }
 }
 
 export function App() {
@@ -227,15 +258,13 @@ export function App() {
           installerAvailable?: boolean;
         }>("/api/desktop/version");
         if (cancelled) return;
-        if (
-          remote.installerAvailable &&
-          typeof remote.version === "string" &&
-          isNewerDesktopVersion(remote.version, local)
-        ) {
-          setUpdateAvailable(remote.version);
-        } else {
-          setUpdateAvailable(null);
-        }
+        setUpdateAvailable(
+          desktopUpgradeTarget({
+            remoteVersion: remote.version,
+            localVersion: local,
+            installerAvailable: remote.installerAvailable
+          })
+        );
       } catch {
         if (!cancelled) setUpdateAvailable(null);
       }
@@ -447,13 +476,15 @@ export function App() {
     try {
       saveGatewayOrigin(origin);
       setGatewayInput(origin);
-      setStatus({ tone: "info", text: "正在打开 Cloudflare Access 登录窗口…" });
+      setStatus({
+        tone: "info",
+        text: "已打开 Cloudflare Access 登录窗口。请在弹出的窗口内完成登录，随后会自动继续…"
+      });
+      // Pops the bridge window immediately (does not block on login).
       await desktopAccessShow(origin);
       const clientApi = new GatewayApi(origin);
-      const policy = await clientApi.get<{
-        cfAccessLogoutUrl?: string | null;
-        runnerCodePairingEnabled?: boolean;
-      }>("/api/e2ee-policy");
+      // Poll the Gateway until Access login completes (bridge becomes ready).
+      const policy = await waitForDesktopAccessLogin(clientApi);
       setAccessReady(true);
       if (policy.cfAccessLogoutUrl) setCfAccessLogoutUrl(policy.cfAccessLogoutUrl);
       if (policy.runnerCodePairingEnabled) {
@@ -472,8 +503,10 @@ export function App() {
         tone: "error",
         text:
           code === "access_bridge_login_timeout"
-            ? "Access 登录超时。请重试并在弹出窗口内完成身份验证。"
-            : `Access 登录失败：${code}`
+            ? "Access 登录超时（5 分钟）。请重试并在弹出窗口内完成身份验证。"
+            : code === "access_bridge_create"
+              ? "无法打开 Access 登录窗口。请重试；若持续失败请重启客户端。"
+              : `Access 登录失败：${code}`
       });
     } finally {
       setBusy(false);

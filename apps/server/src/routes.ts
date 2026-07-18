@@ -8,7 +8,8 @@ import {
   DESKTOP_DOWNLOAD_PATH,
   desktopAccessBridgeHtml,
   desktopArtifactPaths,
-  readDesktopVersionMeta
+  readDesktopVersionMeta,
+  resolveDesktopInstallerPath
 } from "./desktopPublic.js";
 import {
   E2EE_PROTOCOL,
@@ -63,10 +64,13 @@ import { config, isAllowedSecureOrigin } from "./config.js";
 const serverRoot = dirname(fileURLToPath(import.meta.url));
 const extensionZipPath = join(serverRoot, "../../../artifacts/cursor-gateway-secure.zip");
 const {
-  installerPath: desktopInstallerPath,
+  installerCandidates: desktopInstallerCandidates,
   versionPath: desktopVersionPath,
   sha256SumsPath: desktopSha256SumsPath
 } = desktopArtifactPaths(serverRoot);
+// Re-resolve per request so a deploy that adds the installer after startup
+// (or uses a legacy layout) is picked up without a server restart.
+const currentDesktopInstallerPath = () => resolveDesktopInstallerPath(desktopInstallerCandidates);
 import {
   AutomationThreadWorkspaceMismatchError,
   type RunExecutor,
@@ -315,6 +319,7 @@ export async function registerRoutes(app: FastifyInstance) {
     });
 
     api.get("/desktop/download", async (request, reply) => {
+      const desktopInstallerPath = currentDesktopInstallerPath();
       if (!existsSync(desktopInstallerPath)) {
         await appendAudit({
           ...(request.principal?.id ? { actorUserId: request.principal.id } : {}),
@@ -359,7 +364,7 @@ export async function registerRoutes(app: FastifyInstance) {
       const meta = readDesktopVersionMeta({
         versionPath: desktopVersionPath,
         sha256SumsPath: desktopSha256SumsPath,
-        installerPath: desktopInstallerPath
+        installerPath: currentDesktopInstallerPath()
       });
       return {
         version: meta.version,

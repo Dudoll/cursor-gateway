@@ -11,6 +11,7 @@ import {
   desktopAccessBridgeHtml,
   desktopArtifactPaths,
   readDesktopVersionMeta,
+  resolveDesktopInstallerPath,
   shouldPreserveRouteContentSecurityPolicy
 } from "../src/desktopPublic.js";
 
@@ -78,9 +79,44 @@ test("readDesktopVersionMeta detects installer file and falls back to SHA256SUMS
   assert.equal(meta.installerAvailable, true);
 });
 
-test("desktopArtifactPaths resolve under repo artifacts/", () => {
+test("desktopArtifactPaths resolve under repo artifacts/ (canonical desktop/ layout)", () => {
   const paths = desktopArtifactPaths("/app/apps/server/dist");
-  assert.equal(paths.installerPath.replace(/\\/g, "/"), "/app/artifacts/cursor-gateway-desktop-setup.exe");
-  assert.equal(paths.versionPath.replace(/\\/g, "/"), "/app/artifacts/desktop/version.json");
-  assert.equal(paths.sha256SumsPath.replace(/\\/g, "/"), "/app/artifacts/desktop/SHA256SUMS");
+  const norm = (p: string) => p.replace(/\\/g, "/");
+  // Canonical path (matches CI + sign script output) comes first.
+  assert.equal(
+    norm(paths.installerCandidates[0]),
+    "/app/artifacts/desktop/cursor-gateway-desktop-setup.exe"
+  );
+  // Legacy artifacts/ root path kept as a fallback for older deploys.
+  assert.equal(
+    norm(paths.installerCandidates[1]),
+    "/app/artifacts/cursor-gateway-desktop-setup.exe"
+  );
+  // With no files present, installerPath defaults to the canonical candidate.
+  assert.equal(
+    norm(paths.installerPath),
+    "/app/artifacts/desktop/cursor-gateway-desktop-setup.exe"
+  );
+  assert.equal(norm(paths.versionPath), "/app/artifacts/desktop/version.json");
+  assert.equal(norm(paths.sha256SumsPath), "/app/artifacts/desktop/SHA256SUMS");
+});
+
+test("resolveDesktopInstallerPath prefers desktop/ but falls back to legacy root", () => {
+  const root = mkdtempSync(join(tmpdir(), "cg-desktop-resolve-"));
+  const desktopDir = join(root, "desktop");
+  mkdirSync(desktopDir, { recursive: true });
+  const canonical = join(desktopDir, "cursor-gateway-desktop-setup.exe");
+  const legacy = join(root, "cursor-gateway-desktop-setup.exe");
+  const candidates = [canonical, legacy];
+
+  // Nothing present → returns the canonical candidate (so /download 404s cleanly).
+  assert.equal(resolveDesktopInstallerPath(candidates), canonical);
+
+  // Only the legacy root copy exists (mirrors the current VPS workaround).
+  writeFileSync(legacy, "MZ-legacy");
+  assert.equal(resolveDesktopInstallerPath(candidates), legacy);
+
+  // Canonical desktop/ copy present → preferred over legacy.
+  writeFileSync(canonical, "MZ-canonical");
+  assert.equal(resolveDesktopInstallerPath(candidates), canonical);
 });

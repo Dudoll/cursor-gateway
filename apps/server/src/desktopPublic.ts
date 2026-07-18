@@ -67,6 +67,21 @@ export type DesktopVersionMeta = {
   installerAvailable: boolean;
 };
 
+/**
+ * Resolve the installer path across supported artifact layouts.
+ *
+ * CI (`.github/workflows/desktop-windows.yml`) and the sign script both emit the
+ * NSIS installer into `artifacts/desktop/`. Older deploys dropped a copy at the
+ * `artifacts/` root. Prefer the canonical `desktop/` path, fall back to the root
+ * so a mixed/legacy deploy still serves a real `.exe` instead of a 404.
+ */
+export function resolveDesktopInstallerPath(candidates: string[]): string {
+  for (const candidate of candidates) {
+    if (existsSync(candidate)) return candidate;
+  }
+  return candidates[0] ?? "";
+}
+
 export function readDesktopVersionMeta(paths: {
   versionPath: string;
   sha256SumsPath: string;
@@ -111,8 +126,15 @@ export function readDesktopVersionMeta(paths: {
 /** Resolve artifact paths relative to the compiled server entry (`dist/`). */
 export function desktopArtifactPaths(serverDistDir: string) {
   const artifactsRoot = join(serverDistDir, "../../../artifacts");
+  // Canonical CI/sign output lives in artifacts/desktop/; keep the legacy
+  // artifacts/ root as a fallback so older deploys keep serving a real exe.
+  const installerCandidates = [
+    join(artifactsRoot, "desktop/cursor-gateway-desktop-setup.exe"),
+    join(artifactsRoot, "cursor-gateway-desktop-setup.exe")
+  ];
   return {
-    installerPath: join(artifactsRoot, "cursor-gateway-desktop-setup.exe"),
+    installerPath: resolveDesktopInstallerPath(installerCandidates),
+    installerCandidates,
     versionPath: join(artifactsRoot, "desktop/version.json"),
     sha256SumsPath: join(artifactsRoot, "desktop/SHA256SUMS")
   };

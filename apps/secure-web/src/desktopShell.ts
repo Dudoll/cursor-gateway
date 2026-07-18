@@ -93,6 +93,24 @@ export async function desktopInstallUpdate(gatewayOrigin: string): Promise<void>
   await tauriInvoke("desktop_install_update", { gatewayOrigin });
 }
 
+/**
+ * Decide whether the top-right upgrade icon should show.
+ *
+ * Requires a working installer on the server (`installerAvailable`) AND a
+ * strictly newer remote version than the locally installed shell. Returns the
+ * remote version to display when an upgrade is available, otherwise null.
+ */
+export function desktopUpgradeTarget(input: {
+  remoteVersion?: string | null;
+  localVersion: string;
+  installerAvailable?: boolean;
+}): string | null {
+  const { remoteVersion, localVersion, installerAvailable } = input;
+  if (!installerAvailable) return null;
+  if (typeof remoteVersion !== "string" || remoteVersion.trim() === "") return null;
+  return isNewerDesktopVersion(remoteVersion, localVersion) ? remoteVersion : null;
+}
+
 /** Compare dotted semver-like versions; returns true when remote > local. */
 export function isNewerDesktopVersion(remote: string, local: string): boolean {
   const parse = (value: string) => {
