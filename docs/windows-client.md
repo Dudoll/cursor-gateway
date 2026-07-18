@@ -44,10 +44,20 @@ apps/desktop/
 3. WebView2 Runtime（Win11 自带；Win10 用 Evergreen 安装器）
 4. NSIS 由 Tauri 自动下载；MSI 需要 WiX（可选）
 
-一键出包（在仓库根）：
+**最省事：一键脚本**（自动装 Node/Rust/WebView2/Build Tools 若缺，clone/checkout，出包并打印 SHA256）：
+
+```powershell
+# 从任意目录（会自动 clone 到 %USERPROFILE%\cursor-gateway 并构建 desktop-v0.1.0）
+irm https://raw.githubusercontent.com/Dudoll/cursor-gateway/main/scripts/desktop/build-desktop-windows.ps1 -OutFile build.ps1
+powershell -ExecutionPolicy Bypass -File .\build.ps1 -OutDir $HOME\Desktop
+```
+
+手动一键出包（在仓库根，前置环境已装好时）：
 
 ```powershell
 npm install
+npm run build -w @cursor-gateway/shared      # secure-web 依赖 shared/e2ee 的 dist
+npm run build -w @cursor-gateway/e2ee
 npm run build -w @cursor-gateway/secure-web   # 先构建被打包的前端产物
 npm run build -w @cursor-gateway/desktop       # = build:frontend + icon + tauri build（NSIS）
 ```
@@ -101,6 +111,56 @@ Get-FileHash .\cursor-gateway-desktop-setup.exe -Algorithm SHA256
 > **未完成项**：Windows 代码签名证书（Authenticode）尚未接入。没有商业签名证书时，
 > 首次运行会出现 SmartScreen 提示；请先用 SHA256/Ed25519 校验完整性。购得 EV/OV 证书后，
 > 在 `tauri.conf.json` 的 `bundle.windows` 配置 `certificateThumbprint` 或在 CI 用 signtool。
+
+## 生产最佳实践
+
+### 版本号
+
+- 单一事实源：`apps/desktop/src-tauri/tauri.conf.json` 的 `version`（当前 `0.1.0`），
+  与 `apps/desktop/package.json`、`Cargo.toml` 保持一致。
+- 发布用 tag `desktop-v<semver>`（如 `desktop-v0.1.0`）触发 CI 出包并附加到 Release，
+  产物名恒为 `cursor-gateway-desktop-setup.exe`（便于 `/api/desktop/download` 固定引用）。
+
+### Authenticode 代码签名（消除 SmartScreen 提示）
+
+购得 OV/EV 证书后二选一：
+
+1. 本地/自托管：在 `tauri.conf.json` 的 `bundle.windows` 增加
+   ```jsonc
+   "windows": {
+     "certificateThumbprint": "<证书指纹>",   // 已导入到本机证书库
+     "digestAlgorithm": "sha256",
+     "timestampUrl": "http://timestamp.digicert.com",
+     "nsis": { "installMode": "currentUser", "languages": ["SimpChinese", "English"] }
+   }
+   ```
+2. CI 签名（推荐，密钥进 GitHub Secrets）：在 `desktop-windows.yml` 的「Build NSIS
+   installer」之后、「Collect artifacts」之前，用 `signtool sign /fd sha256 /tr <ts> /td sha256
+   /f cert.pfx /p $env:CERT_PW <exe>` 对 `*-setup.exe` 签名。证书从 `secrets.WIN_CODESIGN_PFX_B64`
+   解码写入临时文件，签完即删。**证书/口令永不进 git。**
+
+签名后仍建议保留 SHA256SUMS + Ed25519 分离签名（`scripts/desktop/sign-desktop-release.sh`）——
+后者是"本地可验证"的信任链，独立于商业证书是否被吊销。
+
+### 自动更新（Tauri Updater，配置位已就绪）
+
+当前 `tauri.conf.json` 的 `bundle.createUpdaterArtifacts: false`（先出稳定包）。启用步骤：
+
+1. 生成更新签名密钥：`npm run tauri -w @cursor-gateway/desktop -- signer generate`（私钥 0600、**不进 git**）。
+2. `tauri.conf.json`：`createUpdaterArtifacts: true`，并加插件配置
+   ```jsonc
+   "plugins": {
+     "updater": {
+       "endpoints": ["https://secure.joelzt.org/api/desktop/update/{{target}}/{{arch}}/{{current_version}}"],
+       "pubkey": "<公钥 base64>"
+     }
+   }
+   ```
+3. 在 `Cargo.toml` 依赖加 `tauri-plugin-updater`，`lib.rs` 里 `.plugin(tauri_plugin_updater::Builder::new().build())`。
+4. 服务端新增更新清单端点（返回最新 `version` + 已签名安装包 URL）。CI 在 tag 构建里把
+   `latest.json`（含签名）一并附到 Release。
+
+> 未启用前，"更新"= 用户重新从右上角「下载 Windows 客户端」获取新版安装包（当前模式）。
 
 ## 如何安装 / 验证
 
