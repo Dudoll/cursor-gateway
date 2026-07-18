@@ -44,7 +44,12 @@ jobs:
         run: npm install
 
       - name: Build Secure Web frontend (bundled into the shell)
-        run: npm run build -w @cursor-gateway/secure-web
+        # secure-web imports @cursor-gateway/shared and @cursor-gateway/e2ee via
+        # their compiled dist/ (gitignored), so build those workspaces first.
+        run: |
+          npm run build -w @cursor-gateway/shared
+          npm run build -w @cursor-gateway/e2ee
+          npm run build -w @cursor-gateway/secure-web
 
       - name: Generate application icons
         run: npm run icon -w @cursor-gateway/desktop
