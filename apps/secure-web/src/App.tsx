@@ -957,10 +957,17 @@ export function App() {
       </header>
 
       {desktopShell && !accessReady ? (
-        <div className="status warn" style={{ marginBottom: 12 }}>
-          桌面客户端从本地加载 UI（<code>tauri.localhost</code>），与 Gateway 跨站，无法自动带上
-          Cloudflare Access Cookie。请先点击右上角钥匙图标完成 Access 登录；登录完成后桥接窗口会自动收纳到
-          系统托盘（右下角），再进行 Secure Gateway 配对。
+        <div className="status warn" style={{ marginBottom: 12 }} role="status">
+          <p style={{ margin: "0 0 0.75rem" }}>
+            桌面客户端从本地加载 UI（<code>tauri.localhost</code>），与 Gateway 跨站，无法自动带上
+            Cloudflare Access Cookie。请先完成 Access 登录；成功后桥接窗口会收纳到系统托盘，再进行
+            Secure Gateway 配对。
+          </p>
+          <div className="row">
+            <button type="button" disabled={busy} onClick={onDesktopAccessLogin}>
+              登录 Cloudflare Access
+            </button>
+          </div>
         </div>
       ) : null}
 
@@ -998,11 +1005,26 @@ export function App() {
             <button type="submit" disabled={busy}>
               保存 origin
             </button>
+            {desktopShell ? (
+              <button
+                type="button"
+                disabled={busy}
+                onClick={onDesktopAccessLogin}
+                title={accessReady ? "重新打开 Cloudflare Access 桥接登录" : "打开 Cloudflare Access 桥接登录"}
+              >
+                {accessReady ? "重新登录 Access" : "登录 Cloudflare Access"}
+              </button>
+            ) : null}
             <button type="button" className="secondary" disabled={busy} onClick={onRefresh}>
               刷新目录
             </button>
           </div>
         </form>
+        {desktopShell && accessReady ? (
+          <p className="meta" style={{ marginTop: 8 }}>
+            Cloudflare Access 已就绪（桥接在系统托盘）。可继续下方设备配对。
+          </p>
+        ) : null}
         <p className="meta">
           设备 clientId：<code>{boot.device.clientId}</code>
           {boot.device.pairedRunnerId ? (

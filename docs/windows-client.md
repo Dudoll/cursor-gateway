@@ -125,9 +125,10 @@ Get-FileHash .\cursor-gateway-desktop-setup.exe -Algorithm SHA256
 
 ### Cloudflare Access 桥接与系统托盘
 
-桌面 UI 从 `http://tauri.localhost` 加载，无法跨站带上 Access Cookie。钥匙图标会打开
-同源桥接窗口（`GET /api/desktop/access/bridge`）；登录成功后窗口自动隐藏，WebView 仍存活以
-保持 Cookie，并从 **系统托盘**（通知区域）管理：左键显示主窗口，右键可再打开桥接或退出。
+桌面 UI 从 `http://tauri.localhost` 加载，无法跨站带上 Access Cookie。在步骤 1「Gateway」
+面板或顶部提示条点击 **「登录 Cloudflare Access」**（也可用右上角钥匙图标）会打开同源桥接
+窗口（`GET /api/desktop/access/bridge`）；登录成功后窗口自动隐藏，WebView 仍存活以保持
+Cookie，并从 **系统托盘**（通知区域）管理：左键显示主窗口，右键可再打开桥接或退出。
 
 ### Authenticode 代码签名（消除 SmartScreen 提示）
 
