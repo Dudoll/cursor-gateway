@@ -55,6 +55,7 @@ import { config } from "./config.js";
 
 const serverRoot = dirname(fileURLToPath(import.meta.url));
 const extensionZipPath = join(serverRoot, "../../../artifacts/cursor-gateway-secure.zip");
+const desktopInstallerPath = join(serverRoot, "../../../artifacts/cursor-gateway-desktop-setup.exe");
 import {
   AutomationThreadWorkspaceMismatchError,
   type RunExecutor,
@@ -300,6 +301,31 @@ export async function registerRoutes(app: FastifyInstance) {
         .header("content-disposition", 'attachment; filename="cursor-gateway-secure.zip"')
         .header("cache-control", "no-store")
         .send(createReadStream(extensionZipPath));
+    });
+
+    api.get("/desktop/download", async (request, reply) => {
+      if (!existsSync(desktopInstallerPath)) {
+        await appendAudit({
+          ...(request.principal?.id ? { actorUserId: request.principal.id } : {}),
+          eventType: "desktop.download.missing",
+          details: { path: "/api/desktop/download" }
+        });
+        return reply.code(404).send({ error: "desktop_installer_unavailable" });
+      }
+
+      const { size } = statSync(desktopInstallerPath);
+      await appendAudit({
+        ...(request.principal?.id ? { actorUserId: request.principal.id } : {}),
+        eventType: "desktop.download",
+        details: { bytes: size }
+      });
+
+      return reply
+        .header("content-type", "application/vnd.microsoft.portable-executable")
+        .header("content-length", size)
+        .header("content-disposition", 'attachment; filename="cursor-gateway-desktop-setup.exe"')
+        .header("cache-control", "no-store")
+        .send(createReadStream(desktopInstallerPath));
     });
 
     api.get("/e2ee-policy", async () => {

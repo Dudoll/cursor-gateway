@@ -7,6 +7,7 @@ import {
   ChevronLeft,
   ChevronRight,
   Database,
+  Download,
   FileText,
   Home,
   LockKeyhole,
@@ -334,7 +335,11 @@ function BrandMark() {
   );
 }
 
-/** Download API remains at /api/extension/download; Web UI no longer promotes install. */
+/**
+ * Topbar exposes the Windows desktop client download (`/api/desktop/download`).
+ * This is the Tauri + WebView2 shell, NOT the legacy browser extension
+ * (whose bundle still lives at `/api/extension/download` but is no longer promoted).
+ */
 const SECURE_WEB_ORIGIN = "https://secure.joelzt.org";
 
 const SIDEBAR_COLLAPSED_KEY = "cursor-gateway:sidebar-collapsed";
@@ -1074,6 +1079,14 @@ function GatewayDashboard() {
               <span>启用加密</span>
             </button>
           )}
+          <a
+            className="topbar-link"
+            href="/api/desktop/download"
+            title="下载 Windows 加密对话客户端安装包（NSIS .exe，本地加载 UI，非浏览器扩展）"
+          >
+            <Download aria-hidden="true" size={15} strokeWidth={1.75} />
+            <span>下载 Windows 客户端</span>
+          </a>
           <a className="topbar-link" href="/trash">
             <Trash2 aria-hidden="true" size={15} strokeWidth={1.75} />
             <span>Recycle Bin</span>
@@ -1616,6 +1629,14 @@ function ReportsPage({ initialReportId }: { initialReportId?: ReportId }) {
         <BrandMark />
         <TopTabs active="reports" />
         <div className="topbar-actions">
+          <a
+            className="topbar-link"
+            href="/api/desktop/download"
+            title="下载 Windows 加密对话客户端安装包（NSIS .exe，本地加载 UI，非浏览器扩展）"
+          >
+            <Download aria-hidden="true" size={15} strokeWidth={1.75} />
+            <span>下载 Windows 客户端</span>
+          </a>
           <a className="topbar-link" href="/trash">
             <Trash2 aria-hidden="true" size={15} strokeWidth={1.75} />
             <span>Recycle Bin</span>

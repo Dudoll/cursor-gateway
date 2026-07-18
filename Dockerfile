@@ -33,7 +33,12 @@ COPY --from=build /app/packages/shared ./packages/shared
 COPY --from=build /app/packages/e2ee ./packages/e2ee
 COPY --from=build /app/apps/server ./apps/server
 COPY --from=build /app/apps/web/dist ./apps/web/dist
-COPY --from=build /app/artifacts/cursor-gateway-secure.zip ./artifacts/cursor-gateway-secure.zip
+# Copy the whole artifacts dir so any pre-placed downloadable (extension zip, and
+# the Windows desktop installer cursor-gateway-desktop-setup.exe if an operator
+# dropped it into ./artifacts before building) is served. The Windows .exe is
+# built on Windows/CI (see docs/windows-client.md) — the Linux image cannot
+# cross-compile it, and /api/desktop/download returns 404 until it is present.
+COPY --from=build /app/artifacts/ ./artifacts/
 EXPOSE 8080
 # --disallow-code-generation-from-strings is optional; keep start simple.
 CMD ["node", "apps/server/dist/index.js"]

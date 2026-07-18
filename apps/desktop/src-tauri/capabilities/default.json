@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Default capability for the main window. The window only browses the bundled Secure Web UI, so it needs no elevated permissions.",
+  "windows": ["main"],
+  "permissions": ["core:default"]
+}

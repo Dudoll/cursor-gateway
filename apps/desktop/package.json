@@ -1,0 +1,19 @@
+{
+  "name": "@cursor-gateway/desktop",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Windows desktop shell (Tauri v2 + WebView2) that loads the Secure Web E2EE UI locally.",
+  "scripts": {
+    "build:frontend": "npm run build -w @cursor-gateway/secure-web",
+    "icon": "tauri icon app-icon.png",
+    "tauri": "tauri",
+    "dev": "tauri dev",
+    "build": "npm run build:frontend && npm run icon && tauri build",
+    "build:nsis": "npm run build:frontend && npm run icon && tauri build --bundles nsis",
+    "typecheck": "node --check scripts/gen-icon.mjs"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.4.0"
+  }
+}

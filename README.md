@@ -118,6 +118,8 @@ offline / magic-link pairing, key rotation/revocation, the extension build +
 - `apps/web` — React dashboard (model/workspace selection, history, approvals).
 - `apps/browser-extension` — signed, trusted MV3 E2EE web client.
 - `apps/secure-web` — cross-browser E2EE PWA (Cloudflare Pages / static HTTPS).
+- `apps/desktop` — Windows desktop client (Tauri v2 + WebView2) that bundles and
+  locally loads the Secure Web E2EE UI. See [`docs/windows-client.md`](docs/windows-client.md).
 - `apps/windows-runner` — the runner (Linux/WSL/Windows) that executes agents.
 - `packages/shared` — shared schemas and TypeScript types.
 - `packages/e2ee` — the `cg-e2ee/1` crypto protocol shared by clients and runner.
