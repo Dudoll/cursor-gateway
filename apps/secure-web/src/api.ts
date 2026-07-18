@@ -1,3 +1,8 @@
+import {
+  desktopBridgeFetch,
+  isDesktopShell
+} from "./desktopShell.js";
+
 const GATEWAY_STORAGE_KEY = "cg-secure-web:gateway-origin";
 
 export class GatewayApiError extends Error {
@@ -54,6 +59,11 @@ export class GatewayApi {
   private async request<T>(path: string, init: RequestInit = {}): Promise<T> {
     // Same-origin relative fetch when secure-web is reverse-proxied / access-bridged.
     // Cross-origin uses absolute gateway URL with credentials (requires CORS + Access cookie).
+    // Desktop shell (tauri.localhost) is cross-site → proxy via Access bridge WebView.
+    if (isDesktopShell()) {
+      return this.requestViaDesktopBridge<T>(path, init);
+    }
+
     const sameOrigin =
       typeof window !== "undefined" && window.location.origin === this.origin;
     const url = sameOrigin ? path : `${this.origin}${path}`;
@@ -68,6 +78,65 @@ export class GatewayApi {
         ...(init.headers ?? {})
       }
     });
+    return this.parseJsonResponse<T>(response);
+  }
+
+  private async requestViaDesktopBridge<T>(path: string, init: RequestInit = {}): Promise<T> {
+    const headers: Record<string, string> = {
+      accept: "application/json"
+    };
+    if (init.body) headers["content-type"] = "application/json";
+    if (init.headers) {
+      const h = new Headers(init.headers);
+      h.forEach((value, key) => {
+        headers[key] = value;
+      });
+    }
+
+    let result: Awaited<ReturnType<typeof desktopBridgeFetch>>;
+    try {
+      const bridgeInput: {
+        gatewayOrigin: string;
+        path: string;
+        method?: string;
+        headers?: Record<string, string>;
+        body?: string;
+      } = {
+        gatewayOrigin: this.origin,
+        path,
+        method: init.method ?? "GET",
+        headers
+      };
+      if (typeof init.body === "string") bridgeInput.body = init.body;
+      result = await desktopBridgeFetch(bridgeInput);
+    } catch (error) {
+      const code = error instanceof Error ? error.message : String(error);
+      if (code.includes("cloudflare_login_required")) {
+        throw new GatewayApiError(401, "cloudflare_login_required");
+      }
+      throw error;
+    }
+
+    if (result.opaqueRedirect || result.status === 0) {
+      throw new GatewayApiError(401, "cloudflare_login_required");
+    }
+    if (result.status < 200 || result.status >= 300) {
+      let code = `http_${result.status}`;
+      try {
+        const value = JSON.parse(result.body) as { error?: unknown };
+        if (typeof value.error === "string" && /^[a-z0-9_:-]{1,128}$/i.test(value.error)) {
+          code = value.error;
+        }
+      } catch {
+        // Never surface untrusted HTML/error bodies.
+      }
+      throw new GatewayApiError(result.status, code);
+    }
+    if (result.status === 204 || !result.body) return undefined as T;
+    return JSON.parse(result.body) as T;
+  }
+
+  private async parseJsonResponse<T>(response: Response): Promise<T> {
     if (response.type === "opaqueredirect" || response.status === 0) {
       throw new GatewayApiError(401, "cloudflare_login_required");
     }

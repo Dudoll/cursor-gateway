@@ -68,6 +68,14 @@ import {
   E2EE_LOGOUT_LABEL,
   clearLocalE2eeAuthorization
 } from "./e2eeLogout.js";
+import {
+  desktopAccessShow,
+  desktopAppVersion,
+  desktopInstallUpdate,
+  isDesktopShell,
+  isNewerDesktopVersion
+} from "./desktopShell.js";
+import { ArrowUpCircle, KeyRound } from "lucide-react";
 
 type BootState =
   | { kind: "loading" }
@@ -119,6 +127,10 @@ export function App() {
   const [busy, setBusy] = useState(false);
   const [csAuthPending, setCsAuthPending] = useState<CsAuthRedirectParams | null>(null);
   const [cfAccessLogoutUrl, setCfAccessLogoutUrl] = useState<string | null>(null);
+  const [desktopShell] = useState(() => isDesktopShell());
+  const [accessReady, setAccessReady] = useState(!isDesktopShell());
+  const [updateAvailable, setUpdateAvailable] = useState<string | null>(null);
+  const [localDesktopVersion, setLocalDesktopVersion] = useState<string | null>(null);
 
   const api = useMemo(() => {
     try {
@@ -151,6 +163,14 @@ export function App() {
       if (cancelled) return;
       setBoot({ kind: "ready", keys, device });
       if (device.pairedRunnerId) setStep(3);
+      if (isDesktopShell()) {
+        try {
+          const ver = await desktopAppVersion();
+          if (!cancelled) setLocalDesktopVersion(ver);
+        } catch {
+          // optional
+        }
+      }
       const saved = savedGatewayOrigin();
       if (saved) {
         try {
@@ -159,6 +179,7 @@ export function App() {
             cfAccessLogoutUrl?: string | null;
             runnerCodePairingEnabled?: boolean;
           }>("/api/e2ee-policy");
+          if (!cancelled) setAccessReady(true);
           if (!cancelled && policy.cfAccessLogoutUrl) {
             setCfAccessLogoutUrl(policy.cfAccessLogoutUrl);
           }
@@ -166,9 +187,22 @@ export function App() {
             setRunnerCodeEnabled(true);
             if (!device.pairedRunnerId) setPairingPanel("runnercode");
           }
-        } catch {
-          // Optional.
+        } catch (error) {
+          if (
+            !cancelled &&
+            isDesktopShell() &&
+            error instanceof GatewayApiError &&
+            error.code === "cloudflare_login_required"
+          ) {
+            setAccessReady(false);
+            setStatus({
+              tone: "warn",
+              text: "桌面端需先完成 Cloudflare Access 登录（本地 UI 与 Gateway 跨站，Access Cookie 不会自动带上）。请点击右上角钥匙图标。"
+            });
+          }
         }
+      } else if (isDesktopShell() && !cancelled) {
+        setAccessReady(false);
       }
     })().catch((error) => {
       if (!cancelled) {
@@ -179,6 +213,37 @@ export function App() {
       cancelled = true;
     };
   }, []);
+
+  useEffect(() => {
+    if (!desktopShell || !api || !accessReady) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const local = localDesktopVersion ?? (await desktopAppVersion());
+        if (cancelled) return;
+        setLocalDesktopVersion(local);
+        const remote = await api.get<{
+          version?: string;
+          installerAvailable?: boolean;
+        }>("/api/desktop/version");
+        if (cancelled) return;
+        if (
+          remote.installerAvailable &&
+          typeof remote.version === "string" &&
+          isNewerDesktopVersion(remote.version, local)
+        ) {
+          setUpdateAvailable(remote.version);
+        } else {
+          setUpdateAvailable(null);
+        }
+      } catch {
+        if (!cancelled) setUpdateAvailable(null);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [desktopShell, api, accessReady, localDesktopVersion]);
 
   async function tryFinishCsAuth(
     clientApi: GatewayApi,
@@ -344,16 +409,101 @@ export function App() {
           cfAccessLogoutUrl?: string | null;
           runnerCodePairingEnabled?: boolean;
         }>("/api/e2ee-policy");
+        setAccessReady(true);
         if (policy.cfAccessLogoutUrl) setCfAccessLogoutUrl(policy.cfAccessLogoutUrl);
         if (policy.runnerCodePairingEnabled) {
           setRunnerCodeEnabled(true);
           if (boot.kind === "ready" && !boot.device.pairedRunnerId) setPairingPanel("runnercode");
         }
-      } catch {
+      } catch (error) {
+        if (
+          desktopShell &&
+          error instanceof GatewayApiError &&
+          error.code === "cloudflare_login_required"
+        ) {
+          setAccessReady(false);
+          setStatus({
+            tone: "warn",
+            text: "Gateway 已保存，但尚未完成 Cloudflare Access 登录。请点击右上角钥匙图标。"
+          });
+        }
         // Policy is optional for logout link.
       }
     } catch (error) {
       setStatus({ tone: "error", text: errorText(error) });
+    }
+  }
+
+  async function onDesktopAccessLogin() {
+    if (!desktopShell) return;
+    let origin: string;
+    try {
+      origin = normalizeGatewayOrigin(gatewayInput);
+    } catch (error) {
+      setStatus({ tone: "error", text: errorText(error) });
+      return;
+    }
+    setBusy(true);
+    try {
+      saveGatewayOrigin(origin);
+      setGatewayInput(origin);
+      setStatus({ tone: "info", text: "正在打开 Cloudflare Access 登录窗口…" });
+      await desktopAccessShow(origin);
+      const clientApi = new GatewayApi(origin);
+      const policy = await clientApi.get<{
+        cfAccessLogoutUrl?: string | null;
+        runnerCodePairingEnabled?: boolean;
+      }>("/api/e2ee-policy");
+      setAccessReady(true);
+      if (policy.cfAccessLogoutUrl) setCfAccessLogoutUrl(policy.cfAccessLogoutUrl);
+      if (policy.runnerCodePairingEnabled) {
+        setRunnerCodeEnabled(true);
+        if (boot.kind === "ready" && !boot.device.pairedRunnerId) setPairingPanel("runnercode");
+      }
+      setStep((current) => (current < 2 ? 2 : current));
+      setStatus({
+        tone: "ok",
+        text: "Cloudflare Access 已就绪。可继续设备配对。"
+      });
+    } catch (error) {
+      setAccessReady(false);
+      const code = errorText(error);
+      setStatus({
+        tone: "error",
+        text:
+          code === "access_bridge_login_timeout"
+            ? "Access 登录超时。请重试并在弹出窗口内完成身份验证。"
+            : `Access 登录失败：${code}`
+      });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function onDesktopUpgrade() {
+    if (!desktopShell || !updateAvailable) return;
+    let origin: string;
+    try {
+      origin = normalizeGatewayOrigin(gatewayInput);
+    } catch (error) {
+      setStatus({ tone: "error", text: errorText(error) });
+      return;
+    }
+    setBusy(true);
+    try {
+      setStatus({
+        tone: "info",
+        text: `正在下载并启动安装包（${updateAvailable}）…`
+      });
+      await desktopInstallUpdate(origin);
+      setStatus({
+        tone: "ok",
+        text: "已启动安装程序。完成后请重新打开客户端。"
+      });
+    } catch (error) {
+      setStatus({ tone: "error", text: `升级失败：${errorText(error)}` });
+    } finally {
+      setBusy(false);
     }
   }
 
@@ -769,19 +919,59 @@ export function App() {
   return (
     <div className="app">
       <header className="app-top">
-        <div>
-          <h1 className="brand">Secure Gateway</h1>
-          <p className="lede">
-            跨浏览器 E2EE 客户端。密钥以不可导出形式保存在本设备。Gateway 仅中继密文。协议：
-            <code>cg-e2ee/1</code>。
-          </p>
+        <div className="app-top-row">
+          <div>
+            <h1 className="brand">Secure Gateway</h1>
+            <p className="lede">
+              跨浏览器 E2EE 客户端。密钥以不可导出形式保存在本设备。Gateway 仅中继密文。协议：
+              <code>cg-e2ee/1</code>。
+            </p>
+          </div>
+          {desktopShell ? (
+            <div className="app-top-actions" role="toolbar" aria-label="桌面端操作">
+              <button
+                type="button"
+                className={`icon-action${accessReady ? "" : " icon-action-attention"}`}
+                disabled={busy}
+                onClick={onDesktopAccessLogin}
+                title={accessReady ? "重新登录 Cloudflare Access" : "登录 Cloudflare Access"}
+                aria-label={accessReady ? "重新登录 Cloudflare Access" : "登录 Cloudflare Access"}
+              >
+                <KeyRound aria-hidden="true" size={18} strokeWidth={1.75} />
+              </button>
+              {updateAvailable ? (
+                <button
+                  type="button"
+                  className="icon-action icon-action-attention"
+                  disabled={busy}
+                  onClick={onDesktopUpgrade}
+                  title={`升级到 ${updateAvailable}`}
+                  aria-label={`升级到 ${updateAvailable}`}
+                >
+                  <ArrowUpCircle aria-hidden="true" size={18} strokeWidth={1.75} />
+                </button>
+              ) : null}
+            </div>
+          ) : null}
         </div>
       </header>
+
+      {desktopShell && !accessReady ? (
+        <div className="status warn" style={{ marginBottom: 12 }}>
+          桌面客户端从本地加载 UI（<code>tauri.localhost</code>），与 Gateway 跨站，无法自动带上
+          Cloudflare Access Cookie。请先点击右上角钥匙图标完成 Access 登录，再进行 Secure Gateway
+          配对。
+        </div>
+      ) : null}
 
       <ol className="steps">
         <li className={step > 1 ? "done" : step === 1 ? "active" : ""}>
           <span className="n">1</span>
-          <span>配置 Gateway origin（Cloudflare Access 登录）</span>
+          <span>
+            {desktopShell
+              ? "配置 Gateway 并完成 Cloudflare Access 登录"
+              : "配置 Gateway origin（Cloudflare Access 登录）"}
+          </span>
         </li>
         <li className={step > 2 ? "done" : step === 2 ? "active" : ""}>
           <span className="n">2</span>

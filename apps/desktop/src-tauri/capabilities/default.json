@@ -1,7 +1,33 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Default capability for the main window. The window only browses the bundled Secure Web UI, so it needs no elevated permissions.",
-  "windows": ["main"],
-  "permissions": ["core:default"]
+  "description": "Main Secure Web window plus the Cloudflare Access bridge window used to carry Access cookies for API calls.",
+  "windows": ["main", "access-bridge"],
+  "permissions": [
+    "core:default",
+    "core:webview:allow-create-webview-window",
+    "core:webview:allow-webview-close",
+    "core:webview:allow-webview-show",
+    "core:webview:allow-webview-hide",
+    "core:event:allow-listen",
+    "core:event:allow-emit",
+    "core:event:allow-emit-to",
+    "core:window:allow-show",
+    "core:window:allow-hide",
+    "core:window:allow-set-focus",
+    "core:window:allow-close",
+    {
+      "identifier": "allow-desktop-shell-commands",
+      "description": "Desktop Access bridge + updater IPC",
+      "commands": {
+        "allow": [
+          "desktop_app_version",
+          "desktop_access_ensure",
+          "desktop_access_show",
+          "desktop_bridge_fetch",
+          "desktop_install_update"
+        ]
+      }
+    }
+  ]
 }

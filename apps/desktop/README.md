@@ -6,6 +6,14 @@ recommended, MITM-resistant way to reach the encrypted-chat gateway on Windows.
 
 This is **not** the browser extension and **not** a plain web PWA.
 
+**Cloudflare Access (desktop):** click the key icon in the top-right after setting the
+Gateway origin — the shell opens a same-site Access bridge window (local
+`tauri.localhost` cannot send Access cookies cross-site). See
+[`docs/windows-client.md`](../../docs/windows-client.md).
+
+**Upgrade:** when a newer installer is published (`/api/desktop/version`), an
+arrow-up icon appears; click to download and run the NSIS setup.
+
 ## Build (native Windows or CI — WSL/Linux cannot cross-compile)
 
 ```powershell

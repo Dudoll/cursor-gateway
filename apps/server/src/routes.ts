@@ -1,6 +1,6 @@
 import { z } from "zod";
 import type { FastifyInstance } from "fastify";
-import { createReadStream, existsSync, statSync } from "node:fs";
+import { createReadStream, existsSync, readFileSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -56,6 +56,88 @@ import { config, isAllowedSecureOrigin } from "./config.js";
 const serverRoot = dirname(fileURLToPath(import.meta.url));
 const extensionZipPath = join(serverRoot, "../../../artifacts/cursor-gateway-secure.zip");
 const desktopInstallerPath = join(serverRoot, "../../../artifacts/cursor-gateway-desktop-setup.exe");
+const desktopVersionPath = join(serverRoot, "../../../artifacts/desktop/version.json");
+const desktopSha256SumsPath = join(serverRoot, "../../../artifacts/desktop/SHA256SUMS");
+
+/** Minimal HTML loaded inside the Tauri Access bridge window (same-site as the Gateway). */
+function desktopAccessBridgeHtml(): string {
+  return `<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>Cloudflare Access · Desktop</title>
+  <style>
+    :root { color-scheme: light; font-family: "Segoe UI", "IBM Plex Sans", sans-serif; }
+    body { margin: 0; min-height: 100vh; display: grid; place-items: center;
+      background: linear-gradient(180deg, #e8eef5, #f7fafc); color: #0f172a; }
+    main { max-width: 28rem; padding: 1.5rem; text-align: center; }
+    h1 { font-size: 1.25rem; margin: 0 0 0.5rem; letter-spacing: -0.02em; }
+    p { color: #475569; line-height: 1.5; margin: 0 0 0.75rem; }
+    .ok { color: #0f766e; font-weight: 600; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1 class="ok">Cloudflare Access 已登录</h1>
+    <p>可返回 Cursor Gateway 桌面窗口继续配对。请保持本窗口打开（可最小化）；桌面壳通过此页同源转发 API，以便带上 Access Cookie。</p>
+    <p id="status">桥接就绪</p>
+  </main>
+  <script>
+    window.__CG_ACCESS_BRIDGE__ = { ready: true, version: 1 };
+    (async function notify() {
+      try {
+        var t = window.__TAURI__;
+        if (t && t.event && typeof t.event.emit === "function") {
+          await t.event.emit("cg-access-bridge-ready", { ok: true, at: Date.now() });
+        }
+      } catch (e) {}
+    })();
+  </script>
+</body>
+</html>`;
+}
+
+function readDesktopVersionMeta(): {
+  version: string;
+  sha256: string | null;
+  installerAvailable: boolean;
+} {
+  let version = "0.0.0";
+  let sha256: string | null = null;
+  if (existsSync(desktopVersionPath)) {
+    try {
+      const raw = JSON.parse(readFileSync(desktopVersionPath, "utf8")) as {
+        version?: unknown;
+        sha256?: unknown;
+      };
+      if (typeof raw.version === "string" && /^\d+\.\d+\.\d+/.test(raw.version)) {
+        version = raw.version;
+      }
+      if (typeof raw.sha256 === "string" && /^[a-f0-9]{64}$/i.test(raw.sha256)) {
+        sha256 = raw.sha256.toLowerCase();
+      }
+    } catch {
+      // fall through
+    }
+  }
+  if (!sha256 && existsSync(desktopSha256SumsPath)) {
+    try {
+      const line = readFileSync(desktopSha256SumsPath, "utf8")
+        .split(/\r?\n/)
+        .find((row) => row.includes("cursor-gateway-desktop-setup.exe"));
+      const hash = line?.trim().split(/\s+/)[0];
+      if (hash && /^[a-f0-9]{64}$/i.test(hash)) sha256 = hash.toLowerCase();
+    } catch {
+      // ignore
+    }
+  }
+  return {
+    version,
+    sha256,
+    installerAvailable: existsSync(desktopInstallerPath)
+  };
+}
 import {
   AutomationThreadWorkspaceMismatchError,
   type RunExecutor,
@@ -326,6 +408,36 @@ export async function registerRoutes(app: FastifyInstance) {
         .header("content-disposition", 'attachment; filename="cursor-gateway-desktop-setup.exe"')
         .header("cache-control", "no-store")
         .send(createReadStream(desktopInstallerPath));
+    });
+
+    // Same-origin HTML for the Tauri Access bridge window. CF Access at the edge
+    // forces login in that window; afterwards the desktop shell proxies API calls
+    // through it so CF_Authorization cookies are sent (tauri.localhost is cross-site).
+    api.get("/desktop/access/bridge", async (request, reply) => {
+      await appendAudit({
+        ...(request.principal?.id ? { actorUserId: request.principal.id } : {}),
+        eventType: "desktop.access.bridge",
+        details: { path: "/api/desktop/access/bridge" }
+      });
+      return reply
+        .type("text/html; charset=utf-8")
+        .header("cache-control", "no-store")
+        .header(
+          "content-security-policy",
+          "default-src 'none'; base-uri 'none'; frame-ancestors 'none'; " +
+            "script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src 'none'"
+        )
+        .send(desktopAccessBridgeHtml());
+    });
+
+    api.get("/desktop/version", async () => {
+      const meta = readDesktopVersionMeta();
+      return {
+        version: meta.version,
+        sha256: meta.sha256,
+        installerAvailable: meta.installerAvailable,
+        downloadPath: "/api/desktop/download"
+      };
     });
 
     api.get("/e2ee-policy", async () => {

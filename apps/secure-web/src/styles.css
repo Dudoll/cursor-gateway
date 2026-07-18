@@ -38,6 +38,50 @@ body {
   margin-bottom: 8px;
 }
 
+.app-top-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.app-top-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+  padding-top: 4px;
+}
+
+.icon-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  transition: color 0.15s ease, background 0.15s ease;
+}
+
+.icon-action:hover:not(:disabled) {
+  color: var(--accent);
+  background: rgba(15, 118, 110, 0.1);
+}
+
+.icon-action.icon-action-attention {
+  color: var(--accent);
+}
+
+.icon-action:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
 .app-top .lede {
   margin-bottom: 0;
 }

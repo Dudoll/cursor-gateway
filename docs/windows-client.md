@@ -31,6 +31,8 @@ apps/desktop/
 
 - `frontendDist` 指向 `apps/secure-web/dist`：**直接复用** Secure Web 的构建产物。
 - CSP 仅放行连接 `https://secure.joelzt.org` / `https://cs.joelzt.org`（及 `*.joelzt.org`）。
+- 版本号：`apps/desktop/src-tauri/tauri.conf.json`（当前 `0.1.1`），与 `package.json` / `Cargo.toml` /
+  `artifacts/desktop/version.json` 对齐。
 
 ## 如何构建（在 Windows / WSL 之外的原生 Windows，或 CI）
 
@@ -170,7 +172,26 @@ Get-FileHash .\cursor-gateway-desktop-setup.exe -Algorithm SHA256
 4. 启动「Cursor Gateway」，按 Secure Web 既有流程完成设备验证（RAMC / Passkey 等）并配对 Runner。
 5. 选工作区、发一条只读消息，状态变为 `finished` 即打通。
 
-> 首次登录仍走 Cloudflare Access（若站点由 Access 保护）：在窗口内完成一次登录即可。
+### 桌面端如何登录 Cloudflare Access
+
+桌面壳从本地 `http://tauri.localhost` 加载 UI，与 Gateway（如 `https://cs.joelzt.org`）是**跨站**关系，
+浏览器不会在 `fetch` 上附带 Cloudflare Access 的 `CF_Authorization` Cookie（SameSite）。因此：
+
+1. 保存 Gateway origin（例如 `https://cs.joelzt.org`）。
+2. 点击右上角**钥匙图标**（仅 Access 未就绪时显示）。
+3. 在弹出的「Cloudflare Access 登录」窗口内完成身份验证；成功后窗口会自动隐藏并保持桥接。
+4. 回到主窗口继续 Secure Gateway 配对（Runner 设备码 / Passkey 等）。
+
+技术说明：登录窗口加载同源页 `GET /api/desktop/access/bridge`；之后所有 Gateway API 经该桥接
+WebView 同源转发，从而带上 Access Cookie。不要用 Service Token 替代个人登录。
+
+### 一键升级
+
+当服务端 `GET /api/desktop/version` 返回的版本高于本机（`tauri.conf.json` / 安装包版本）且安装包可用时，
+右上角显示**向上箭头**图标（与钥匙同风格，仅有更新时出现）。点击后经 Access 桥接下载
+`/api/desktop/download` 并启动 NSIS 安装程序；装完后重新打开客户端即可。
+
+> 首次登录仍走 Cloudflare Access：用右上角钥匙图标，不要指望跨站 Cookie 自动生效。
 
 ## 与「扩展 / PWA」的区别
 

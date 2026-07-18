@@ -71,12 +71,16 @@ jobs:
           Copy-Item $nsis.FullName "$out/cursor-gateway-desktop-setup.exe" -Force
           $msi = Get-ChildItem -Recurse "apps/desktop/src-tauri/target/release/bundle/msi" -Filter *.msi -ErrorAction SilentlyContinue | Select-Object -First 1
           if ($msi) { Copy-Item $msi.FullName "$out/cursor-gateway-desktop-setup.msi" -Force }
+          $ver = (Get-Content "apps/desktop/src-tauri/tauri.conf.json" -Raw | ConvertFrom-Json).version
+          $h = (Get-FileHash "$out/cursor-gateway-desktop-setup.exe" -Algorithm SHA256).Hash.ToLower()
+          @{ version = $ver; sha256 = $h } | ConvertTo-Json -Compress | Set-Content -Encoding utf8 "$out/version.json"
           Push-Location $out
-          Get-ChildItem -File | Where-Object { $_.Name -ne 'SHA256SUMS' } | ForEach-Object {
-            $h = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower()
-            "$h  $($_.Name)"
+          Get-ChildItem -File | Where-Object { $_.Name -ne 'SHA256SUMS' -and $_.Name -ne 'version.json' } | ForEach-Object {
+            $hash = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower()
+            "$hash  $($_.Name)"
           } | Set-Content -Encoding ascii SHA256SUMS
           Get-Content SHA256SUMS
+          Get-Content version.json
           Pop-Location
 
       - name: Upload build artifacts
