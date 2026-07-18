@@ -118,10 +118,16 @@ Get-FileHash .\cursor-gateway-desktop-setup.exe -Algorithm SHA256
 
 ### 版本号
 
-- 单一事实源：`apps/desktop/src-tauri/tauri.conf.json` 的 `version`（当前 `0.1.0`），
+- 单一事实源：`apps/desktop/src-tauri/tauri.conf.json` 的 `version`（当前 `0.1.2`），
   与 `apps/desktop/package.json`、`Cargo.toml` 保持一致。
-- 发布用 tag `desktop-v<semver>`（如 `desktop-v0.1.0`）触发 CI 出包并附加到 Release，
+- 发布用 tag `desktop-v<semver>`（如 `desktop-v0.1.2`）触发 CI 出包并附加到 Release，
   产物名恒为 `cursor-gateway-desktop-setup.exe`（便于 `/api/desktop/download` 固定引用）。
+
+### Cloudflare Access 桥接与系统托盘
+
+桌面 UI 从 `http://tauri.localhost` 加载，无法跨站带上 Access Cookie。钥匙图标会打开
+同源桥接窗口（`GET /api/desktop/access/bridge`）；登录成功后窗口自动隐藏，WebView 仍存活以
+保持 Cookie，并从 **系统托盘**（通知区域）管理：左键显示主窗口，右键可再打开桥接或退出。
 
 ### Authenticode 代码签名（消除 SmartScreen 提示）
 

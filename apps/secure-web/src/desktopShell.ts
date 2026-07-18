@@ -38,6 +38,11 @@ export function isDesktopShell(): boolean {
   return Boolean(g.__TAURI__ || g.__TAURI_INTERNALS__);
 }
 
+/** Service workers break Tauri custom-protocol asset loads (startup 404s). */
+export function shouldRegisterServiceWorker(): boolean {
+  return typeof navigator !== "undefined" && "serviceWorker" in navigator && !isDesktopShell();
+}
+
 export async function desktopAppVersion(): Promise<string> {
   const info = await tauriInvoke<{ version: string }>("desktop_app_version");
   return info.version;

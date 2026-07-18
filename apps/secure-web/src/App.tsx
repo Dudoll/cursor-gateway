@@ -463,7 +463,7 @@ export function App() {
       setStep((current) => (current < 2 ? 2 : current));
       setStatus({
         tone: "ok",
-        text: "Cloudflare Access 已就绪。可继续设备配对。"
+        text: "Cloudflare Access 已就绪（桥接已收纳到系统托盘）。可继续设备配对。"
       });
     } catch (error) {
       setAccessReady(false);
@@ -959,8 +959,8 @@ export function App() {
       {desktopShell && !accessReady ? (
         <div className="status warn" style={{ marginBottom: 12 }}>
           桌面客户端从本地加载 UI（<code>tauri.localhost</code>），与 Gateway 跨站，无法自动带上
-          Cloudflare Access Cookie。请先点击右上角钥匙图标完成 Access 登录，再进行 Secure Gateway
-          配对。
+          Cloudflare Access Cookie。请先点击右上角钥匙图标完成 Access 登录；登录完成后桥接窗口会自动收纳到
+          系统托盘（右下角），再进行 Secure Gateway 配对。
         </div>
       ) : null}
 

@@ -4,6 +4,9 @@
 //! `http://tauri.localhost` protocol. Cloudflare Access cookies are **not**
 //! sent on cross-site fetches from that origin, so API traffic is proxied
 //! through a same-site "Access bridge" WebView pointed at the Gateway.
+//!
+//! After Access login the bridge window is hidden (kept alive for cookies) and
+//! controlled from the system tray.
 
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -11,7 +14,9 @@ use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 use tauri::{
-    AppHandle, Emitter, Listener, Manager, State, WebviewUrl, WebviewWindow, WebviewWindowBuilder,
+    menu::{Menu, MenuItem},
+    tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
+    AppHandle, Listener, Manager, State, WebviewUrl, WebviewWindow, WebviewWindowBuilder,
 };
 
 const BRIDGE_LABEL: &str = "access-bridge";
@@ -72,8 +77,16 @@ fn bridge_url(origin: &str) -> Result<url::Url, String> {
     url::Url::parse(&base).map_err(|e| format!("invalid_bridge_url:{e}"))
 }
 
-async fn wait_bridge_ready(app: &AppHandle, timeout: Duration) -> Result<(), String> {
-    let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+fn hide_bridge_to_tray(window: &WebviewWindow) {
+    let _ = window.hide();
+}
+
+async fn wait_bridge_ready(
+    app: &AppHandle,
+    window: &WebviewWindow,
+    timeout: Duration,
+) -> Result<(), String> {
+    let (tx, mut rx) = tokio::sync::oneshot::channel::<()>();
     let tx = std::sync::Mutex::new(Some(tx));
     let id = app.listen(BRIDGE_READY_EVENT, move |_| {
         if let Ok(mut slot) = tx.lock() {
@@ -83,14 +96,27 @@ async fn wait_bridge_ready(app: &AppHandle, timeout: Duration) -> Result<(), Str
         }
     });
 
-    let result = tokio::time::timeout(timeout, rx).await;
-    app.unlisten(id);
+    let deadline = tokio::time::Instant::now() + timeout;
+    let result = loop {
+        if eval_bridge_ready(window).await.unwrap_or(false) {
+            break Ok(());
+        }
+        if tokio::time::Instant::now() >= deadline {
+            break Err("access_bridge_login_timeout".into());
+        }
+        tokio::select! {
+            recv = &mut rx => {
+                match recv {
+                    Ok(()) => break Ok(()),
+                    Err(_) => break Err("access_bridge_ready_channel_closed".into()),
+                }
+            }
+            _ = tokio::time::sleep(Duration::from_millis(400)) => {}
+        }
+    };
 
-    match result {
-        Ok(Ok(())) => Ok(()),
-        Ok(Err(_)) => Err("access_bridge_ready_channel_closed".into()),
-        Err(_) => Err("access_bridge_login_timeout".into()),
-    }
+    app.unlisten(id);
+    result
 }
 
 async fn ensure_bridge_window(
@@ -104,7 +130,7 @@ async fn ensure_bridge_window(
         let ready = eval_bridge_ready(&existing).await.unwrap_or(false);
         if ready {
             if !interactive {
-                let _ = existing.hide();
+                hide_bridge_to_tray(&existing);
             }
             return Ok(existing);
         }
@@ -118,8 +144,8 @@ async fn ensure_bridge_window(
         existing
             .set_focus()
             .map_err(|e| format!("access_bridge_focus:{e}"))?;
-        wait_bridge_ready(app, Duration::from_secs(300)).await?;
-        let _ = existing.hide();
+        wait_bridge_ready(app, &existing, Duration::from_secs(300)).await?;
+        hide_bridge_to_tray(&existing);
         return Ok(existing);
     }
 
@@ -132,11 +158,12 @@ async fn ensure_bridge_window(
         .inner_size(520.0, 780.0)
         .resizable(true)
         .center()
+        .skip_taskbar(true)
         .build()
         .map_err(|e| format!("access_bridge_create:{e}"))?;
 
-    wait_bridge_ready(app, Duration::from_secs(300)).await?;
-    let _ = window.hide();
+    wait_bridge_ready(app, &window, Duration::from_secs(300)).await?;
+    hide_bridge_to_tray(&window);
     Ok(window)
 }
 
@@ -167,7 +194,7 @@ async fn eval_bridge_ready(window: &WebviewWindow) -> Result<bool, String> {
     );
     window.eval(&js).map_err(|e| format!("access_bridge_eval:{e}"))?;
 
-    let result = tokio::time::timeout(Duration::from_secs(3), rx).await;
+    let result = tokio::time::timeout(Duration::from_secs(2), rx).await;
     app.unlisten(listen_id);
     match result {
         Ok(Ok(v)) => Ok(v),
@@ -340,10 +367,8 @@ async fn desktop_access_ensure(app: AppHandle, gateway_origin: String) -> Result
 async fn desktop_access_show(app: AppHandle, gateway_origin: String) -> Result<(), String> {
     let origin = normalize_gateway_origin(&gateway_origin)?;
     let window = ensure_bridge_window(&app, &origin, true).await?;
-    window.show().map_err(|e| format!("access_bridge_show:{e}"))?;
-    window
-        .set_focus()
-        .map_err(|e| format!("access_bridge_focus:{e}"))?;
+    // Login completed — keep WebView alive but out of the way (tray).
+    hide_bridge_to_tray(&window);
     Ok(())
 }
 
@@ -417,6 +442,56 @@ async fn desktop_install_update(
     Ok(())
 }
 
+fn setup_tray(app: &AppHandle) -> tauri::Result<()> {
+    let show_main = MenuItem::with_id(app, "show_main", "显示主窗口", true, None::<&str>)?;
+    let show_bridge =
+        MenuItem::with_id(app, "show_bridge", "显示 Access 桥接窗口", true, None::<&str>)?;
+    let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
+    let menu = Menu::with_items(app, &[&show_main, &show_bridge, &quit])?;
+
+    let mut builder = TrayIconBuilder::new()
+        .menu(&menu)
+        .tooltip("Cursor Gateway")
+        .on_menu_event(|app, event| match event.id.as_ref() {
+            "show_main" => {
+                if let Some(main) = app.get_webview_window("main") {
+                    let _ = main.show();
+                    let _ = main.set_focus();
+                }
+            }
+            "show_bridge" => {
+                if let Some(bridge) = app.get_webview_window(BRIDGE_LABEL) {
+                    let _ = bridge.show();
+                    let _ = bridge.set_focus();
+                }
+            }
+            "quit" => {
+                app.exit(0);
+            }
+            _ => {}
+        })
+        .on_tray_icon_event(|tray, event| {
+            if let TrayIconEvent::Click {
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
+                ..
+            } = event
+            {
+                let app = tray.app_handle();
+                if let Some(main) = app.get_webview_window("main") {
+                    let _ = main.show();
+                    let _ = main.set_focus();
+                }
+            }
+        });
+
+    if let Some(icon) = app.default_window_icon() {
+        builder = builder.icon(icon.clone());
+    }
+    builder.build(app)?;
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -428,7 +503,10 @@ pub fn run() {
             desktop_bridge_fetch,
             desktop_install_update
         ])
-        .setup(|_app| Ok(()))
+        .setup(|app| {
+            setup_tray(app.handle())?;
+            Ok(())
+        })
         .run(tauri::generate_context!())
         .expect("error while running Cursor Gateway desktop application");
 }

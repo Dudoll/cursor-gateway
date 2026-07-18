@@ -3,6 +3,14 @@
   "identifier": "default",
   "description": "Main Secure Web window plus the Cloudflare Access bridge window used to carry Access cookies for API calls.",
   "windows": ["main", "access-bridge"],
+  "remote": {
+    "urls": [
+      "https://cs.joelzt.org/*",
+      "https://*.joelzt.org/*",
+      "http://127.0.0.1:*/*",
+      "http://localhost:*/*"
+    ]
+  },
   "permissions": [
     "core:default",
     "core:event:allow-listen",

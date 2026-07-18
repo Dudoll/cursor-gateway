@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { requireCloudflareUser } from "./auth.js";
 import { config } from "./config.js";
 import { migrate } from "./db.js";
+import { shouldPreserveRouteContentSecurityPolicy } from "./desktopPublic.js";
 import { registerRoutes } from "./routes.js";
 import { registerTelegram } from "./telegram.js";
 import { createDbBackend } from "./csapi/backend.js";
@@ -59,16 +60,20 @@ async function main() {
     reply.header("x-content-type-options", "nosniff");
     reply.header("referrer-policy", "no-referrer");
     reply.header("x-frame-options", "DENY");
-    reply.header(
-      "content-security-policy",
-      "default-src 'self'; base-uri 'none'; frame-ancestors 'none'; object-src 'none'; " +
-        "script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'"
-    );
+    const url = _request.raw.url ?? "";
+    // Access bridge HTML ships an inline bootstrap that marks the Tauri shell
+    // ready. Do not overwrite its route CSP with script-src 'self'.
+    if (!shouldPreserveRouteContentSecurityPolicy(url)) {
+      reply.header(
+        "content-security-policy",
+        "default-src 'self'; base-uri 'none'; frame-ancestors 'none'; object-src 'none'; " +
+          "script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'"
+      );
+    }
     reply.header(
       "permissions-policy",
       "camera=(), microphone=(), geolocation=(), payment=(), usb=()"
     );
-    const url = _request.raw.url ?? "";
     if (url.startsWith("/cg/v1/")) {
       reply.header("cache-control", "no-store");
     }
