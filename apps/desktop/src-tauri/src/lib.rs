@@ -86,7 +86,7 @@ async fn wait_bridge_ready(
     window: &WebviewWindow,
     timeout: Duration,
 ) -> Result<(), String> {
-    let (tx, mut rx) = tokio::sync::oneshot::channel::<()>();
+    let (tx, rx) = tokio::sync::oneshot::channel::<()>();
     let tx = std::sync::Mutex::new(Some(tx));
     let id = app.listen(BRIDGE_READY_EVENT, move |_| {
         if let Ok(mut slot) = tx.lock() {
@@ -97,6 +97,7 @@ async fn wait_bridge_ready(
     });
 
     let deadline = tokio::time::Instant::now() + timeout;
+    let mut rx = rx;
     let result = loop {
         if eval_bridge_ready(window).await.unwrap_or(false) {
             break Ok(());
@@ -104,14 +105,12 @@ async fn wait_bridge_ready(
         if tokio::time::Instant::now() >= deadline {
             break Err("access_bridge_login_timeout".into());
         }
-        tokio::select! {
-            recv = &mut rx => {
-                match recv {
-                    Ok(()) => break Ok(()),
-                    Err(_) => break Err("access_bridge_ready_channel_closed".into()),
-                }
-            }
-            _ = tokio::time::sleep(Duration::from_millis(400)) => {}
+        // Prefer the page-emitted ready event when remote IPC works; otherwise
+        // the eval probe above eventually succeeds after Access redirects.
+        match tokio::time::timeout(Duration::from_millis(400), &mut rx).await {
+            Ok(Ok(())) => break Ok(()),
+            Ok(Err(_)) => break Err("access_bridge_ready_channel_closed".into()),
+            Err(_) => {} // poll again
         }
     };
 
@@ -451,6 +450,7 @@ fn setup_tray(app: &AppHandle) -> tauri::Result<()> {
 
     let mut builder = TrayIconBuilder::new()
         .menu(&menu)
+        .show_menu_on_left_click(false)
         .tooltip("Cursor Gateway")
         .on_menu_event(|app, event| match event.id.as_ref() {
             "show_main" => {

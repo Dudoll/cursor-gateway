@@ -118,9 +118,9 @@ Get-FileHash .\cursor-gateway-desktop-setup.exe -Algorithm SHA256
 
 ### 版本号
 
-- 单一事实源：`apps/desktop/src-tauri/tauri.conf.json` 的 `version`（当前 `0.1.2`），
+- 单一事实源：`apps/desktop/src-tauri/tauri.conf.json` 的 `version`（当前 `0.1.3`），
   与 `apps/desktop/package.json`、`Cargo.toml` 保持一致。
-- 发布用 tag `desktop-v<semver>`（如 `desktop-v0.1.2`）触发 CI 出包并附加到 Release，
+- 发布用 tag `desktop-v<semver>`（如 `desktop-v0.1.3`）触发 CI 出包并附加到 Release，
   产物名恒为 `cursor-gateway-desktop-setup.exe`（便于 `/api/desktop/download` 固定引用）。
 
 ### Cloudflare Access 桥接与系统托盘
