@@ -12,8 +12,9 @@ cookies cross-site). After login the bridge WebView stays alive but is **hidden 
 the system tray** (right-click tray icon → show bridge / quit). See
 [`docs/windows-client.md`](../../docs/windows-client.md).
 
-**Passkey:** WebAuthn runs in a trusted `https://secure.joelzt.org` bridge window
-whose origin matches the RP ID, then returns the public result over Tauri IPC.
+**Passkey:** WebAuthn runs in a trusted `https://secure.joelzt.org` top-level
+window using a minimal adapter injected by the signed shell (so it does not
+depend on a static bridge deploy), then returns the public result over Tauri IPC.
 
 **Upgrade:** public metadata is checked before login and refreshed after Access,
 on focus/network recovery, and periodically. A newer available installer shows one

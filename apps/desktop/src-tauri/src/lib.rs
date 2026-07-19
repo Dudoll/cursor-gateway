@@ -24,6 +24,119 @@ const BRIDGE_LABEL: &str = "access-bridge";
 const BRIDGE_READY_EVENT: &str = "cg-access-bridge-ready";
 const PASSKEY_BRIDGE_LABEL: &str = "passkey-bridge";
 
+/// Signed-shell WebAuthn adapter injected into the trusted HTTPS WebView.
+///
+/// Keeping this adapter in the desktop binary means Passkey still works when
+/// the static host serves an older SPA fallback for `/passkey-bridge.html`.
+/// The browser itself continues to enforce secure-context, origin, and RP-ID
+/// rules because `navigator.credentials` executes in that HTTPS top-level page.
+const PASSKEY_BRIDGE_BOOTSTRAP_JS: &str = r#"
+(() => {
+  const b64ToBytes = (value) => {
+    const padded = String(value).replace(/-/g, "+").replace(/_/g, "/")
+      .padEnd(Math.ceil(String(value).length / 4) * 4, "=");
+    const binary = atob(padded);
+    return Uint8Array.from(binary, (char) => char.charCodeAt(0));
+  };
+  const bytesToB64 = (value) => {
+    if (value === null || value === undefined) return null;
+    const bytes = new Uint8Array(value);
+    let binary = "";
+    for (let offset = 0; offset < bytes.length; offset += 0x8000) {
+      binary += String.fromCharCode.apply(null, bytes.subarray(offset, offset + 0x8000));
+    }
+    return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+  };
+  const classify = (error) => {
+    const name = String(error && error.name ? error.name : "");
+    const message = String(error && error.message ? error.message : "").toLowerCase();
+    if (name === "SecurityError") return "passkey_rp_id_mismatch";
+    if (name === "InvalidStateError") return "passkey_credential_already_registered_locally";
+    if (name === "AbortError") return "passkey_aborted";
+    if (name === "NotAllowedError") {
+      if (message.includes("cancel")) return "passkey_user_cancelled";
+      if (message.includes("timed out") || message.includes("timeout")) {
+        return "passkey_not_allowed_or_timeout";
+      }
+      return "passkey_not_allowed";
+    }
+    return "passkey_ceremony_failed";
+  };
+  const decodeCredentialList = (items) => Array.isArray(items)
+    ? items.map((item) => ({ ...item, id: b64ToBytes(item.id) }))
+    : items;
+  const commonResult = (credential) => {
+    const result = {
+      id: credential.id,
+      rawId: bytesToB64(credential.rawId),
+      type: credential.type,
+      clientExtensionResults: credential.getClientExtensionResults()
+    };
+    if (credential.authenticatorAttachment) {
+      result.authenticatorAttachment = credential.authenticatorAttachment;
+    }
+    return result;
+  };
+  window.__CG_PASSKEY_BRIDGE__ = {
+    ready: true,
+    version: 1,
+    origin: window.location.origin,
+    async perform(request) {
+      if (!(window.PublicKeyCredential && navigator.credentials)) {
+        throw new Error("passkey_bridge_unsupported");
+      }
+      try {
+        const options = structuredClone(request.options);
+        options.challenge = b64ToBytes(options.challenge);
+        let credential;
+        if (request.mode === "registration") {
+          options.user.id = b64ToBytes(options.user.id);
+          options.excludeCredentials = decodeCredentialList(options.excludeCredentials);
+          credential = await navigator.credentials.create({ publicKey: options });
+          if (!credential) throw new Error("passkey_ceremony_failed");
+          const response = credential.response;
+          return {
+            ...commonResult(credential),
+            response: {
+              clientDataJSON: bytesToB64(response.clientDataJSON),
+              attestationObject: bytesToB64(response.attestationObject),
+              transports: typeof response.getTransports === "function"
+                ? response.getTransports()
+                : [],
+              publicKeyAlgorithm: typeof response.getPublicKeyAlgorithm === "function"
+                ? response.getPublicKeyAlgorithm()
+                : -7,
+              publicKey: typeof response.getPublicKey === "function"
+                ? bytesToB64(response.getPublicKey())
+                : null
+            }
+          };
+        }
+        if (request.mode !== "authentication") throw new Error("passkey_mode_invalid");
+        options.allowCredentials = decodeCredentialList(options.allowCredentials);
+        credential = await navigator.credentials.get({ publicKey: options });
+        if (!credential) throw new Error("passkey_ceremony_failed");
+        const response = credential.response;
+        return {
+          ...commonResult(credential),
+          response: {
+            clientDataJSON: bytesToB64(response.clientDataJSON),
+            authenticatorData: bytesToB64(response.authenticatorData),
+            signature: bytesToB64(response.signature),
+            userHandle: bytesToB64(response.userHandle)
+          }
+        };
+      } catch (error) {
+        const code = error instanceof Error && /^passkey_[a-z0-9_]+$/i.test(error.message)
+          ? error.message
+          : classify(error);
+        throw new Error(code);
+      }
+    }
+  };
+})();
+"#;
+
 struct BridgeState {
     next_id: AtomicU64,
 }
@@ -111,10 +224,7 @@ fn normalize_passkey_origin(raw: &str) -> Result<String, String> {
 }
 
 fn passkey_bridge_url(origin: &str) -> Result<url::Url, String> {
-    let base = format!(
-        "{}/passkey-bridge.html?desktop=1",
-        origin.trim_end_matches('/')
-    );
+    let base = format!("{}/?desktop-passkey=1", origin.trim_end_matches('/'));
     url::Url::parse(&base).map_err(|_| "passkey_bridge_url_invalid".to_string())
 }
 
@@ -357,6 +467,7 @@ async fn eval_passkey_bridge_ready(window: &WebviewWindow, probe_id: u64) -> Res
 
     let js = format!(
         r#"(async () => {{
+  {bootstrap}
   const bridge = window.__CG_PASSKEY_BRIDGE__;
   const ready = !!(bridge && bridge.ready === true && bridge.origin === window.location.origin);
   try {{
@@ -365,6 +476,7 @@ async fn eval_passkey_bridge_ready(window: &WebviewWindow, probe_id: u64) -> Res
     }}
   }} catch (_) {{}}
 }})()"#,
+        bootstrap = PASSKEY_BRIDGE_BOOTSTRAP_JS,
         event = serde_json::to_string(&event_name).unwrap()
     );
     if let Err(error) = window.eval(&js) {
@@ -967,6 +1079,15 @@ mod tests {
             "https://tauri.localhost",
             "secure.joelzt.org"
         ));
+        assert_eq!(
+            passkey_bridge_url("https://secure.joelzt.org")
+                .unwrap()
+                .as_str(),
+            "https://secure.joelzt.org/?desktop-passkey=1"
+        );
+        assert!(PASSKEY_BRIDGE_BOOTSTRAP_JS.contains("navigator.credentials.create"));
+        assert!(PASSKEY_BRIDGE_BOOTSTRAP_JS.contains("navigator.credentials.get"));
+        assert!(PASSKEY_BRIDGE_BOOTSTRAP_JS.contains("passkey_rp_id_mismatch"));
     }
 
     #[test]
