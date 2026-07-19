@@ -146,10 +146,28 @@ async function runnerCertificate(input: {
     rootKeyId: input.root.public.keyId,
     rootFingerprint: input.root.public.fingerprint
   };
+  const transcript = {
+    protocol: unsigned.protocol,
+    kind: unsigned.kind,
+    version: unsigned.version,
+    certId: unsigned.certId,
+    runnerId: unsigned.runnerId,
+    epoch: unsigned.epoch,
+    encryptionFingerprint: unsigned.encryptionKey.fingerprint,
+    encryptionKeyId: unsigned.encryptionKey.keyId,
+    signingFingerprint: unsigned.signingKey.fingerprint,
+    signingKeyId: unsigned.signingKey.keyId,
+    allowedSecureOrigins: [...unsigned.allowedSecureOrigins].sort(),
+    allowedRpIds: [...unsigned.allowedRpIds].sort(),
+    issuedAt: unsigned.issuedAt,
+    expiresAt: unsigned.expiresAt,
+    rootKeyId: unsigned.rootKeyId,
+    rootFingerprint: unsigned.rootFingerprint
+  };
   return {
     ...unsigned,
     signature: await signature(
-      unsigned,
+      transcript,
       input.root.privateKey,
       input.root.public.keyId
     )
