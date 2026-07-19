@@ -512,9 +512,15 @@ test("desktop flow stays top-down, explains failure, retries, and reaches chat",
   await expect(page.locator("[data-flow-step]")).toHaveCount(1);
   await page.getByRole("button", { name: "开始对话" }).click();
   await expect(page.locator('[data-flow-step="chat"]')).toBeVisible();
+  await expect(page.locator(".secure-chat-sidebar")).toBeVisible();
+  await expect(page.locator(".secure-chat-pane")).toBeVisible();
+  await expect(page.getByRole("button", { name: "新对话" })).toBeVisible();
   await expect(page.locator('[data-flow-step="chat"]')).toContainText(
     "授权设备离线"
   );
+  if (process.env.CHAT_UI_SCREENSHOT) {
+    await page.screenshot({ path: process.env.CHAT_UI_SCREENSHOT, fullPage: true });
+  }
   await expect(page.locator("[data-flow-step]")).toHaveCount(1);
 
   expect(backend.passkeyOrigins).toEqual([SECURE_ORIGIN, SECURE_ORIGIN]);
@@ -686,7 +692,7 @@ test("built Secure Web serves an exact JSON update manifest instead of SPA HTML"
   const manifest = await response.json();
   expect(manifest).toMatchObject({
     schemaVersion: 1,
-    version: "0.1.9",
+    version: "0.1.10",
     installerUrl: "https://cs.joelzt.org/api/desktop/download"
   });
   expect(manifest.sha256).toMatch(/^[a-f0-9]{64}$/);

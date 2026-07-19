@@ -32,8 +32,9 @@ test("bridge HTML marks Access ready and emits Tauri event (no external assets)"
   assert.equal(html.includes("https://"), false);
 });
 
-test("bridge CSP allows inline bootstrap script", () => {
+test("bridge CSP allows inline bootstrap script and same-origin API fetches", () => {
   assert.match(DESKTOP_ACCESS_BRIDGE_CSP, /script-src 'unsafe-inline'/);
+  assert.match(DESKTOP_ACCESS_BRIDGE_CSP, /connect-src 'self'/);
   assert.equal(DESKTOP_ACCESS_BRIDGE_CSP.includes("script-src 'self'"), false);
 });
 
