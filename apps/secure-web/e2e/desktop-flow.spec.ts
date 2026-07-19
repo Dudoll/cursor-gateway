@@ -538,14 +538,18 @@ test("permanent Access error stops without blind retry", async ({ page }) => {
   await installDesktopMock(page, backend);
   await mockPublicUpdate(page, backend.updateMetadata);
   await page.goto("/");
+  const callsBeforeLogin = backend.calls.filter(
+    (call) => call === "GET /api/e2ee-policy"
+  ).length;
   await page.getByRole("button", { name: "登录以继续" }).click();
   await expect(page.locator('[data-flow-step="access"]')).toBeVisible();
   await expect(page.getByRole("alert")).toContainText("请求未被接受");
   const policyCalls = backend.calls.filter(
     (call) => call === "GET /api/e2ee-policy"
   );
-  // One startup probe plus one login probe; no retry storm for HTTP 403.
-  expect(policyCalls.length).toBeLessThanOrEqual(2);
+  // StrictMode may run startup probes twice; the explicit login itself must
+  // stop after exactly one permanent HTTP 403.
+  expect(policyCalls.length - callsBeforeLogin).toBe(1);
 });
 
 for (const item of [
