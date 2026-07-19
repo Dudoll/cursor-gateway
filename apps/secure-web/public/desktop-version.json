@@ -1,6 +1,6 @@
 {
   "version": "0.1.7",
-  "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
-  "installerAvailable": false,
+  "sha256": "a5636def3992ed40d5dde02375a83e3d24c8d58d4e01830e82d39cd8384c99b0",
+  "installerAvailable": true,
   "downloadPath": "/api/desktop/download"
 }
