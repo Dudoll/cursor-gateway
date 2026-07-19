@@ -13,7 +13,7 @@ export const DESKTOP_ACCESS_BRIDGE_PATH = "/api/desktop/access/bridge";
  */
 export const DESKTOP_ACCESS_BRIDGE_CSP =
   "default-src 'none'; base-uri 'none'; frame-ancestors 'none'; " +
-  "script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src 'none'";
+  "script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src 'none'; connect-src 'self'";
 
 /** True when the global onSend hook should leave the route CSP alone. */
 export function shouldPreserveRouteContentSecurityPolicy(url: string | undefined): boolean {

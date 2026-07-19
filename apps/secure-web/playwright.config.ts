@@ -1,5 +1,7 @@
 import { defineConfig } from "@playwright/test";
 
+const browserChannel = process.env.PLAYWRIGHT_CHANNEL?.trim();
+
 export default defineConfig({
   testDir: "./e2e",
   fullyParallel: false,
@@ -12,7 +14,7 @@ export default defineConfig({
   use: {
     baseURL: "http://localhost:4174",
     browserName: "chromium",
-    channel: "msedge",
+    ...(browserChannel === "bundled" ? {} : { channel: browserChannel || "msedge" }),
     headless: true,
     trace: "retain-on-failure",
     screenshot: "only-on-failure"

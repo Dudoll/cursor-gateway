@@ -1,6 +1,6 @@
 [package]
 name = "cursor-gateway-desktop"
-version = "0.1.9"
+version = "0.1.10"
 description = "Cursor Gateway Windows desktop shell (loads Secure Web E2EE UI locally)"
 authors = ["Cursor Gateway"]
 edition = "2021"
