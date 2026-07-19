@@ -55,12 +55,29 @@ export type ClaimedPairingStart = PairingRow & {
   recipientEmail: string;
 };
 
+/**
+ * Recipient identity always comes from the Access-bound app_users row. Strip
+ * legacy/forged recipient hints from stored envelopes before strict protocol
+ * validation so they can never influence delivery or break claim processing.
+ */
+function parseStoredPairingStart(value: unknown): E2eePairingStart {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return e2eePairingStartSchema.parse(value);
+  }
+  const {
+    email: _email,
+    recipientEmail: _recipientEmail,
+    ...protocolFields
+  } = value as Record<string, unknown>;
+  return e2eePairingStartSchema.parse(protocolFields);
+}
+
 function mapPairing(row: QueryResultRow): PairingRow {
   return {
     pairId: row.pair_id,
     userId: row.user_id,
     status: row.status as E2eePairingStatus,
-    start: e2eePairingStartSchema.parse(row.start_envelope),
+    start: parseStoredPairingStart(row.start_envelope),
     offer: row.offer_envelope
       ? e2eePairingOfferSchema.parse(row.offer_envelope)
       : null,
@@ -220,7 +237,7 @@ export async function publishPairingOffer(input: {
     if (row.runner_id && row.runner_id !== input.runnerId) {
       throw new PairingConflictError("pairing_runner_mismatch");
     }
-    const start = e2eePairingStartSchema.parse(row.start_envelope);
+    const start = parseStoredPairingStart(row.start_envelope);
     if (
       start.clientId !== offer.clientId ||
       start.clientChallenge !== offer.clientChallenge ||
@@ -274,7 +291,7 @@ export async function submitPairingComplete(input: {
     if (row.status !== "offer_ready" && row.status !== "complete_submitted") {
       throw new PairingConflictError("pairing_status_invalid");
     }
-    const start = e2eePairingStartSchema.parse(row.start_envelope);
+    const start = parseStoredPairingStart(row.start_envelope);
     if (start.clientId !== complete.clientId) {
       throw new PairingConflictError("pairing_client_mismatch");
     }
@@ -356,7 +373,7 @@ export async function publishPairingAck(input: {
     );
 
     if (ack.status === "paired") {
-      const start = e2eePairingStartSchema.parse(row.start_envelope);
+      const start = parseStoredPairingStart(row.start_envelope);
       await client.query(
         `
           insert into e2ee_devices (
