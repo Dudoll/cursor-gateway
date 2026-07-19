@@ -8,6 +8,7 @@
     "dev": "vite --host 127.0.0.1 --port 5174",
     "preview": "vite preview --host 127.0.0.1 --port 5174",
     "test": "tsx --test test/*.test.ts",
+    "test:e2e": "playwright test --config playwright.config.ts",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "manifest:init": "tsx ../../scripts/e2ee/asset-manifest-cli.ts init-key",
     "manifest:sign": "tsx ../../scripts/e2ee/asset-manifest-cli.ts sign --dist dist",
@@ -26,6 +27,7 @@
     "zod": "^4.4.3"
   },
   "devDependencies": {
+    "@playwright/test": "^1.61.1",
     "@types/node": "^26.1.1",
     "@types/react": "^19.2.17",
     "@types/react-dom": "^19.2.3",

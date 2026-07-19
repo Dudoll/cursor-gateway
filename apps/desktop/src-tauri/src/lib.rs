@@ -9,6 +9,7 @@
 //! controlled from the system tray.
 
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -21,6 +22,7 @@ use tauri::{
 
 const BRIDGE_LABEL: &str = "access-bridge";
 const BRIDGE_READY_EVENT: &str = "cg-access-bridge-ready";
+const PASSKEY_BRIDGE_LABEL: &str = "passkey-bridge";
 
 struct BridgeState {
     next_id: AtomicU64,
@@ -52,6 +54,7 @@ struct BridgeFetchResponse {
     status: u16,
     body: String,
     content_type: Option<String>,
+    request_id: Option<String>,
     opaque_redirect: bool,
 }
 
@@ -59,6 +62,14 @@ struct BridgeFetchResponse {
 #[serde(rename_all = "camelCase")]
 struct DesktopVersionInfo {
     version: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DesktopPasskeyRequest {
+    passkey_origin: String,
+    mode: String,
+    options: serde_json::Value,
 }
 
 fn normalize_gateway_origin(raw: &str) -> Result<String, String> {
@@ -75,6 +86,73 @@ fn normalize_gateway_origin(raw: &str) -> Result<String, String> {
 fn bridge_url(origin: &str) -> Result<url::Url, String> {
     let base = format!("{}/api/desktop/access/bridge", origin.trim_end_matches('/'));
     url::Url::parse(&base).map_err(|e| format!("invalid_bridge_url:{e}"))
+}
+
+fn normalize_passkey_origin(raw: &str) -> Result<String, String> {
+    let url = url::Url::parse(raw.trim()).map_err(|_| "passkey_origin_invalid".to_string())?;
+    if url.scheme() != "https"
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.path() != "/"
+        || url.query().is_some()
+        || url.fragment().is_some()
+    {
+        return Err("passkey_origin_invalid".into());
+    }
+    let host = url
+        .host_str()
+        .ok_or_else(|| "passkey_origin_invalid".to_string())?;
+    // This signed desktop build only grants remote IPC to the production
+    // domain family. Keep the WebAuthn bridge equally narrow.
+    if host != "joelzt.org" && !host.ends_with(".joelzt.org") {
+        return Err("passkey_origin_not_allowed".into());
+    }
+    Ok(url.origin().ascii_serialization())
+}
+
+fn passkey_bridge_url(origin: &str) -> Result<url::Url, String> {
+    let base = format!(
+        "{}/passkey-bridge.html?desktop=1",
+        origin.trim_end_matches('/')
+    );
+    url::Url::parse(&base).map_err(|_| "passkey_bridge_url_invalid".to_string())
+}
+
+fn passkey_rp_id(request: &DesktopPasskeyRequest) -> Result<String, String> {
+    let value = match request.mode.as_str() {
+        "registration" => request
+            .options
+            .get("rp")
+            .and_then(|rp| rp.get("id"))
+            .and_then(|id| id.as_str()),
+        "authentication" => request.options.get("rpId").and_then(|id| id.as_str()),
+        _ => return Err("passkey_mode_invalid".into()),
+    }
+    .ok_or_else(|| "passkey_rp_id_missing".to_string())?
+    .trim()
+    .to_ascii_lowercase();
+
+    if value.is_empty()
+        || value.len() > 253
+        || !value
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '.' || ch == '-')
+    {
+        return Err("passkey_rp_id_invalid".into());
+    }
+    Ok(value)
+}
+
+fn origin_can_use_rp_id(origin: &str, rp_id: &str) -> bool {
+    let Ok(url) = url::Url::parse(origin) else {
+        return false;
+    };
+    let Some(host) = url.host_str() else {
+        return false;
+    };
+    let host = host.to_ascii_lowercase();
+    let rp_id = rp_id.to_ascii_lowercase();
+    host == rp_id || host.ends_with(&format!(".{rp_id}"))
 }
 
 /// WebView2 (Windows) throttles and eventually suspends the renderer of a
@@ -260,6 +338,180 @@ async fn eval_bridge_ready(window: &WebviewWindow) -> Result<bool, String> {
     }
 }
 
+async fn eval_passkey_bridge_ready(window: &WebviewWindow, probe_id: u64) -> Result<bool, String> {
+    let (tx, rx) = tokio::sync::oneshot::channel::<bool>();
+    let tx = std::sync::Mutex::new(Some(tx));
+    let event_name = format!("cg-passkey-ready-probe-{probe_id}");
+    let app = window.app_handle().clone();
+    let listen_id = app.listen(event_name.clone(), move |event| {
+        let ready = serde_json::from_str::<serde_json::Value>(event.payload())
+            .ok()
+            .and_then(|value| value.get("ready").and_then(|item| item.as_bool()))
+            .unwrap_or(false);
+        if let Ok(mut slot) = tx.lock() {
+            if let Some(sender) = slot.take() {
+                let _ = sender.send(ready);
+            }
+        }
+    });
+
+    let js = format!(
+        r#"(async () => {{
+  const bridge = window.__CG_PASSKEY_BRIDGE__;
+  const ready = !!(bridge && bridge.ready === true && bridge.origin === window.location.origin);
+  try {{
+    if (window.__TAURI__ && window.__TAURI__.event) {{
+      await window.__TAURI__.event.emit({event}, {{ ready }});
+    }}
+  }} catch (_) {{}}
+}})()"#,
+        event = serde_json::to_string(&event_name).unwrap()
+    );
+    if let Err(error) = window.eval(&js) {
+        app.unlisten(listen_id);
+        return Err(format!("passkey_bridge_eval:{error}"));
+    }
+
+    let result = tokio::time::timeout(Duration::from_secs(2), rx).await;
+    app.unlisten(listen_id);
+    match result {
+        Ok(Ok(value)) => Ok(value),
+        _ => Ok(false),
+    }
+}
+
+async fn open_passkey_bridge_window(
+    app: &AppHandle,
+    state: &BridgeState,
+    origin: &str,
+) -> Result<WebviewWindow, String> {
+    if let Some(existing) = app.get_webview_window(PASSKEY_BRIDGE_LABEL) {
+        let _ = existing.close();
+        tokio::time::sleep(Duration::from_millis(150)).await;
+    }
+
+    let url = passkey_bridge_url(origin)?;
+    let window = WebviewWindowBuilder::new(
+        app,
+        PASSKEY_BRIDGE_LABEL,
+        WebviewUrl::External(url),
+    )
+    .title("完成设备验证")
+    .inner_size(520.0, 320.0)
+    .resizable(false)
+    .center()
+    .visible(true)
+    .focused(true)
+    .build()
+    .map_err(|_| "passkey_bridge_create".to_string())?;
+
+    let _ = window.show();
+    let _ = window.set_focus();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+    loop {
+        let probe_id = state.next_id.fetch_add(1, Ordering::Relaxed);
+        if eval_passkey_bridge_ready(&window, probe_id)
+            .await
+            .unwrap_or(false)
+        {
+            return Ok(window);
+        }
+        if tokio::time::Instant::now() >= deadline {
+            let _ = window.close();
+            return Err("passkey_bridge_load_timeout".into());
+        }
+        tokio::time::sleep(Duration::from_millis(350)).await;
+    }
+}
+
+async fn perform_passkey_via_window(
+    app: &AppHandle,
+    window: &WebviewWindow,
+    state: &BridgeState,
+    request: &DesktopPasskeyRequest,
+    expected_origin: &str,
+) -> Result<serde_json::Value, String> {
+    let id = state.next_id.fetch_add(1, Ordering::Relaxed);
+    let event_name = format!("cg-passkey-result-{id}");
+    let (tx, rx) = tokio::sync::oneshot::channel::<String>();
+    let tx = std::sync::Mutex::new(Some(tx));
+    let listen_id = app.listen(event_name.clone(), move |event| {
+        if let Ok(mut slot) = tx.lock() {
+            if let Some(sender) = slot.take() {
+                let _ = sender.send(event.payload().to_string());
+            }
+        }
+    });
+
+    let bridge_request = serde_json::json!({
+        "mode": request.mode,
+        "options": request.options
+    });
+    let js = format!(
+        r#"(async () => {{
+  const emit = async (payload) => {{
+    if (window.__TAURI__ && window.__TAURI__.event) {{
+      await window.__TAURI__.event.emit({event}, payload);
+    }}
+  }};
+  try {{
+    const bridge = window.__CG_PASSKEY_BRIDGE__;
+    if (!(bridge && bridge.ready === true && typeof bridge.perform === "function")) {{
+      await emit({{ ok: false, error: "passkey_bridge_not_ready" }});
+      return;
+    }}
+    const response = await bridge.perform({request});
+    await emit({{
+      ok: true,
+      origin: window.location.origin,
+      response
+    }});
+  }} catch (error) {{
+    const raw = String(error && error.message ? error.message : "");
+    const safe = /^passkey_[a-z0-9_]+$/i.test(raw) ? raw : "passkey_bridge_failed";
+    await emit({{ ok: false, error: safe }});
+  }}
+}})()"#,
+        event = serde_json::to_string(&event_name).unwrap(),
+        request = serde_json::to_string(&bridge_request)
+            .map_err(|_| "passkey_bridge_request_invalid".to_string())?
+    );
+
+    if let Err(error) = window.eval(&js) {
+        app.unlisten(listen_id);
+        return Err(format!("passkey_bridge_eval:{error}"));
+    }
+
+    let payload_result = tokio::time::timeout(Duration::from_secs(150), rx).await;
+    app.unlisten(listen_id);
+    let payload = payload_result
+        .map_err(|_| "passkey_timed_out".to_string())?
+        .map_err(|_| "passkey_bridge_channel_closed".to_string())?;
+
+    let value: serde_json::Value =
+        serde_json::from_str(&payload).map_err(|_| "passkey_bridge_bad_payload".to_string())?;
+    if value.get("ok").and_then(|item| item.as_bool()) != Some(true) {
+        let code = value
+            .get("error")
+            .and_then(|item| item.as_str())
+            .filter(|code| {
+                code.starts_with("passkey_")
+                    && code
+                        .chars()
+                        .all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+            })
+            .unwrap_or("passkey_bridge_failed");
+        return Err(code.to_string());
+    }
+    if value.get("origin").and_then(|item| item.as_str()) != Some(expected_origin) {
+        return Err("passkey_bridge_origin_mismatch".into());
+    }
+    value
+        .get("response")
+        .cloned()
+        .ok_or_else(|| "passkey_bridge_response_missing".to_string())
+}
+
 async fn bridge_fetch_via_window(
     app: &AppHandle,
     window: &WebviewWindow,
@@ -336,6 +588,7 @@ async fn bridge_fetch_via_window(
       return;
     }}
     const contentType = response.headers.get("content-type");
+    const requestId = response.headers.get("x-request-id");
     let bodyOut;
     if ({binary}) {{
       const buf = await response.arrayBuffer();
@@ -353,7 +606,8 @@ async fn bridge_fetch_via_window(
       status: response.status,
       body: bodyOut,
       opaqueRedirect: false,
-      contentType
+      contentType,
+      requestId
     }});
   }} catch (e) {{
     await emit({{ error: String(e && e.message ? e.message : e) }});
@@ -371,12 +625,11 @@ async fn bridge_fetch_via_window(
         .eval(&js)
         .map_err(|e| format!("access_bridge_fetch_eval:{e}"))?;
 
-    let payload = tokio::time::timeout(Duration::from_secs(120), rx)
-        .await
+    let payload_result = tokio::time::timeout(Duration::from_secs(120), rx).await;
+    app.unlisten(listen_id);
+    let payload = payload_result
         .map_err(|_| "access_bridge_fetch_timeout".to_string())?
         .map_err(|_| "access_bridge_fetch_channel_closed".to_string())?;
-
-    app.unlisten(listen_id);
 
     let value: serde_json::Value =
         serde_json::from_str(&payload).map_err(|e| format!("access_bridge_bad_payload:{e}"))?;
@@ -397,6 +650,16 @@ async fn bridge_fetch_via_window(
             .get("contentType")
             .and_then(|v| v.as_str())
             .map(|s| s.to_string()),
+        request_id: value
+            .get("requestId")
+            .and_then(|v| v.as_str())
+            .filter(|value| {
+                value.len() <= 96
+                    && value
+                        .chars()
+                        .all(|ch| ch.is_ascii_alphanumeric() || "._:-".contains(ch))
+            })
+            .map(|value| value.to_string()),
         opaque_redirect: value
             .get("opaqueRedirect")
             .and_then(|v| v.as_bool())
@@ -448,10 +711,51 @@ async fn desktop_bridge_fetch(
 }
 
 #[tauri::command]
+async fn desktop_perform_passkey(
+    app: AppHandle,
+    state: State<'_, BridgeState>,
+    request: DesktopPasskeyRequest,
+) -> Result<serde_json::Value, String> {
+    let origin = normalize_passkey_origin(&request.passkey_origin)?;
+    let rp_id = passkey_rp_id(&request)?;
+    if !origin_can_use_rp_id(&origin, &rp_id) {
+        return Err("passkey_rp_id_mismatch".into());
+    }
+
+    let window = open_passkey_bridge_window(&app, &state, &origin).await?;
+    let result = perform_passkey_via_window(&app, &window, &state, &request, &origin).await;
+    let _ = window.close();
+    result
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    Sha256::digest(bytes)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+fn validate_installer_payload(bytes: &[u8], expected_sha256: &str) -> Result<(), String> {
+    let expected = expected_sha256.trim().to_ascii_lowercase();
+    if expected.len() != 64 || !expected.chars().all(|ch| ch.is_ascii_hexdigit()) {
+        return Err("desktop_update_hash_invalid".into());
+    }
+    if bytes.len() < 1024 || !bytes.starts_with(b"MZ") {
+        return Err("desktop_download_invalid_executable".into());
+    }
+    if sha256_hex(bytes) != expected {
+        return Err("desktop_update_hash_mismatch".into());
+    }
+    Ok(())
+}
+
+#[tauri::command]
 async fn desktop_install_update(
     app: AppHandle,
     state: State<'_, BridgeState>,
     gateway_origin: String,
+    expected_version: String,
+    expected_sha256: String,
 ) -> Result<(), String> {
     let origin = normalize_gateway_origin(&gateway_origin)?;
     let window = require_ready_bridge_window(&app, &origin).await?;
@@ -481,11 +785,18 @@ async fn desktop_install_update(
     let bytes = base64::engine::general_purpose::STANDARD
         .decode(response.body.trim())
         .map_err(|e| format!("desktop_download_b64:{e}"))?;
-    if bytes.len() < 1024 {
-        return Err("desktop_download_too_small".into());
+    validate_installer_payload(&bytes, &expected_sha256)?;
+    if !expected_version
+        .chars()
+        .all(|ch| ch.is_ascii_digit() || ch == '.')
+        || expected_version.len() > 32
+    {
+        return Err("desktop_update_version_invalid".into());
     }
 
-    let path: PathBuf = std::env::temp_dir().join("cursor-gateway-desktop-setup.exe");
+    let path: PathBuf = std::env::temp_dir().join(format!(
+        "cursor-gateway-desktop-{expected_version}-setup.exe"
+    ));
     std::fs::write(&path, &bytes).map_err(|e| format!("desktop_download_write:{e}"))?;
 
     #[cfg(target_os = "windows")]
@@ -569,6 +880,7 @@ pub fn run() {
             desktop_access_ensure,
             desktop_access_show,
             desktop_bridge_fetch,
+            desktop_perform_passkey,
             desktop_install_update
         ])
         .setup(|app| {
@@ -632,6 +944,66 @@ mod tests {
         assert_eq!(
             url.as_str(),
             "https://secure.joelzt.org/api/desktop/access/bridge"
+        );
+    }
+
+    #[test]
+    fn passkey_bridge_requires_https_allowed_origin_and_matching_rp_id() {
+        assert_eq!(
+            normalize_passkey_origin("https://secure.joelzt.org").unwrap(),
+            "https://secure.joelzt.org"
+        );
+        assert!(normalize_passkey_origin("http://secure.joelzt.org").is_err());
+        assert!(normalize_passkey_origin("https://example.com").is_err());
+        assert!(origin_can_use_rp_id(
+            "https://secure.joelzt.org",
+            "secure.joelzt.org"
+        ));
+        assert!(origin_can_use_rp_id(
+            "https://login.joelzt.org",
+            "joelzt.org"
+        ));
+        assert!(!origin_can_use_rp_id(
+            "https://tauri.localhost",
+            "secure.joelzt.org"
+        ));
+    }
+
+    #[test]
+    fn passkey_rp_id_reads_registration_and_authentication_options() {
+        let registration = DesktopPasskeyRequest {
+            passkey_origin: "https://secure.joelzt.org".into(),
+            mode: "registration".into(),
+            options: serde_json::json!({ "rp": { "id": "secure.joelzt.org" } }),
+        };
+        assert_eq!(passkey_rp_id(&registration).unwrap(), "secure.joelzt.org");
+
+        let authentication = DesktopPasskeyRequest {
+            passkey_origin: "https://secure.joelzt.org".into(),
+            mode: "authentication".into(),
+            options: serde_json::json!({ "rpId": "secure.joelzt.org" }),
+        };
+        assert_eq!(
+            passkey_rp_id(&authentication).unwrap(),
+            "secure.joelzt.org"
+        );
+    }
+
+    #[test]
+    fn installer_payload_requires_pe_header_and_exact_sha256() {
+        let mut bytes = vec![0_u8; 2048];
+        bytes[0] = b'M';
+        bytes[1] = b'Z';
+        let hash = sha256_hex(&bytes);
+        assert!(validate_installer_payload(&bytes, &hash).is_ok());
+        assert_eq!(
+            validate_installer_payload(&bytes, &"0".repeat(64)).unwrap_err(),
+            "desktop_update_hash_mismatch"
+        );
+        bytes[0] = b'X';
+        assert_eq!(
+            validate_installer_payload(&bytes, &sha256_hex(&bytes)).unwrap_err(),
+            "desktop_download_invalid_executable"
         );
     }
 }

@@ -2,7 +2,7 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "Main Secure Web window plus the Cloudflare Access bridge window used to carry Access cookies for API calls.",
-  "windows": ["main", "access-bridge"],
+  "windows": ["main", "access-bridge", "passkey-bridge"],
   "remote": {
     "urls": [
       "https://cs.joelzt.org/*",
@@ -28,6 +28,7 @@
     "allow-desktop-access-ensure",
     "allow-desktop-access-show",
     "allow-desktop-bridge-fetch",
+    "allow-desktop-perform-passkey",
     "allow-desktop-install-update"
   ]
 }

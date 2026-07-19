@@ -31,7 +31,7 @@ apps/desktop/
 
 - `frontendDist` 指向 `apps/secure-web/dist`：**直接复用** Secure Web 的构建产物。
 - CSP 仅放行连接 `https://secure.joelzt.org` / `https://cs.joelzt.org`（及 `*.joelzt.org`）。
-- 版本号：`apps/desktop/src-tauri/tauri.conf.json`（当前 `0.1.1`），与 `package.json` / `Cargo.toml` /
+- 版本号：`apps/desktop/src-tauri/tauri.conf.json`（当前 `0.1.7`），与 `package.json` / `Cargo.toml` /
   `artifacts/desktop/version.json` 对齐。
 
 ## 如何构建（在 Windows / WSL 之外的原生 Windows，或 CI）
@@ -49,7 +49,7 @@ apps/desktop/
 **最省事：一键脚本**（自动装 Node/Rust/WebView2/Build Tools 若缺，clone/checkout，出包并打印 SHA256）：
 
 ```powershell
-# 从任意目录（会自动 clone 到 %USERPROFILE%\cursor-gateway 并构建 desktop-v0.1.0）
+# 从任意目录（会自动 clone 到 %USERPROFILE%\cursor-gateway 并构建指定 tag）
 irm https://raw.githubusercontent.com/Dudoll/cursor-gateway/main/scripts/desktop/build-desktop-windows.ps1 -OutFile build.ps1
 powershell -ExecutionPolicy Bypass -File .\build.ps1 -OutDir $HOME\Desktop
 ```
@@ -73,21 +73,22 @@ npm run build -w @cursor-gateway/desktop       # = build:frontend + icon + tauri
 `windows-latest` 上构建，产出 `cursor-gateway-desktop-setup.exe` + `SHA256SUMS`：
 
 - 手动触发：Actions → **desktop-windows** → Run（可勾选 `with_msi`）。
-- 打 tag 触发并附加到 Release：`git tag desktop-v0.1.0 && git push origin desktop-v0.1.0`。
+- 打 tag 触发并附加到 Release：`git tag desktop-v0.1.7 && git push origin desktop-v0.1.7`。
 
 下载 workflow artifact 或 Release 资产，得到 `cursor-gateway-desktop-setup.exe`。
 
 ## 发布 / 让网关可下载
 
 服务端已提供 `GET /api/desktop/download`（Cloudflare Access 鉴权 + 审计 + attachment），
-读取 `artifacts/cursor-gateway-desktop-setup.exe`，**缺产物时返回 404**（`desktop_installer_unavailable`）。
+优先读取 `artifacts/desktop/cursor-gateway-desktop-setup.exe`，并兼容旧的根目录路径；
+**缺产物时返回 404**（`desktop_installer_unavailable`）。
 
 把出好的安装包放到网关的 `artifacts/`：
 
 ```bash
 # 在 VPS 仓库根
-mkdir -p artifacts
-cp /path/to/cursor-gateway-desktop-setup.exe artifacts/cursor-gateway-desktop-setup.exe
+mkdir -p artifacts/desktop
+cp /path/to/cursor-gateway-desktop-setup.exe artifacts/desktop/cursor-gateway-desktop-setup.exe
 # 若走 Docker：把该文件挂载/复制进容器的 /app/artifacts/ 后重启 app
 ```
 
@@ -118,15 +119,15 @@ Get-FileHash .\cursor-gateway-desktop-setup.exe -Algorithm SHA256
 
 ### 版本号
 
-- 单一事实源：`apps/desktop/src-tauri/tauri.conf.json` 的 `version`（当前 `0.1.3`），
+- 单一事实源：`apps/desktop/src-tauri/tauri.conf.json` 的 `version`（当前 `0.1.7`），
   与 `apps/desktop/package.json`、`Cargo.toml` 保持一致。
-- 发布用 tag `desktop-v<semver>`（如 `desktop-v0.1.3`）触发 CI 出包并附加到 Release，
+- 发布用 tag `desktop-v<semver>`（如 `desktop-v0.1.7`）触发 CI 出包并附加到 Release，
   产物名恒为 `cursor-gateway-desktop-setup.exe`（便于 `/api/desktop/download` 固定引用）。
 
 ### Cloudflare Access 桥接与系统托盘
 
-桌面 UI 从 `http://tauri.localhost` 加载，无法跨站带上 Access Cookie。在步骤 1「Gateway」
-面板或顶部提示条点击 **「登录 Cloudflare Access」**（也可用右上角钥匙图标）会打开同源桥接
+桌面 UI 从 `http://tauri.localhost` 加载，无法跨站带上 Access Cookie。在步骤 1 点击
+**「登录以继续」**会打开同源桥接
 窗口（`GET /api/desktop/access/bridge`）；登录成功后窗口自动隐藏，WebView 仍存活以保持
 Cookie，并从 **系统托盘**（通知区域）管理：左键显示主窗口，右键可再打开桥接或退出。
 
@@ -169,7 +170,8 @@ Cookie，并从 **系统托盘**（通知区域）管理：左键显示主窗口
 4. 服务端新增更新清单端点（返回最新 `version` + 已签名安装包 URL）。CI 在 tag 构建里把
    `latest.json`（含签名）一并附到 Release。
 
-> 未启用前，"更新"= 用户重新从右上角「下载 Windows 客户端」获取新版安装包（当前模式）。
+> 当前桌面壳使用内置升级流程：读取公开版本元数据，下载后核对 SHA256，再启动 NSIS。
+> Tauri Updater 的签名清单模式仍未启用。
 
 ## 如何安装 / 验证
 
@@ -184,21 +186,23 @@ Cookie，并从 **系统托盘**（通知区域）管理：左键显示主窗口
 桌面壳从本地 `http://tauri.localhost` 加载 UI，与 Gateway（如 `https://cs.joelzt.org`）是**跨站**关系，
 浏览器不会在 `fetch` 上附带 Cloudflare Access 的 `CF_Authorization` Cookie（SameSite）。因此：
 
-1. 保存 Gateway origin（例如 `https://cs.joelzt.org`）。
-2. 点击右上角**钥匙图标**（仅 Access 未就绪时显示）。
-3. 在弹出的「Cloudflare Access 登录」窗口内完成身份验证；成功后窗口会自动隐藏并保持桥接。
-4. 回到主窗口继续 Secure Gateway 配对（Runner 设备码 / Passkey 等）。
+1. 点击**「登录以继续」**。
+2. 在弹出的登录窗口内完成身份验证；成功后窗口会自动隐藏并保持桥接。
+3. 主窗口自动进入设备验证，不需要回到上方重复操作。
 
 技术说明：登录窗口加载同源页 `GET /api/desktop/access/bridge`；之后所有 Gateway API 经该桥接
 WebView 同源转发，从而带上 Access Cookie。不要用 Service Token 替代个人登录。
 
 ### 一键升级
 
-当服务端 `GET /api/desktop/version` 返回的版本高于本机（`tauri.conf.json` / 安装包版本）且安装包可用时，
-右上角显示**向上箭头**图标（与钥匙同风格，仅有更新时出现）。点击后经 Access 桥接下载
-`/api/desktop/download` 并启动 NSIS 安装程序；装完后重新打开客户端即可。
+客户端会在启动、登录完成、窗口恢复、网络恢复及定时周期检查
+`https://secure.joelzt.org/desktop-version.json`，并在登录后回退检查
+`GET /api/desktop/version`。远端版本更高且安装包可用时，右上角显示唯一的**向上箭头**。
+点击后会先完成登录（如需要），再下载 `/api/desktop/download`、核对发布 SHA256 并启动 NSIS。
 
-> 首次登录仍走 Cloudflare Access：用右上角钥匙图标，不要指望跨站 Cookie 自动生效。
+Passkey 不在 `tauri.localhost` 执行；客户端会打开
+`https://secure.joelzt.org/passkey-bridge.html`，在与 RP ID 匹配的 HTTPS 顶层窗口完成
+Windows Hello / WebAuthn，再通过受限 Tauri IPC 返回公开验证结果。
 
 ## 与「扩展 / PWA」的区别
 

@@ -1,4 +1,3 @@
-import cors from "@fastify/cors";
 import fastifyStatic from "@fastify/static";
 import Fastify from "fastify";
 import { existsSync } from "node:fs";
@@ -7,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import { requireCloudflareUser } from "./auth.js";
 import { config } from "./config.js";
 import { migrate } from "./db.js";
-import { shouldPreserveRouteContentSecurityPolicy } from "./desktopPublic.js";
+import { registerHttpMiddleware } from "./httpMiddleware.js";
 import { registerRoutes } from "./routes.js";
 import { registerTelegram } from "./telegram.js";
 import { createDbBackend } from "./csapi/backend.js";
@@ -36,49 +35,7 @@ async function main() {
     }
   });
 
-  await app.register(cors, {
-    origin(origin, callback) {
-      if (
-        !origin ||
-        origin === config.publicOrigin ||
-        config.secureClientOrigins.has(origin) ||
-        config.e2eeExtensionOrigins.has(origin)
-      ) {
-        callback(null, true);
-        return;
-      }
-      // Log denied origins (non-sensitive) so misconfigured clients — e.g. the
-      // Tauri desktop shell posting from http://tauri.localhost — are visible
-      // instead of silently failing the CORS preflight with a 404.
-      app.log.warn({ origin, event: "cors.origin_denied" }, "CORS origin denied");
-      callback(null, false);
-    },
-    credentials: true
-  });
-
-  app.addHook("onSend", async (_request, reply, payload) => {
-    reply.header("x-content-type-options", "nosniff");
-    reply.header("referrer-policy", "no-referrer");
-    reply.header("x-frame-options", "DENY");
-    const url = _request.raw.url ?? "";
-    // Access bridge HTML ships an inline bootstrap that marks the Tauri shell
-    // ready. Do not overwrite its route CSP with script-src 'self'.
-    if (!shouldPreserveRouteContentSecurityPolicy(url)) {
-      reply.header(
-        "content-security-policy",
-        "default-src 'self'; base-uri 'none'; frame-ancestors 'none'; object-src 'none'; " +
-          "script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'"
-      );
-    }
-    reply.header(
-      "permissions-policy",
-      "camera=(), microphone=(), geolocation=(), payment=(), usb=()"
-    );
-    if (url.startsWith("/cg/v1/")) {
-      reply.header("cache-control", "no-store");
-    }
-    return payload;
-  });
+  await registerHttpMiddleware(app);
 
   await migrate();
   await registerRoutes(app);

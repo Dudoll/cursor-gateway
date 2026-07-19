@@ -22,8 +22,13 @@ import {
   verifyValue
 } from "@cursor-gateway/e2ee";
 import { GatewayApi } from "./api.js";
+import { desktopPerformPasskey, isDesktopShell } from "./desktopShell.js";
 import { SecureWebKeyStore } from "./keyStore.js";
 import { classifyWebauthnError } from "./passkeyErrors.js";
+import {
+  decodePasskeyBridgeResponse,
+  encodePasskeyBridgePayload
+} from "./passkeyCodec.js";
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -45,8 +50,10 @@ export async function fetchTrustRoots(api: GatewayApi): Promise<E2eeTrustRootPub
 export async function startPasskeyPairing(input: {
   api: GatewayApi;
   keys: SecureWebKeyStore;
+  ceremonyOrigin?: string;
 }): Promise<{ pairId: string; expiresAt: string }> {
   const device = await input.keys.device();
+  const ceremonyOrigin = normalizeCeremonyOrigin(input.ceremonyOrigin ?? window.location.origin);
   const pairId = crypto.randomUUID();
   const start = {
     protocol: E2EE_PROTOCOL,
@@ -56,7 +63,7 @@ export async function startPasskeyPairing(input: {
     clientChallenge: generatePairingChallenge(),
     signingKey: device.signingKey,
     encryptionKey: device.encryptionKey,
-    secureOrigin: window.location.origin,
+    secureOrigin: ceremonyOrigin,
     gatewayOrigin: input.api.origin,
     createdAt: new Date().toISOString()
   };
@@ -65,6 +72,32 @@ export async function startPasskeyPairing(input: {
     { start }
   );
   return { pairId: response.pairId, expiresAt: response.expiresAt };
+}
+
+export function normalizeCeremonyOrigin(value: string): string {
+  const url = new URL(value);
+  if (url.protocol !== "https:") throw new Error("passkey_security_error");
+  if (url.username || url.password || url.pathname !== "/" || url.search || url.hash) {
+    throw new Error("passkey_security_error");
+  }
+  return url.origin;
+}
+
+export function passkeyRpId(options: E2eePasskeyPairingOptions): string {
+  const raw =
+    options.mode === "registration"
+      ? (options.options.rp as { id?: unknown } | undefined)?.id
+      : (options.options as { rpId?: unknown }).rpId;
+  if (typeof raw !== "string" || !/^[a-z0-9.-]+$/i.test(raw)) {
+    throw new Error("passkey_rp_id_mismatch");
+  }
+  return raw.toLowerCase();
+}
+
+export function originCanUseRpId(origin: string, rpId: string): boolean {
+  const hostname = new URL(origin).hostname.toLowerCase();
+  const normalizedRpId = rpId.toLowerCase();
+  return hostname === normalizedRpId || hostname.endsWith(`.${normalizedRpId}`);
 }
 
 async function randomChallenge(): Promise<string> {
@@ -97,8 +130,16 @@ export async function completePasskeyPairing(input: {
   api: GatewayApi;
   keys: SecureWebKeyStore;
   options: E2eePasskeyPairingOptions;
+  ceremonyOrigin?: string;
 }): Promise<{ runnerId: string; bundle: E2eeRunnerPairingBundle }> {
   const { options } = input;
+  const ceremonyOrigin = normalizeCeremonyOrigin(
+    input.ceremonyOrigin ?? window.location.origin
+  );
+  const rpId = passkeyRpId(options);
+  if (!originCanUseRpId(ceremonyOrigin, rpId)) {
+    throw new Error("passkey_rp_id_mismatch");
+  }
   const device = await input.keys.device();
   if (device.clientId !== options.clientId) throw new Error("passkey_client_mismatch");
   if (
@@ -107,7 +148,7 @@ export async function completePasskeyPairing(input: {
   ) {
     throw new Error("passkey_fingerprint_mismatch");
   }
-  if (options.secureOrigin !== window.location.origin) {
+  if (options.secureOrigin !== ceremonyOrigin) {
     throw new Error("passkey_secure_origin_mismatch");
   }
   if (Date.parse(options.expiresAt) <= Date.now()) throw new Error("passkey_expired");
@@ -122,19 +163,31 @@ export async function completePasskeyPairing(input: {
       encryptionFingerprint: options.runnerEncryptionKey.fingerprint,
       signingFingerprint: options.runnerSigningKey.fingerprint,
       secureOrigin: options.secureOrigin,
-      rpId: new URL(options.secureOrigin).hostname
+      rpId
     }
   });
   if (!certCheck.ok) throw new Error(`passkey_runner_cert_${certCheck.reason}`);
 
   let response: Record<string, unknown>;
   try {
-    const ceremony =
-      options.mode === "registration"
+    const bridgePayload = encodePasskeyBridgePayload(options.mode, options.options);
+    const ceremony = isDesktopShell()
+      ? await desktopPerformPasskey({
+          passkeyOrigin: ceremonyOrigin,
+          mode: bridgePayload.mode,
+          options: bridgePayload.options
+        })
+      : options.mode === "registration"
         ? await startRegistration({ optionsJSON: options.options as never })
         : await startAuthentication({ optionsJSON: options.options as never });
-    response = JSON.parse(JSON.stringify(ceremony)) as Record<string, unknown>;
+    response = decodePasskeyBridgeResponse(options.mode, ceremony);
   } catch (error) {
+    if (typeof error === "string" && /^[a-z0-9_:-]{1,160}$/i.test(error)) {
+      throw new Error(error.split(":")[0]);
+    }
+    if (error instanceof Error && /^passkey_[a-z0-9_]+$/i.test(error.message)) {
+      throw error;
+    }
     throw new Error(classifyWebauthnError(error));
   }
 
@@ -193,18 +246,29 @@ export async function completePasskeyPairing(input: {
 export async function pairWithPasskey(input: {
   api: GatewayApi;
   keys: SecureWebKeyStore;
+  ceremonyOrigin?: string;
   onStatus?: (text: string) => void;
 }): Promise<{ runnerId: string; bundle: E2eeRunnerPairingBundle }> {
-  const support = await passkeySupportStatus();
-  if (!support.supported) throw new Error("passkey_unsupported_browser");
-  input.onStatus?.("正在向 Runner 请求 Passkey 挑战…");
-  const started = await startPasskeyPairing(input);
-  input.onStatus?.("等待 Runner 签发 WebAuthn 选项…");
+  if (!isDesktopShell()) {
+    const support = await passkeySupportStatus();
+    if (!support.supported) throw new Error("passkey_unsupported_browser");
+  }
+  const ceremonyOrigin = normalizeCeremonyOrigin(
+    input.ceremonyOrigin ?? window.location.origin
+  );
+  input.onStatus?.("正在联系授权设备…");
+  const started = await startPasskeyPairing({ ...input, ceremonyOrigin });
+  input.onStatus?.("等待授权设备响应…");
   const options = await pollUntilPasskeyOptions(input.api, started.pairId);
   input.onStatus?.(
     options.mode === "registration"
-      ? "请在系统弹窗中使用 Windows Hello PIN / Face ID / 指纹创建 Passkey…"
-      : "请使用已注册的 Windows Hello PIN / Face ID / 指纹验证…"
+      ? "请在弹出的安全窗口中创建 Passkey。"
+      : "请在弹出的安全窗口中完成 Passkey 验证。"
   );
-  return completePasskeyPairing({ api: input.api, keys: input.keys, options });
+  return completePasskeyPairing({
+    api: input.api,
+    keys: input.keys,
+    options,
+    ceremonyOrigin
+  });
 }

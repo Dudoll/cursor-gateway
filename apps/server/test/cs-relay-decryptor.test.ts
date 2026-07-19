@@ -40,6 +40,21 @@ function rpc(port: number, req: unknown): Promise<Record<string, unknown>> {
   });
 }
 
+async function waitForWorker(port: number, timeoutMs = 10_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  let lastError: unknown;
+  while (Date.now() < deadline) {
+    try {
+      const ping = await rpc(port, { id: "ready", method: "ping" });
+      if (ping.ok === true) return;
+    } catch (error) {
+      lastError = error;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  throw lastError instanceof Error ? lastError : new Error("decryptor_start_timeout");
+}
+
 test("decryptor worker wraps/unwraps over IPC without exposing the key", async () => {
   const dir = mkdtempSync(join(tmpdir(), "decryptor-"));
   const keyFile = join(dir, "master.key");
@@ -56,8 +71,7 @@ test("decryptor worker wraps/unwraps over IPC without exposing the key", async (
   });
 
   try {
-    // Wait for the listener.
-    await new Promise((r) => setTimeout(r, 800));
+    await waitForWorker(port);
 
     const ping = await rpc(port, { id: "1", method: "ping" });
     assert.equal(ping.ok, true);

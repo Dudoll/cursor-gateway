@@ -1,4 +1,4 @@
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 import {
   GatewayApi,
@@ -20,7 +20,6 @@ import {
   tryConsumeMagicLink
 } from "./pairing.js";
 import { pairWithPasskey } from "./passkeyPairing.js";
-import { formatPasskeyError } from "./passkeyErrors.js";
 import { errorText } from "./errorText.js";
 import {
   decideDeviceApproval,
@@ -73,22 +72,32 @@ import {
   desktopAccessShow,
   desktopAppVersion,
   desktopInstallUpdate,
-  desktopUpgradeTarget,
   isDesktopShell
 } from "./desktopShell.js";
-import { ArrowUpCircle, KeyRound } from "lucide-react";
+import { ArrowUpCircle } from "lucide-react";
+import {
+  initialFlowState,
+  transitionFlow,
+  type FlowEvent,
+  type FlowState,
+  type PairingMethod
+} from "./flowMachine.js";
+import { normalizeFailure, type FailureContext } from "./diagnostics.js";
+import { StatusNotice, type UiStatus } from "./StatusNotice.js";
+import {
+  checkDesktopUpdate,
+  type DesktopUpdateMetadata
+} from "./updateChecker.js";
 
 type BootState =
   | { kind: "loading" }
   | { kind: "blocked"; reason: string }
   | { kind: "ready"; keys: SecureWebKeyStore; device: DeviceRecord };
 
-type Step = 1 | 2 | 3;
-type PairingPanel = "runnercode" | "approval" | "passkey" | "recovery" | "mail";
-
 type DesktopAccessPolicy = {
   cfAccessLogoutUrl?: string | null;
   runnerCodePairingEnabled?: boolean;
+  secureClientOrigin?: string | null;
 };
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -117,15 +126,21 @@ async function waitForDesktopAccessLogin(
   }
 }
 
+function flowReducer(
+  state: FlowState,
+  event: FlowEvent
+): FlowState {
+  return transitionFlow(state, event).state;
+}
+
 export function App() {
   const [boot, setBoot] = useState<BootState>({ kind: "loading" });
-  const [gatewayInput, setGatewayInput] = useState(savedGatewayOrigin() || "https://gateway.example.com");
-  const [status, setStatus] = useState<{ tone: "info" | "ok" | "warn" | "error"; text: string } | null>(
-    null
+  const [gatewayInput, setGatewayInput] = useState(
+    savedGatewayOrigin() || "https://cs.joelzt.org"
   );
+  const [status, setStatus] = useState<UiStatus | null>(null);
   const [pairId, setPairId] = useState<string | null>(null);
-  const [step, setStep] = useState<Step>(1);
-  const [pairingPanel, setPairingPanel] = useState<PairingPanel>("passkey");
+  const [flow, dispatchFlow] = useReducer(flowReducer, initialFlowState);
   const [approvalId, setApprovalId] = useState<string | null>(null);
   const [pendingApprovals, setPendingApprovals] = useState<
     Array<{ approvalId: string; request: E2eeDeviceApprovalRequest; expiresAt: string }>
@@ -155,8 +170,22 @@ export function App() {
   const [cfAccessLogoutUrl, setCfAccessLogoutUrl] = useState<string | null>(null);
   const [desktopShell] = useState(() => isDesktopShell());
   const [accessReady, setAccessReady] = useState(!isDesktopShell());
-  const [updateAvailable, setUpdateAvailable] = useState<string | null>(null);
+  const [updateAvailable, setUpdateAvailable] = useState<DesktopUpdateMetadata | null>(null);
+  const [updateDiagnostic, setUpdateDiagnostic] = useState<UiStatus | null>(null);
   const [localDesktopVersion, setLocalDesktopVersion] = useState<string | null>(null);
+  const [passkeyOrigin, setPasskeyOrigin] = useState("https://secure.joelzt.org");
+  const [updateCheckGeneration, setUpdateCheckGeneration] = useState(0);
+  const accessStepRef = useRef<HTMLElement>(null);
+  const pairingStepRef = useRef<HTMLElement>(null);
+  const verificationStepRef = useRef<HTMLElement>(null);
+  const completeStepRef = useRef<HTMLElement>(null);
+  const chatStepRef = useRef<HTMLElement>(null);
+  const verificationAbortRef = useRef<AbortController | null>(null);
+
+  const pairingPanel: PairingMethod =
+    flow.phase === "pairing" || flow.phase === "verification"
+      ? (flow.method ?? (runnerCodeEnabled ? "runnercode" : "passkey"))
+      : "passkey";
 
   const api = useMemo(() => {
     try {
@@ -165,6 +194,39 @@ export function App() {
       return null;
     }
   }, [gatewayInput]);
+
+  function selectPairingMethod(method: PairingMethod) {
+    dispatchFlow({ type: "SELECT_METHOD", method });
+  }
+
+  function showFailure(error: unknown, context: FailureContext) {
+    const diagnostic = normalizeFailure(error, context);
+    setStatus({ tone: "error", text: diagnostic.title, diagnostic });
+    if (diagnostic.code === "cloudflare_login_required") {
+      setAccessReady(false);
+      dispatchFlow({ type: "ACCESS_EXPIRED" });
+    }
+    return diagnostic;
+  }
+
+  useEffect(() => {
+    const target =
+      flow.phase === "access"
+        ? accessStepRef.current
+        : flow.phase === "pairing"
+          ? pairingStepRef.current
+          : flow.phase === "verification"
+            ? verificationStepRef.current
+            : flow.phase === "complete"
+              ? completeStepRef.current
+              : chatStepRef.current;
+    if (!target) return;
+    target.scrollIntoView({ behavior: "smooth", block: "start" });
+    const focusable = target.querySelector<HTMLElement>(
+      "button:not(:disabled), input:not(:disabled), textarea:not(:disabled), select:not(:disabled), [tabindex='-1']"
+    );
+    window.setTimeout(() => focusable?.focus({ preventScroll: true }), 100);
+  }, [flow.phase]);
 
   useEffect(() => {
     let cancelled = false;
@@ -181,58 +243,92 @@ export function App() {
         setCsAuthPending(pendingCs);
         setStatus({
           tone: "info",
-          text: "检测到 CS 设备授权请求。完成 Secure 配对后将签发一次性授权并返回 CS。"
+          text: "请先完成设备验证，随后会自动返回。"
         });
       }
       const keys = await SecureWebKeyStore.open();
       const device = await keys.device();
       if (cancelled) return;
       setBoot({ kind: "ready", keys, device });
-      if (device.pairedRunnerId) setStep(3);
       if (isDesktopShell()) {
         try {
           const ver = await desktopAppVersion();
           if (!cancelled) setLocalDesktopVersion(ver);
-        } catch {
-          // optional
+        } catch (error) {
+          if (!cancelled) {
+            const diagnostic = normalizeFailure(error, {
+              stage: "update-check",
+              operation: "读取当前客户端版本"
+            });
+            setUpdateDiagnostic({ tone: "error", text: diagnostic.title, diagnostic });
+          }
         }
       }
-      const saved = savedGatewayOrigin();
+      const saved =
+        savedGatewayOrigin() ||
+        (isDesktopShell() ? saveGatewayOrigin("https://cs.joelzt.org") : "");
       if (saved) {
         try {
           const clientApi = new GatewayApi(saved);
-          const policy = await clientApi.get<{
-            cfAccessLogoutUrl?: string | null;
-            runnerCodePairingEnabled?: boolean;
-          }>("/api/e2ee-policy");
+          const policy = await clientApi.get<DesktopAccessPolicy>("/api/e2ee-policy");
           if (!cancelled) setAccessReady(true);
+          if (!cancelled && policy.secureClientOrigin) {
+            setPasskeyOrigin(policy.secureClientOrigin);
+          }
           if (!cancelled && policy.cfAccessLogoutUrl) {
             setCfAccessLogoutUrl(policy.cfAccessLogoutUrl);
           }
           if (!cancelled && policy.runnerCodePairingEnabled) {
             setRunnerCodeEnabled(true);
-            if (!device.pairedRunnerId) setPairingPanel("runnercode");
+          }
+          if (!cancelled) {
+            dispatchFlow({
+              type: "BOOT",
+              accessReady: true,
+              runnerId: device.pairedRunnerId
+            });
+            if (policy.runnerCodePairingEnabled && !device.pairedRunnerId) {
+              dispatchFlow({ type: "SELECT_METHOD", method: "runnercode" });
+            }
+            if (device.pairedRunnerId) {
+              await refreshDirectory(clientApi, keys);
+            }
           }
         } catch (error) {
-          if (
-            !cancelled &&
-            isDesktopShell() &&
-            error instanceof GatewayApiError &&
-            error.code === "cloudflare_login_required"
-          ) {
+          if (!cancelled) {
             setAccessReady(false);
-            setStatus({
-              tone: "warn",
-              text: "桌面端需先完成 Cloudflare Access 登录（本地 UI 与 Gateway 跨站，Access Cookie 不会自动带上）。请点击右上角钥匙图标。"
+            dispatchFlow({
+              type: "BOOT",
+              accessReady: false,
+              runnerId: device.pairedRunnerId
             });
+            if (
+              !(error instanceof GatewayApiError) ||
+              error.code !== "cloudflare_login_required"
+            ) {
+              showFailure(error, {
+                stage: "access",
+                operation: "检查登录状态",
+                endpoint: "/api/e2ee-policy"
+              });
+            }
           }
         }
-      } else if (isDesktopShell() && !cancelled) {
+      } else if (!cancelled) {
         setAccessReady(false);
+        dispatchFlow({
+          type: "BOOT",
+          accessReady: false,
+          runnerId: device.pairedRunnerId
+        });
       }
     })().catch((error) => {
       if (!cancelled) {
-        setBoot({ kind: "blocked", reason: errorText(error) });
+        const diagnostic = normalizeFailure(error, {
+          stage: "startup",
+          operation: "初始化本地安全存储"
+        });
+        setBoot({ kind: "blocked", reason: diagnostic.message });
       }
     });
     return () => {
@@ -241,33 +337,82 @@ export function App() {
   }, []);
 
   useEffect(() => {
-    if (!desktopShell || !api || !accessReady) return;
+    if (!desktopShell) return;
     let cancelled = false;
     (async () => {
-      try {
-        const local = localDesktopVersion ?? (await desktopAppVersion());
-        if (cancelled) return;
-        setLocalDesktopVersion(local);
-        const remote = await api.get<{
-          version?: string;
-          installerAvailable?: boolean;
-        }>("/api/desktop/version");
-        if (cancelled) return;
-        setUpdateAvailable(
-          desktopUpgradeTarget({
-            remoteVersion: remote.version,
-            localVersion: local,
-            installerAvailable: remote.installerAvailable
-          })
-        );
-      } catch {
-        if (!cancelled) setUpdateAvailable(null);
+      const local = localDesktopVersion ?? (await desktopAppVersion());
+      if (cancelled) return;
+      setLocalDesktopVersion(local);
+      const decision = await checkDesktopUpdate({
+        localVersion: local,
+        ...(accessReady && api
+          ? {
+              authenticatedLoader: () =>
+                api.get<DesktopUpdateMetadata>("/api/desktop/version")
+            }
+          : {})
+      });
+      if (cancelled) return;
+      if (decision.kind === "available") {
+        setUpdateAvailable(decision.metadata);
+        setUpdateDiagnostic(null);
+      } else if (decision.kind === "hidden") {
+        setUpdateAvailable(null);
+        if (decision.reason === "installer_unavailable") {
+          const diagnostic = normalizeFailure(
+            new Error("desktop_installer_unavailable"),
+            {
+              stage: "update-check",
+              operation: "检查安装包",
+              endpoint: "/api/desktop/version"
+            }
+          );
+          setUpdateDiagnostic({ tone: "warn", text: diagnostic.title, diagnostic });
+        } else {
+          setUpdateDiagnostic(null);
+        }
+      } else {
+        setUpdateAvailable(null);
+        const diagnostic = normalizeFailure(new Error(decision.code), {
+          stage: "update-check",
+          operation: "检查新版本",
+          endpoint: "https://secure.joelzt.org/desktop-version.json"
+        });
+        setUpdateDiagnostic({ tone: "warn", text: diagnostic.title, diagnostic });
       }
-    })();
+    })().catch((error) => {
+      if (!cancelled) {
+        const diagnostic = normalizeFailure(error, {
+          stage: "update-check",
+          operation: "检查新版本",
+          endpoint: "https://secure.joelzt.org/desktop-version.json"
+        });
+        setUpdateDiagnostic({ tone: "warn", text: diagnostic.title, diagnostic });
+      }
+    });
     return () => {
       cancelled = true;
     };
-  }, [desktopShell, api, accessReady, localDesktopVersion]);
+  }, [
+    desktopShell,
+    api,
+    accessReady,
+    localDesktopVersion,
+    updateCheckGeneration
+  ]);
+
+  useEffect(() => {
+    if (!desktopShell) return;
+    const refresh = () => setUpdateCheckGeneration((value) => value + 1);
+    window.addEventListener("focus", refresh);
+    window.addEventListener("online", refresh);
+    const timer = window.setInterval(refresh, 15 * 60_000);
+    return () => {
+      window.removeEventListener("focus", refresh);
+      window.removeEventListener("online", refresh);
+      window.clearInterval(timer);
+    };
+  }, [desktopShell]);
 
   async function tryFinishCsAuth(
     clientApi: GatewayApi,
@@ -275,7 +420,7 @@ export function App() {
     params: CsAuthRedirectParams
   ): Promise<boolean> {
     setBusy(true);
-    setStatus({ tone: "info", text: "正在向 Runner 请求 CS 设备授权包…" });
+    setStatus({ tone: "info", text: "正在完成设备授权…" });
     try {
       const { returnUrl } = await completeCsAuthReturn({
         api: clientApi,
@@ -292,7 +437,14 @@ export function App() {
       window.location.replace(returnUrl);
       return true;
     } catch (error) {
-      setStatus({ tone: "error", text: formatCsAuthReturnError(error) });
+      const diagnostic = showFailure(error, {
+        stage: "runner-confirmation",
+        operation: "完成设备授权",
+        endpoint: "/api/e2ee/v1/cs-auth"
+      });
+      if (diagnostic.code === "internal_client_error") {
+        setStatus({ tone: "error", text: formatCsAuthReturnError(error), diagnostic });
+      }
       setBusy(false);
       return false;
     }
@@ -307,27 +459,27 @@ export function App() {
     const device = await keys.device();
     setBoot({ kind: "ready", keys, device });
     setRunnerId(runnerIdValue);
-    setStep(3);
     await refreshDirectory(clientApi, keys);
+    dispatchFlow({ type: "PAIRED", runnerId: runnerIdValue });
     const pending = csAuthPending ?? loadPendingCsAuthRedirect();
     if (!pending) {
-      // Pure Secure pairing — no CS return context; do not imply redirect.
-      setStatus({ tone: "ok", text: `已配对（Runner ${runnerIdValue}）` });
+      setStatus({ tone: "ok", text: "设备已通过验证。" });
       return;
     }
-    setStatus({ tone: "ok", text: `已配对，正在完成 CS 授权…` });
+    setStatus({ tone: "ok", text: "设备已通过验证，正在返回…" });
     setCsAuthPending(pending);
     await tryFinishCsAuth(clientApi, keys, pending);
   }
 
   useEffect(() => {
-    if (boot.kind !== "ready" || !api) return;
+    if (boot.kind !== "ready" || !api || !accessReady) return;
     const recovery = parseRecoveryFragment(window.location.hash);
     if (recovery) {
       let cancelled = false;
       setBusy(true);
-      setPairingPanel("recovery");
-      setStatus({ tone: "info", text: "检测到恢复码链接，正在配对…" });
+      dispatchFlow({ type: "SELECT_METHOD", method: "recovery" });
+      dispatchFlow({ type: "START_VERIFICATION" });
+      setStatus({ tone: "info", text: "正在验证恢复码…" });
       pairWithRecovery({
         api,
         keys: boot.keys,
@@ -343,7 +495,12 @@ export function App() {
         })
         .catch((error) => {
           if (!cancelled) {
-            setStatus({ tone: "error", text: `恢复码配对失败：${errorText(error)}` });
+            showFailure(error, {
+              stage: "pairing-submit",
+              operation: "验证恢复码",
+              endpoint: "/api/e2ee/v1/recovery"
+            });
+            dispatchFlow({ type: "VERIFICATION_FAILED" });
             clearRecoveryFragment();
           }
         })
@@ -357,8 +514,9 @@ export function App() {
     if (!parseMagicLinkFragment(window.location.hash)) return;
     let cancelled = false;
     setBusy(true);
-    setPairingPanel("mail");
-    setStatus({ tone: "info", text: "正在完成 magic-link 配对…" });
+    dispatchFlow({ type: "SELECT_METHOD", method: "mail" });
+    dispatchFlow({ type: "START_VERIFICATION" });
+    setStatus({ tone: "info", text: "正在验证链接…" });
     tryConsumeMagicLink({ api, keys: boot.keys })
       .then(async (result) => {
         if (cancelled || !result) return;
@@ -366,7 +524,12 @@ export function App() {
       })
       .catch((error) => {
         if (!cancelled) {
-          setStatus({ tone: "error", text: `配对失败：${errorText(error)}` });
+          showFailure(error, {
+            stage: "pairing-submit",
+            operation: "验证授权链接",
+            endpoint: "/api/e2ee/v1/pairings"
+          });
+          dispatchFlow({ type: "VERIFICATION_FAILED" });
         }
       })
       .finally(() => {
@@ -375,7 +538,7 @@ export function App() {
     return () => {
       cancelled = true;
     };
-  }, [boot, api]);
+  }, [boot, api, accessReady]);
 
   // Already paired + pending CS auth (e.g. return from a prior session).
   useEffect(() => {
@@ -406,7 +569,6 @@ export function App() {
     const preferredRunnerId = device.pairedRunnerId ?? directory[0]?.runnerId;
     if (preferredRunnerId) {
       setRunnerId(preferredRunnerId);
-      if (device.pairedRunnerId) setStep(3);
       const preferred = directory.find((runner) => runner.runnerId === preferredRunnerId);
       const firstWorkspace = preferred?.workspaces[0]?.id;
       if (firstWorkspace && preferred) {
@@ -424,20 +586,27 @@ export function App() {
       setGatewayInput(origin);
       setStatus({
         tone: "ok",
-        text: `Gateway 已保存：${origin}。如需请先在该 origin 完成 Cloudflare Access 登录，再开始配对。`
+        text: "服务地址已保存。"
       });
-      setStep(2);
       try {
         const clientApi = new GatewayApi(origin);
-        const policy = await clientApi.get<{
-          cfAccessLogoutUrl?: string | null;
-          runnerCodePairingEnabled?: boolean;
-        }>("/api/e2ee-policy");
+        const policy = await clientApi.get<DesktopAccessPolicy>("/api/e2ee-policy");
         setAccessReady(true);
+        if (policy.secureClientOrigin) setPasskeyOrigin(policy.secureClientOrigin);
         if (policy.cfAccessLogoutUrl) setCfAccessLogoutUrl(policy.cfAccessLogoutUrl);
         if (policy.runnerCodePairingEnabled) {
           setRunnerCodeEnabled(true);
-          if (boot.kind === "ready" && !boot.device.pairedRunnerId) setPairingPanel("runnercode");
+        }
+        dispatchFlow({
+          type: "ACCESS_READY",
+          runnerId: boot.kind === "ready" ? boot.device.pairedRunnerId : null
+        });
+        if (
+          policy.runnerCodePairingEnabled &&
+          boot.kind === "ready" &&
+          !boot.device.pairedRunnerId
+        ) {
+          dispatchFlow({ type: "SELECT_METHOD", method: "runnercode" });
         }
       } catch (error) {
         if (
@@ -448,24 +617,35 @@ export function App() {
           setAccessReady(false);
           setStatus({
             tone: "warn",
-            text: "Gateway 已保存，但尚未完成 Cloudflare Access 登录。请点击右上角钥匙图标。"
+            text: "请登录以继续。"
+          });
+        } else {
+          showFailure(error, {
+            stage: "access",
+            operation: "检查服务地址",
+            endpoint: "/api/e2ee-policy"
           });
         }
-        // Policy is optional for logout link.
       }
     } catch (error) {
-      setStatus({ tone: "error", text: errorText(error) });
+      showFailure(error, {
+        stage: "access",
+        operation: "保存服务地址"
+      });
     }
   }
 
-  async function onDesktopAccessLogin() {
-    if (!desktopShell) return;
+  async function onDesktopAccessLogin(): Promise<boolean> {
+    if (!desktopShell) return false;
     let origin: string;
     try {
       origin = normalizeGatewayOrigin(gatewayInput);
     } catch (error) {
-      setStatus({ tone: "error", text: errorText(error) });
-      return;
+      showFailure(error, {
+        stage: "access",
+        operation: "检查服务地址"
+      });
+      return false;
     }
     setBusy(true);
     try {
@@ -473,7 +653,7 @@ export function App() {
       setGatewayInput(origin);
       setStatus({
         tone: "info",
-        text: "已打开 Cloudflare Access 登录窗口。请在弹出的窗口内完成登录，随后会自动继续…"
+        text: "请在弹出的窗口中完成登录。"
       });
       // Pops the bridge window immediately (does not block on login).
       await desktopAccessShow(origin);
@@ -481,28 +661,39 @@ export function App() {
       // Poll the Gateway until Access login completes (bridge becomes ready).
       const policy = await waitForDesktopAccessLogin(clientApi);
       setAccessReady(true);
+      if (policy.secureClientOrigin) setPasskeyOrigin(policy.secureClientOrigin);
       if (policy.cfAccessLogoutUrl) setCfAccessLogoutUrl(policy.cfAccessLogoutUrl);
       if (policy.runnerCodePairingEnabled) {
         setRunnerCodeEnabled(true);
-        if (boot.kind === "ready" && !boot.device.pairedRunnerId) setPairingPanel("runnercode");
       }
-      setStep((current) => (current < 2 ? 2 : current));
+      dispatchFlow({
+        type: "ACCESS_READY",
+        runnerId: boot.kind === "ready" ? boot.device.pairedRunnerId : null
+      });
+      if (
+        policy.runnerCodePairingEnabled &&
+        boot.kind === "ready" &&
+        !boot.device.pairedRunnerId
+      ) {
+        dispatchFlow({ type: "SELECT_METHOD", method: "runnercode" });
+      }
+      if (boot.kind === "ready" && boot.device.pairedRunnerId) {
+        await refreshDirectory(clientApi, boot.keys);
+      }
+      setUpdateCheckGeneration((value) => value + 1);
       setStatus({
         tone: "ok",
-        text: "Cloudflare Access 已就绪（桥接已收纳到系统托盘）。可继续设备配对。"
+        text: "登录成功。"
       });
+      return true;
     } catch (error) {
       setAccessReady(false);
-      const code = errorText(error);
-      setStatus({
-        tone: "error",
-        text:
-          code === "access_bridge_login_timeout"
-            ? "Access 登录超时（5 分钟）。请重试并在弹出窗口内完成身份验证。"
-            : code === "access_bridge_create"
-              ? "无法打开 Access 登录窗口。请重试；若持续失败请重启客户端。"
-              : `Access 登录失败：${code}`
+      showFailure(error, {
+        stage: "access",
+        operation: "完成登录",
+        endpoint: "/api/e2ee-policy"
       });
+      return false;
     } finally {
       setBusy(false);
     }
@@ -514,22 +705,34 @@ export function App() {
     try {
       origin = normalizeGatewayOrigin(gatewayInput);
     } catch (error) {
-      setStatus({ tone: "error", text: errorText(error) });
+      showFailure(error, {
+        stage: "update-download",
+        operation: "检查下载地址"
+      });
       return;
     }
+    if (!accessReady && !(await onDesktopAccessLogin())) return;
     setBusy(true);
     try {
       setStatus({
         tone: "info",
-        text: `正在下载并启动安装包（${updateAvailable}）…`
+        text: `正在安装 ${updateAvailable.version}…`
       });
-      await desktopInstallUpdate(origin);
+      await desktopInstallUpdate({
+        gatewayOrigin: origin,
+        expectedVersion: updateAvailable.version,
+        expectedSha256: updateAvailable.sha256
+      });
       setStatus({
         tone: "ok",
         text: "已启动安装程序。完成后请重新打开客户端。"
       });
     } catch (error) {
-      setStatus({ tone: "error", text: `升级失败：${errorText(error)}` });
+      showFailure(error, {
+        stage: "update-download",
+        operation: "下载并校验安装包",
+        endpoint: "/api/desktop/download"
+      });
     } finally {
       setBusy(false);
     }
@@ -553,7 +756,11 @@ export function App() {
       setRuns([]);
       setRunnerId("");
       setCsAuthPending(null);
-      setStep(1);
+      dispatchFlow(
+        accessReady
+          ? { type: "BOOT", accessReady: true, runnerId: null }
+          : { type: "LOGGED_OUT" }
+      );
       const keys = await SecureWebKeyStore.open();
       const device = await keys.device();
       setBoot({ kind: "ready", keys, device });
@@ -569,7 +776,11 @@ export function App() {
         }
       }
     } catch (error) {
-      setStatus({ tone: "error", text: errorText(error) });
+      showFailure(error, {
+        stage: "pairing-submit",
+        operation: "清除本机授权",
+        endpoint: "/api/e2ee/v1/devices"
+      });
     } finally {
       setBusy(false);
     }
@@ -577,17 +788,27 @@ export function App() {
 
   async function onPasskeyPair() {
     if (boot.kind !== "ready" || !api) return;
+    dispatchFlow({ type: "START_VERIFICATION" });
     setBusy(true);
     try {
       saveGatewayOrigin(gatewayInput);
       const result = await pairWithPasskey({
         api,
         keys: boot.keys,
+        ceremonyOrigin: passkeyOrigin,
         onStatus: (text) => setStatus({ tone: "info", text })
       });
       await finishPairingThenMaybeReturnToCs(api, boot.keys, result.runnerId);
     } catch (error) {
-      setStatus({ tone: "error", text: formatPasskeyError(error) });
+      showFailure(error, {
+        stage: "passkey",
+        operation: "完成 Passkey 验证",
+        endpoint:
+          error instanceof GatewayApiError
+            ? (error.endpoint ?? "/api/e2ee/v1/passkey")
+            : passkeyOrigin
+      });
+      dispatchFlow({ type: "VERIFICATION_FAILED" });
     } finally {
       setBusy(false);
     }
@@ -595,6 +816,9 @@ export function App() {
 
   async function onRequestApproval() {
     if (boot.kind !== "ready" || !api) return;
+    dispatchFlow({ type: "START_VERIFICATION" });
+    const controller = new AbortController();
+    verificationAbortRef.current = controller;
     setBusy(true);
     try {
       saveGatewayOrigin(gatewayInput);
@@ -602,20 +826,42 @@ export function App() {
       setApprovalId(started.approvalId);
       setStatus({
         tone: "warn",
-        text: `已发起批准请求（${started.approvalId}）。请到已授权的 CS 或已配对 Secure 浏览器批准。过期：${started.expiresAt}`
+        text: "请在已授权设备上批准此设备。"
       });
       const result = await waitForDeviceApprovalResult({
         api,
         keys: boot.keys,
         approvalId: started.approvalId,
+        signal: controller.signal,
         onStatus: (text) => setStatus({ tone: "info", text })
       });
       await finishPairingThenMaybeReturnToCs(api, boot.keys, result.runnerId);
     } catch (error) {
-      setStatus({ tone: "error", text: `设备批准失败：${errorText(error)}` });
+      if (controller.signal.aborted) return;
+      showFailure(error, {
+        stage: "runner-confirmation",
+        operation: "等待已授权设备批准",
+        endpoint: "/api/e2ee/v1/approvals"
+      });
+      dispatchFlow({ type: "VERIFICATION_FAILED" });
     } finally {
+      if (verificationAbortRef.current === controller) {
+        verificationAbortRef.current = null;
+      }
       setBusy(false);
     }
+  }
+
+  function onCancelVerification() {
+    verificationAbortRef.current?.abort();
+    verificationAbortRef.current = null;
+    setRunnerCodeOffer(null);
+    setRunnerCodeEnrollId(null);
+    setRunnerCodeInput("");
+    setRunnerCodeSasWords(null);
+    setBusy(false);
+    dispatchFlow({ type: "CANCEL_VERIFICATION" });
+    setStatus({ tone: "info", text: "已取消，可以选择其他方式。" });
   }
 
   async function onRefreshApprovals() {
@@ -629,7 +875,11 @@ export function App() {
         text: list.length === 0 ? "当前没有待批准的新设备。" : `待批准：${list.length} 台设备`
       });
     } catch (error) {
-      setStatus({ tone: "error", text: errorText(error) });
+      showFailure(error, {
+        stage: "directory",
+        operation: "读取待批准设备",
+        endpoint: "/api/e2ee/v1/approvals"
+      });
     } finally {
       setBusy(false);
     }
@@ -728,7 +978,11 @@ export function App() {
         text: decision === "approved" ? "已批准新设备。" : "已拒绝新设备。"
       });
     } catch (error) {
-      setStatus({ tone: "error", text: errorText(error) });
+      showFailure(error, {
+        stage: "pairing-submit",
+        operation: decision === "approved" ? "批准新设备" : "拒绝新设备",
+        endpoint: "/api/e2ee/v1/approvals"
+      });
     } finally {
       setBusy(false);
     }
@@ -736,6 +990,7 @@ export function App() {
 
   async function onRecoveryPair() {
     if (boot.kind !== "ready" || !api) return;
+    dispatchFlow({ type: "START_VERIFICATION" });
     setBusy(true);
     try {
       saveGatewayOrigin(gatewayInput);
@@ -743,7 +998,7 @@ export function App() {
       const recoveryId = (fromFragment?.recoveryId || recoveryIdInput).trim();
       const secret = fromFragment?.secret || recoverySecretInput;
       if (!recoveryId || !secret) {
-        throw new Error("请输入 recoveryId 与恢复码，或扫描 Runner 二维码");
+        throw new Error("recovery_code_missing");
       }
       const result = await pairWithRecovery({
         api,
@@ -754,7 +1009,12 @@ export function App() {
       });
       await finishPairingThenMaybeReturnToCs(api, boot.keys, result.runnerId);
     } catch (error) {
-      setStatus({ tone: "error", text: `恢复码配对失败：${errorText(error)}` });
+      showFailure(error, {
+        stage: "pairing-submit",
+        operation: "验证恢复码",
+        endpoint: "/api/e2ee/v1/recovery"
+      });
+      dispatchFlow({ type: "VERIFICATION_FAILED" });
     } finally {
       setBusy(false);
     }
@@ -762,13 +1022,14 @@ export function App() {
 
   async function onStartRunnerCode() {
     if (boot.kind !== "ready" || !api) return;
+    dispatchFlow({ type: "START_VERIFICATION" });
     setBusy(true);
     setRunnerCodeOffer(null);
     setRunnerCodeInput("");
     setRunnerCodeSasWords(null);
     try {
       saveGatewayOrigin(gatewayInput);
-      setStatus({ tone: "info", text: "正在请求 Runner 设备码…请查看 Runner 终端。" });
+      setStatus({ tone: "info", text: "正在联系授权设备…" });
       const { enrollId, offer } = await startRunnerCodeEnrollment({
         api,
         keys: boot.keys,
@@ -779,10 +1040,15 @@ export function App() {
       setRunnerCodeOffer(offer);
       setStatus({
         tone: "warn",
-        text: "Runner 已生成一次性设备码。请在 Runner 终端查看「CODE」并输入到下方，然后核对 6 词 SAS。"
+        text: "请输入授权设备上显示的代码，并确认两边的 6 个词一致。"
       });
     } catch (error) {
-      setStatus({ tone: "error", text: `设备码请求失败：${errorText(error)}` });
+      showFailure(error, {
+        stage: "pairing-start",
+        operation: "请求设备代码",
+        endpoint: "/api/e2ee/v1/runner-code/start"
+      });
+      dispatchFlow({ type: "VERIFICATION_FAILED" });
     } finally {
       setBusy(false);
     }
@@ -791,7 +1057,11 @@ export function App() {
   async function onConfirmRunnerCode() {
     if (boot.kind !== "ready" || !api || !runnerCodeEnrollId || !runnerCodeOffer) return;
     if (!runnerCodeInput.trim()) {
-      setStatus({ tone: "error", text: "请输入 Runner 终端显示的设备码" });
+      showFailure(new Error("runner_code_missing"), {
+        stage: "pairing-submit",
+        operation: "确认设备代码",
+        endpoint: "/api/e2ee/v1/runner-code/confirm"
+      });
       return;
     }
     setBusy(true);
@@ -813,17 +1083,27 @@ export function App() {
       const raw = errorText(error);
       const mismatch = raw.match(/^runner_code_code_mismatch_(\d+)$/);
       if (mismatch) {
-        setStatus({
-          tone: "error",
-          text: `设备码不匹配。剩余尝试次数：${mismatch[1]}。请重新核对 Runner 终端的 CODE。`
+        showFailure(error, {
+          stage: "pairing-submit",
+          operation: "确认设备代码",
+          endpoint: "/api/e2ee/v1/runner-code/confirm"
         });
         setRunnerCodeInput("");
       } else if (raw === "runner_code_locked") {
-        setStatus({ tone: "error", text: "尝试次数过多，本次配对已锁定。请在 Runner 重新发起。" });
+        showFailure(error, {
+          stage: "pairing-submit",
+          operation: "确认设备代码",
+          endpoint: "/api/e2ee/v1/runner-code/confirm"
+        });
         setRunnerCodeOffer(null);
         setRunnerCodeEnrollId(null);
+        dispatchFlow({ type: "VERIFICATION_FAILED" });
       } else {
-        setStatus({ tone: "error", text: `设备码配对失败：${raw}` });
+        showFailure(error, {
+          stage: "pairing-submit",
+          operation: "确认设备代码",
+          endpoint: "/api/e2ee/v1/runner-code/confirm"
+        });
       }
     } finally {
       setBusy(false);
@@ -832,6 +1112,7 @@ export function App() {
 
   async function onStartPairing() {
     if (boot.kind !== "ready" || !api) return;
+    dispatchFlow({ type: "START_VERIFICATION" });
     setBusy(true);
     try {
       saveGatewayOrigin(gatewayInput);
@@ -839,14 +1120,15 @@ export function App() {
       setPairId(started.pairId);
       setStatus({
         tone: "warn",
-        text:
-          `邮件配对已开始（${started.pairId}）。\n` +
-          `请查收外部邮箱中的 magic link，并尽量用本浏览器打开。\n` +
-          `过期时间：${started.expiresAt}。`
+        text: "请打开邮件中的授权链接。"
       });
-      setStep(2);
     } catch (error) {
-      setStatus({ tone: "error", text: `启动邮件配对失败：${errorText(error)}` });
+      showFailure(error, {
+        stage: "pairing-start",
+        operation: "发送授权邮件",
+        endpoint: "/api/e2ee/v1/pairings/start"
+      });
+      dispatchFlow({ type: "VERIFICATION_FAILED" });
     } finally {
       setBusy(false);
     }
@@ -859,7 +1141,12 @@ export function App() {
       const result = await completePairingFromFragment({ api, keys: boot.keys });
       await finishPairingThenMaybeReturnToCs(api, boot.keys, result.runnerId);
     } catch (error) {
-      setStatus({ tone: "error", text: `完成配对失败：${errorText(error)}` });
+      showFailure(error, {
+        stage: "pairing-submit",
+        operation: "验证授权链接",
+        endpoint: "/api/e2ee/v1/pairings"
+      });
+      dispatchFlow({ type: "VERIFICATION_FAILED" });
     } finally {
       setBusy(false);
     }
@@ -872,7 +1159,11 @@ export function App() {
       await refreshDirectory(api, boot.keys);
       setStatus({ tone: "ok", text: "目录已刷新。" });
     } catch (error) {
-      setStatus({ tone: "error", text: errorText(error) });
+      showFailure(error, {
+        stage: "directory",
+        operation: "刷新设备列表",
+        endpoint: "/api/e2ee/v1/runners"
+      });
     } finally {
       setBusy(false);
     }
@@ -887,7 +1178,11 @@ export function App() {
       setActiveConversationId(id);
       setRuns(decrypted);
     } catch (error) {
-      setStatus({ tone: "error", text: errorText(error) });
+      showFailure(error, {
+        stage: "chat",
+        operation: "打开对话",
+        endpoint: `/api/e2ee/v1/conversations/${encodeURIComponent(id)}/runs`
+      });
     } finally {
       setBusy(false);
     }
@@ -911,9 +1206,13 @@ export function App() {
       setActiveConversationId(run.conversationId);
       await refreshDirectory(api, boot.keys);
       await openConversation(run.conversationId);
-      setStatus({ tone: "ok", text: `已提交 run ${run.id}` });
+      setStatus({ tone: "ok", text: "消息已发送。" });
     } catch (error) {
-      setStatus({ tone: "error", text: errorText(error) });
+      showFailure(error, {
+        stage: "chat",
+        operation: "发送消息",
+        endpoint: "/api/e2ee/v1/runs"
+      });
     } finally {
       setBusy(false);
     }
@@ -922,8 +1221,8 @@ export function App() {
   if (boot.kind === "loading") {
     return (
       <div className="app">
-        <h1 className="brand">Secure Gateway</h1>
-        <p className="lede">正在检查 WebCrypto 与 IndexedDB 持久化…</p>
+        <h1 className="brand">安全对话</h1>
+        <p className="lede">正在准备客户端…</p>
       </div>
     );
   }
@@ -931,592 +1230,440 @@ export function App() {
   if (boot.kind === "blocked") {
     return (
       <div className="app">
-        <h1 className="brand">Secure Gateway</h1>
-        <div className="panel blocker">
-          <h2>设备存储不可用</h2>
-          <p>
-            当前浏览器无法保存不可导出的设备密钥（隐私 / 临时模式、存储被拦截，或不安全上下文）。
-            请使用普通 HTTPS 窗口重试。
-          </p>
-          <div className="status error">{boot.reason}</div>
+        <h1 className="brand">安全对话</h1>
+        <div className="panel blocker" role="alert">
+          <h2>无法使用本机存储</h2>
+          <p>请关闭隐私模式，允许此应用保存数据，然后重新打开。</p>
+          <p className="meta">{boot.reason}</p>
         </div>
       </div>
     );
   }
+
+  const activeGuideStep =
+    flow.phase === "access"
+      ? 1
+      : flow.phase === "pairing" || flow.phase === "verification"
+        ? 2
+        : flow.phase === "complete"
+          ? 3
+          : 4;
+  const guideLabels = ["登录", "验证设备", "完成", "加密聊天"];
 
   return (
     <div className="app">
       <header className="app-top">
         <div className="app-top-row">
           <div>
-            <h1 className="brand">Secure Gateway</h1>
-            <p className="lede">
-              跨浏览器 E2EE 客户端。密钥以不可导出形式保存在本设备。Gateway 仅中继密文。协议：
-              <code>cg-e2ee/1</code>。
-            </p>
+            <h1 className="brand">安全对话</h1>
+            <p className="lede">按顺序完成当前步骤即可继续。</p>
           </div>
-          {desktopShell ? (
-            <div className="app-top-actions" role="toolbar" aria-label="桌面端操作">
+          {desktopShell && updateAvailable ? (
+            <div className="app-top-actions">
               <button
                 type="button"
-                className={`icon-action${accessReady ? "" : " icon-action-attention"}`}
+                className="icon-action icon-action-attention"
                 disabled={busy}
-                onClick={onDesktopAccessLogin}
-                title={accessReady ? "重新登录 Cloudflare Access" : "登录 Cloudflare Access"}
-                aria-label={accessReady ? "重新登录 Cloudflare Access" : "登录 Cloudflare Access"}
+                onClick={onDesktopUpgrade}
+                title={`升级到 ${updateAvailable.version}`}
+                aria-label={`升级到 ${updateAvailable.version}`}
+                data-testid="desktop-upgrade"
               >
-                <KeyRound aria-hidden="true" size={18} strokeWidth={1.75} />
+                <ArrowUpCircle aria-hidden="true" size={20} strokeWidth={1.75} />
               </button>
-              {updateAvailable ? (
-                <button
-                  type="button"
-                  className="icon-action icon-action-attention"
-                  disabled={busy}
-                  onClick={onDesktopUpgrade}
-                  title={`升级到 ${updateAvailable}`}
-                  aria-label={`升级到 ${updateAvailable}`}
-                >
-                  <ArrowUpCircle aria-hidden="true" size={18} strokeWidth={1.75} />
-                </button>
-              ) : null}
             </div>
           ) : null}
         </div>
       </header>
 
-      {desktopShell && !accessReady ? (
-        <div className="status warn" style={{ marginBottom: 12 }} role="status">
-          <p style={{ margin: "0 0 0.75rem" }}>
-            桌面客户端从本地加载 UI（<code>tauri.localhost</code>），与 Gateway 跨站，无法自动带上
-            Cloudflare Access Cookie。请先完成 Access 登录；成功后桥接窗口会收纳到系统托盘，再进行
-            Secure Gateway 配对。
-          </p>
-          <div className="row">
-            <button type="button" disabled={busy} onClick={onDesktopAccessLogin}>
-              登录 Cloudflare Access
-            </button>
-          </div>
-        </div>
-      ) : null}
-
-      <ol className="steps">
-        <li className={step > 1 ? "done" : step === 1 ? "active" : ""}>
-          <span className="n">1</span>
-          <span>
-            {desktopShell
-              ? "配置 Gateway 并完成 Cloudflare Access 登录"
-              : "配置 Gateway origin（Cloudflare Access 登录）"}
-          </span>
-        </li>
-        <li className={step > 2 ? "done" : step === 2 ? "active" : ""}>
-          <span className="n">2</span>
-          <span>使用 Passkey / Face ID / 指纹完成配对</span>
-        </li>
-        <li className={step === 3 ? "active done" : ""}>
-          <span className="n">3</span>
-          <span>与已配对 Runner 进行 E2EE 聊天</span>
-        </li>
+      <ol className="steps" aria-label="设置进度">
+        {guideLabels.map((label, index) => {
+          const number = index + 1;
+          return (
+            <li
+              key={label}
+              className={
+                number < activeGuideStep
+                  ? "done"
+                  : number === activeGuideStep
+                    ? "active"
+                    : "locked"
+              }
+              aria-current={number === activeGuideStep ? "step" : undefined}
+            >
+              <span className="n">{number}</span>
+              <span>{label}</span>
+            </li>
+          );
+        })}
       </ol>
 
-      <section className="panel">
-        <h2>1. Gateway</h2>
-        <form onSubmit={onSaveGateway}>
-          <label htmlFor="gateway">Gateway HTTPS origin</label>
-          <input
-            id="gateway"
-            value={gatewayInput}
-            onChange={(event) => setGatewayInput(event.target.value)}
-            placeholder="https://gateway.example.com"
-            autoComplete="url"
-          />
-          <div className="row">
-            <button type="submit" disabled={busy}>
-              保存 origin
+      {status ? <StatusNotice status={status} /> : null}
+
+      {flow.phase === "access" ? (
+        <section className="panel flow-panel" data-flow-step="access" ref={accessStepRef}>
+          <h2 tabIndex={-1}>登录以继续</h2>
+          <p>完成登录后，客户端会自动进入下一步。</p>
+          {desktopShell ? (
+            <button type="button" disabled={busy} onClick={onDesktopAccessLogin}>
+              {busy ? "等待登录…" : "登录以继续"}
             </button>
-            {desktopShell ? (
+          ) : (
+            <form onSubmit={onSaveGateway}>
+              <label htmlFor="gateway">服务地址</label>
+              <input
+                id="gateway"
+                value={gatewayInput}
+                onChange={(event) => setGatewayInput(event.target.value)}
+                placeholder="https://cs.example.com"
+                autoComplete="url"
+              />
+              <div className="row">
+                <button type="submit" disabled={busy}>
+                  继续
+                </button>
+              </div>
+            </form>
+          )}
+        </section>
+      ) : null}
+
+      {flow.phase === "pairing" ? (
+        <section className="panel flow-panel" data-flow-step="pairing" ref={pairingStepRef}>
+          <h2 tabIndex={-1}>验证此设备</h2>
+          <p>选择一种方式。</p>
+          <div className="method-list" role="group" aria-label="设备验证方式">
+            <button
+              type="button"
+              className={flow.method === "approval" ? "method active" : "method secondary"}
+              aria-pressed={flow.method === "approval"}
+              onClick={() => selectPairingMethod("approval")}
+            >
+              在已授权设备上批准
+            </button>
+            <button
+              type="button"
+              className={flow.method === "passkey" ? "method active" : "method secondary"}
+              aria-pressed={flow.method === "passkey"}
+              onClick={() => selectPairingMethod("passkey")}
+            >
+              使用 Passkey
+            </button>
+            {runnerCodeEnabled ? (
               <button
                 type="button"
-                disabled={busy}
-                onClick={onDesktopAccessLogin}
-                title={accessReady ? "重新打开 Cloudflare Access 桥接登录" : "打开 Cloudflare Access 桥接登录"}
+                className={flow.method === "runnercode" ? "method active" : "method secondary"}
+                aria-pressed={flow.method === "runnercode"}
+                onClick={() => selectPairingMethod("runnercode")}
               >
-                {accessReady ? "重新登录 Access" : "登录 Cloudflare Access"}
+                输入设备代码
               </button>
             ) : null}
-            <button type="button" className="secondary" disabled={busy} onClick={onRefresh}>
-              刷新目录
+            <button
+              type="button"
+              className={flow.method === "recovery" ? "method active" : "method secondary"}
+              aria-pressed={flow.method === "recovery"}
+              onClick={() => selectPairingMethod("recovery")}
+            >
+              使用恢复码
+            </button>
+            <button
+              type="button"
+              className={flow.method === "mail" ? "method active" : "method secondary"}
+              aria-pressed={flow.method === "mail"}
+              onClick={() => selectPairingMethod("mail")}
+            >
+              使用邮件链接
             </button>
           </div>
-        </form>
-        {desktopShell && accessReady ? (
-          <p className="meta" style={{ marginTop: 8 }}>
-            Cloudflare Access 已就绪（桥接在系统托盘）。可继续下方设备配对。
-          </p>
-        ) : null}
-        <p className="meta">
-          设备 clientId：<code>{boot.device.clientId}</code>
-          {boot.device.pairedRunnerId ? (
+
+          {flow.method === "approval" ? (
+            <div className="pairing-action">
+              <p>在另一台已授权设备上批准这台设备。</p>
+              <button type="button" disabled={busy || !api} onClick={onRequestApproval}>
+                发起批准请求
+              </button>
+            </div>
+          ) : null}
+
+          {flow.method === "passkey" ? (
+            <div className="pairing-action">
+              <p>使用 Windows Hello、指纹或设备 PIN 完成验证。</p>
+              <button type="button" disabled={busy || !api} onClick={onPasskeyPair}>
+                使用 Passkey 继续
+              </button>
+            </div>
+          ) : null}
+
+          {flow.method === "runnercode" ? (
+            <div className="pairing-action">
+              <p>从已授权设备读取一次性代码。</p>
+              <button type="button" disabled={busy || !api} onClick={onStartRunnerCode}>
+                获取设备代码
+              </button>
+            </div>
+          ) : null}
+
+          {flow.method === "recovery" ? (
+            <div className="pairing-action">
+              <p>输入为此设备生成的一次性恢复信息。</p>
+              <label htmlFor="recoveryId">恢复编号</label>
+              <input
+                id="recoveryId"
+                value={recoveryIdInput}
+                onChange={(event) => setRecoveryIdInput(event.target.value)}
+                autoComplete="off"
+              />
+              <label htmlFor="recoverySecret">恢复码</label>
+              <input
+                id="recoverySecret"
+                value={recoverySecretInput}
+                onChange={(event) => setRecoverySecretInput(event.target.value)}
+                autoComplete="off"
+              />
+              <button type="button" disabled={busy || !api} onClick={onRecoveryPair}>
+                验证恢复码
+              </button>
+            </div>
+          ) : null}
+
+          {flow.method === "mail" ? (
+            <div className="pairing-action">
+              <p>我们会向你的登录邮箱发送一次性链接。</p>
+              <button type="button" disabled={busy || !api} onClick={onStartPairing}>
+                发送授权邮件
+              </button>
+            </div>
+          ) : null}
+        </section>
+      ) : null}
+
+      {flow.phase === "verification" ? (
+        <section
+          className="panel flow-panel"
+          data-flow-step="verification"
+          ref={verificationStepRef}
+        >
+          <h2 tabIndex={-1}>完成验证</h2>
+
+          {flow.method === "approval" ? (
             <>
-              {" "}
-              · 已配对 runner：<code>{boot.device.pairedRunnerId}</code>
-              {" · "}
-              <button
-                type="button"
-                className="logout-quiet logout-in-meta"
-                disabled={busy}
-                onClick={onLogoutE2ee}
-                title="清除本机设备密钥与配对，便于反复测试"
-              >
-                {E2EE_LOGOUT_LABEL}
+              <p>请在已授权设备上批准此设备。本页会自动继续。</p>
+              <button type="button" className="secondary" onClick={onCancelVerification}>
+                取消
               </button>
             </>
           ) : null}
-        </p>
-      </section>
 
-      <section className="panel">
-        <h2>2. 设备配对</h2>
-        <p className="meta">
-          推荐主通道：<strong>Runner 设备码</strong>（无需扫码、无需邮箱）。在 Runner 终端读取一次性
-          高熵码并输入到本页，再核对 6 词 SAS。Cloudflare Access 身份 + Runner 离线证书共同锚定信任。
-          其余方式作为备选保留。
-        </p>
-
-        {rootSasEntries.length > 0 ? (
-          <div
-            className={`status ${rootSasState === "failed" ? "error" : rootSasState === "verified" ? "" : "warn"}`}
-            style={{ marginBottom: 12 }}
-          >
-            <strong>首次安装信任边界：校验信任根 SAS</strong>
-            <p className="meta" style={{ marginTop: 4 }}>
-              本页锚定的离线信任根 SAS（须与 Runner 终端启动日志或已授权设备显示的一致）：
-            </p>
-            {rootSasEntries.map((entry) => (
-              <div key={entry.fingerprint} style={{ margin: "4px 0" }}>
-                <strong style={{ letterSpacing: "0.5px" }}>{entry.words.join(" ")}</strong>{" "}
-                <span className="meta">（{entry.fingerprint.slice(7, 19)}…）</span>
-              </div>
-            ))}
-            {rootSasState === "verified" ? (
-              <p className="meta">✓ 已校验：信任根与独立渠道一致。</p>
-            ) : (
-              <>
-                <p className="meta" style={{ marginTop: 6 }}>
-                  从 <strong>Runner 终端 / 已授权设备</strong>（独立渠道，非本页）读取 6 词 root SAS
-                  并输入校验。不通过则不要在本页配对（fail-closed）。首次通过 PWA
-                  安装后，后续从本地缓存加载可减少被替换风险。
-                </p>
-                <input
-                  value={rootSasInput}
-                  onChange={(event) => setRootSasInput(event.target.value)}
-                  placeholder="six word root sas"
-                  autoComplete="off"
-                  style={{ marginTop: 6 }}
-                />
-                <div className="row" style={{ marginTop: 6 }}>
-                  <button type="button" disabled={busy} onClick={onVerifyRootSas}>
-                    校验 root SAS
-                  </button>
-                </div>
-                {rootSasState === "failed" ? (
-                  <p className="meta" style={{ color: "#f87171" }}>
-                    ✗ 不匹配。配对入口已禁用，请改用可信 PWA 或桌面 localhost verifier 后重试。
-                  </p>
-                ) : null}
-              </>
-            )}
-          </div>
-        ) : null}
-
-        <div className="row" style={{ marginBottom: 12 }}>
-          {runnerCodeEnabled ? (
-            <button
-              type="button"
-              className={pairingPanel === "runnercode" ? undefined : "secondary"}
-              disabled={busy}
-              onClick={() => setPairingPanel("runnercode")}
-            >
-              Runner 设备码（推荐）
-            </button>
+          {flow.method === "passkey" ? (
+            <p>请在弹出的安全窗口和系统窗口中完成验证。</p>
           ) : null}
-          <button
-            type="button"
-            className={pairingPanel === "approval" ? undefined : "secondary"}
-            disabled={busy}
-            onClick={() => setPairingPanel("approval")}
-          >
-            已授权设备批准
-          </button>
-          <button
-            type="button"
-            className={pairingPanel === "passkey" ? undefined : "secondary"}
-            disabled={busy}
-            onClick={() => setPairingPanel("passkey")}
-          >
-            Passkey
-          </button>
-          <button
-            type="button"
-            className={pairingPanel === "recovery" ? undefined : "secondary"}
-            disabled={busy}
-            onClick={() => setPairingPanel("recovery")}
-          >
-            恢复码 / 二维码
-          </button>
-          <button
-            type="button"
-            className={pairingPanel === "mail" ? undefined : "secondary"}
-            disabled={busy}
-            onClick={() => setPairingPanel("mail")}
-          >
-            邮箱 magic-link
-          </button>
-        </div>
 
-        {pairingPanel === "runnercode" ? (
-          <>
-            <p className="meta">
-              在已运行 Runner 的机器（WSL/终端）上，Runner 会打印一次性 <code>CODE</code> 与 6 词{" "}
-              <code>SAS</code>（Gateway 看不到明文）。点「请求设备码」，然后把终端上的 CODE 输入下方并
-              核对 SAS 一致，再提交。若 Runner 为手动批准模式，还需在终端执行{" "}
-              <code>runner-code approve &lt;enrollId&gt;</code>。
-            </p>
-            {!runnerCodeOffer ? (
-              <div className="row">
-                <button
-                  type="button"
-                  disabled={busy || !api || rootSasState === "failed"}
-                  onClick={onStartRunnerCode}
-                >
-                  请求设备码
-                </button>
-              </div>
-            ) : (
+          {flow.method === "runnercode" ? (
+            runnerCodeOffer ? (
               <>
-                <label htmlFor="runnerCode">Runner 终端显示的设备码</label>
+                <label htmlFor="runnerCode">设备代码</label>
                 <input
                   id="runnerCode"
                   value={runnerCodeInput}
                   onChange={(event) => setRunnerCodeInput(event.target.value)}
-                  placeholder="XXXXX-XXXXX-XXXXX-XXXXX"
                   autoComplete="off"
                   autoCapitalize="characters"
                 />
-                <p className="meta">
-                  enrollId：<code>{runnerCodeEnrollId}</code>
-                </p>
                 {runnerCodeSasWords ? (
-                  <div className="status" style={{ marginTop: 8 }}>
-                    本页 SAS（须与 Runner 终端一致）：
-                    <br />
-                    <strong style={{ fontSize: "1.1em", letterSpacing: "0.5px" }}>
-                      {runnerCodeSasWords.join(" ")}
-                    </strong>
-                    <br />
-                    <span className="meta">
-                      若两侧 SAS 不一致，请勿提交——可能存在中继篡改。
-                    </span>
+                  <div className="word-check" role="status">
+                    <span>确认两边都显示：</span>
+                    <strong>{runnerCodeSasWords.join(" ")}</strong>
                   </div>
-                ) : null}
+                ) : (
+                  <p>输入代码后会显示 6 个确认词。</p>
+                )}
                 <div className="row">
                   <button
                     type="button"
-                    disabled={busy || !api || !runnerCodeSasWords || rootSasState === "failed"}
+                    disabled={busy || !runnerCodeSasWords}
                     onClick={onConfirmRunnerCode}
                   >
-                    SAS 一致，提交配对
+                    两边一致，继续
                   </button>
                   <button
                     type="button"
                     className="secondary"
                     disabled={busy}
-                    onClick={() => {
-                      setRunnerCodeOffer(null);
-                      setRunnerCodeEnrollId(null);
-                      setRunnerCodeInput("");
-                      setRunnerCodeSasWords(null);
-                    }}
+                    onClick={onCancelVerification}
                   >
                     取消
                   </button>
                 </div>
               </>
-            )}
-          </>
-        ) : null}
-
-        {pairingPanel === "passkey" ? (
-          <>
-            <p className="meta">
-              优先使用本机平台认证器（Windows Hello PIN、Face ID、指纹）。请确认地址栏为{" "}
-              <code>https://secure.joelzt.org</code>，并已设置 Windows Hello。
-            </p>
-            <div className="row">
-              <button type="button" disabled={busy || !api} onClick={onPasskeyPair}>
-                使用 Passkey / Windows Hello 继续
-              </button>
-            </div>
-          </>
-        ) : null}
-
-        {pairingPanel === "approval" ? (
-          <>
-            <p className="meta">
-              <strong>新设备：</strong>
-              点「发起批准请求」，保持本页打开等待（约 10 分钟内）。
-              <br />
-              <strong>旧设备：</strong>
-              打开已授权的{" "}
-              <a href={gatewayInput || "https://cs.joelzt.org"} rel="noreferrer">
-                CS
-              </a>
-              （推荐，聊天页会自动弹出待批准），或在本 Secure 已配对浏览器点「刷新待批准列表」后批准。须为同一
-              Cloudflare Access 账号。仅在 CS 登录、本机 Secure 未配对时无法在此批准。
-            </p>
-            <div className="row">
-              <button
-                type="button"
-                disabled={busy || !api || Boolean(boot.device.pairedRunnerId)}
-                onClick={onRequestApproval}
-                title={
-                  boot.device.pairedRunnerId
-                    ? "本机已配对；请用未配对的新设备发起请求"
-                    : undefined
-                }
-              >
-                发起批准请求（新设备）
-              </button>
-              <button
-                type="button"
-                className="secondary"
-                disabled={busy || !api || !boot.device.pairedRunnerId}
-                onClick={onRefreshApprovals}
-              >
-                刷新待批准列表（已配对设备）
-              </button>
-            </div>
-            {boot.device.pairedRunnerId ? (
-              <p className="meta">本机已配对，可作为旧设备批准；正在自动检查待批准请求…</p>
             ) : (
-              <p className="meta">本机尚未配对，可作为新设备发起请求。</p>
-            )}
-            {approvalId ? (
-              <p className="meta">
-                当前 approvalId：<code>{approvalId}</code>
-              </p>
-            ) : null}
-            {pendingApprovals.length > 0 ? (
-              <ul className="meta">
-                {pendingApprovals.map((item) => (
-                  <li key={item.approvalId} style={{ marginBottom: 8 }}>
-                    <code>{item.request.newClientId.slice(0, 12)}…</code>
-                    {" · "}
-                    {item.request.label ?? "新设备"}
-                    <div className="row" style={{ marginTop: 6 }}>
-                      <button
-                        type="button"
-                        disabled={busy || !boot.device.pairedRunnerId}
-                        onClick={() => onDecideApproval(item.request, "approved")}
-                      >
-                        批准
-                      </button>
-                      <button
-                        type="button"
-                        className="secondary"
-                        disabled={busy || !boot.device.pairedRunnerId}
-                        onClick={() => onDecideApproval(item.request, "rejected")}
-                      >
-                        拒绝
-                      </button>
-                    </div>
-                  </li>
-                ))}
-              </ul>
-            ) : boot.device.pairedRunnerId ? (
-              <p className="meta">暂无待批准请求。</p>
-            ) : null}
-          </>
-        ) : null}
+              <>
+                <p>正在等待授权设备生成代码…</p>
+                <button type="button" className="secondary" onClick={onCancelVerification}>
+                  取消
+                </button>
+              </>
+            )
+          ) : null}
 
-        {pairingPanel === "recovery" ? (
-          <>
-            <p className="meta">
-              在 Runner 本机（WSL）生成一次性高熵二维码 / 恢复码（Gateway 看不到明文）。最短步骤：
-            </p>
-            <pre className="meta" style={{ whiteSpace: "pre-wrap", margin: "8px 0" }}>
-              {`cd ~/cursor-e2ee
-# 在已配置 RUNNER_* / GATEWAY_URL 的环境中执行（会自动发布 public handle）
-npx tsx scripts/e2ee/trust-root-cli.ts recovery-code --runner-id wsl-e2ee`}
-            </pre>
-            <p className="meta">
-              终端会打印带 <code>#recover=...</code> 的 URL 与分组恢复码。用同一浏览器打开该
-              URL，或在下方粘贴 recoveryId 与恢复码。
-            </p>
-            <label htmlFor="recoveryId">recoveryId</label>
-            <input
-              id="recoveryId"
-              value={recoveryIdInput}
-              onChange={(event) => setRecoveryIdInput(event.target.value)}
-              placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
-              autoComplete="off"
-            />
-            <label htmlFor="recoverySecret">恢复码（base64url 或 Crockford 分组）</label>
-            <input
-              id="recoverySecret"
-              value={recoverySecretInput}
-              onChange={(event) => setRecoverySecretInput(event.target.value)}
-              placeholder="XXXX-XXXX-…"
-              autoComplete="off"
-            />
-            <div className="row">
-              <button type="button" disabled={busy || !api} onClick={onRecoveryPair}>
-                使用恢复码完成配对
-              </button>
-            </div>
-          </>
-        ) : null}
+          {flow.method === "recovery" ? <p>正在验证恢复码…</p> : null}
 
-        {pairingPanel === "mail" ? (
-          <>
-            <p className="meta">
-              备用：外部邮箱 magic link。公司无法访问外部邮件时请使用 Passkey。Token 留在 URL
-              fragment / Runner 邮件路径，Gateway 仅存公开元数据。
-            </p>
-            <div className="row">
-              <button type="button" disabled={busy || !api} onClick={onStartPairing}>
-                开始邮件配对
+          {flow.method === "mail" ? (
+            <>
+              <p>请打开邮件中的授权链接，本页会自动继续。</p>
+              {parseMagicLinkFragment(window.location.hash) ? (
+                <button type="button" disabled={busy} onClick={onManualComplete}>
+                  继续
+                </button>
+              ) : null}
+              <button type="button" className="secondary" onClick={onCancelVerification}>
+                取消
               </button>
-              <button
-                type="button"
-                className="secondary"
-                disabled={busy || !api || !parseMagicLinkFragment(window.location.hash)}
-                onClick={onManualComplete}
-              >
-                从 URL fragment 完成配对
-              </button>
-            </div>
-            {pairId ? (
-              <p className="meta">
-                当前 pairId：<code>{pairId}</code>
-              </p>
-            ) : null}
-          </>
-        ) : null}
-      </section>
+            </>
+          ) : null}
+        </section>
+      ) : null}
 
-      <section className="panel">
-        <h2>3. 加密聊天</h2>
-        {runners.length === 0 ? (
-          <p className="meta">尚无 Runner。请先完成配对，再刷新目录。</p>
-        ) : (
-          <>
-            <label htmlFor="runner">Runner</label>
-            <select
-              id="runner"
-              value={runnerId}
-              onChange={(event) => setRunnerId(event.target.value)}
+      {flow.phase === "complete" ? (
+        <section className="panel flow-panel" data-flow-step="complete" ref={completeStepRef}>
+          <h2 tabIndex={-1}>设备已通过验证</h2>
+          <p>现在可以开始安全对话。</p>
+          <button type="button" onClick={() => dispatchFlow({ type: "CONTINUE_TO_CHAT" })}>
+            开始对话
+          </button>
+        </section>
+      ) : null}
+
+      {flow.phase === "chat" ? (
+        <section className="panel flow-panel chat-panel" data-flow-step="chat" ref={chatStepRef}>
+          <div className="section-heading">
+            <h2 tabIndex={-1}>加密聊天</h2>
+            <button
+              type="button"
+              className="logout-quiet"
+              disabled={busy}
+              onClick={onLogoutE2ee}
             >
-              {runners.map((runner) => (
-                <option key={runner.runnerId} value={runner.runnerId}>
-                  {runner.runnerId}
-                </option>
-              ))}
-            </select>
-            <div className="row" style={{ marginTop: 12 }}>
-              <div style={{ flex: 1, minWidth: 160 }}>
-                <label htmlFor="workspace">Workspace ID</label>
-                <input
-                  id="workspace"
-                  value={workspaceId}
-                  onChange={(event) => setWorkspaceId(event.target.value)}
-                />
-              </div>
-              <div style={{ flex: 1, minWidth: 120 }}>
-                <label htmlFor="model">Model</label>
-                <input
-                  id="model"
-                  value={model}
-                  onChange={(event) => setModel(event.target.value)}
-                />
-              </div>
-            </div>
-
-            <div className="conv-list">
-              <button
-                type="button"
-                className="conv-item"
-                onClick={() => {
-                  setActiveConversationId(null);
-                  setRuns([]);
-                }}
-              >
-                + 新建加密会话
+              {E2EE_LOGOUT_LABEL}
+            </button>
+          </div>
+          {runners.length === 0 ? (
+            <>
+              <p>正在等待授权设备上线。</p>
+              <button type="button" className="secondary" disabled={busy} onClick={onRefresh}>
+                重新检查
               </button>
-              {conversations.map((conversation) => (
+            </>
+          ) : (
+            <>
+              <label htmlFor="runner">设备</label>
+              <select
+                id="runner"
+                value={runnerId}
+                onChange={(event) => setRunnerId(event.target.value)}
+              >
+                {runners.map((runner) => (
+                  <option key={runner.runnerId} value={runner.runnerId}>
+                    {runner.runnerId}
+                  </option>
+                ))}
+              </select>
+
+              <div className="chat-settings">
+                <div>
+                  <label htmlFor="workspace">工作区</label>
+                  <input
+                    id="workspace"
+                    value={workspaceId}
+                    onChange={(event) => setWorkspaceId(event.target.value)}
+                  />
+                </div>
+                <div>
+                  <label htmlFor="model">模型</label>
+                  <input
+                    id="model"
+                    value={model}
+                    onChange={(event) => setModel(event.target.value)}
+                  />
+                </div>
+              </div>
+
+              <div className="conv-list" aria-label="对话列表">
                 <button
-                  key={conversation.id}
                   type="button"
                   className="conv-item"
-                  onClick={() => openConversation(conversation.id)}
+                  onClick={() => {
+                    setActiveConversationId(null);
+                    setRuns([]);
+                  }}
                 >
-                  {titles[conversation.id] ?? conversation.id}
+                  新对话
                 </button>
-              ))}
-            </div>
-
-            <div className="messages">
-              {runs.map((run) => (
-                <div key={run.record.id} className="msg">
-                  <div className="role">你</div>
-                  <div>{run.request.prompt}</div>
-                  {run.progress && !run.result ? (
-                    <>
-                      <div className="role" style={{ marginTop: 8 }}>
-                        Runner
-                      </div>
-                      <div>{progressLabel(run.progress.progressKind)}</div>
-                    </>
-                  ) : null}
-                  {run.result ? (
-                    <>
-                      <div className="role" style={{ marginTop: 8 }}>
-                        Runner（{run.result.status}）
-                      </div>
-                      <div>{run.result.response ?? run.result.error ?? "（无正文）"}</div>
-                    </>
-                  ) : null}
-                </div>
-              ))}
-            </div>
-
-            <form onSubmit={onSubmitRun}>
-              <label htmlFor="prompt">Prompt</label>
-              <textarea
-                id="prompt"
-                value={prompt}
-                onChange={(event) => setPrompt(event.target.value)}
-                placeholder="加密 Prompt…"
-                required
-              />
-              <label className="meta" style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                <input
-                  type="checkbox"
-                  checked={allowWrites}
-                  onChange={(event) => setAllowWrites(event.target.checked)}
-                />
-                允许写入（需签名审批）
-              </label>
-              <div className="row">
-                <button type="submit" disabled={busy || !runnerId || !prompt.trim()}>
-                  发送加密 run
-                </button>
+                {conversations.map((conversation) => (
+                  <button
+                    key={conversation.id}
+                    type="button"
+                    className="conv-item"
+                    onClick={() => openConversation(conversation.id)}
+                  >
+                    {titles[conversation.id] ?? "未命名对话"}
+                  </button>
+                ))}
               </div>
-            </form>
-          </>
-        )}
-      </section>
 
-      {status ? <div className={`status ${status.tone === "info" ? "" : status.tone}`}>{status.text}</div> : null}
+              <div className="messages" aria-live="polite">
+                {runs.map((run) => (
+                  <div key={run.record.id} className="msg">
+                    <div className="role">你</div>
+                    <div>{run.request.prompt}</div>
+                    {run.progress && !run.result ? (
+                      <>
+                        <div className="role runner-role">助手</div>
+                        <div>{progressLabel(run.progress.progressKind)}</div>
+                      </>
+                    ) : null}
+                    {run.result ? (
+                      <>
+                        <div className="role runner-role">助手</div>
+                        <div>{run.result.response ?? run.result.error ?? "暂无内容"}</div>
+                      </>
+                    ) : null}
+                  </div>
+                ))}
+              </div>
+
+              <form onSubmit={onSubmitRun}>
+                <label htmlFor="prompt">消息</label>
+                <textarea
+                  id="prompt"
+                  value={prompt}
+                  onChange={(event) => setPrompt(event.target.value)}
+                  placeholder="输入消息…"
+                  required
+                />
+                <label className="checkbox-label">
+                  <input
+                    type="checkbox"
+                    checked={allowWrites}
+                    onChange={(event) => setAllowWrites(event.target.checked)}
+                  />
+                  允许修改文件
+                </label>
+                <button type="submit" disabled={busy || !runnerId || !prompt.trim()}>
+                  发送
+                </button>
+              </form>
+            </>
+          )}
+        </section>
+      ) : null}
+
+      {updateDiagnostic && !updateAvailable ? (
+        <details className="update-diagnostic">
+          <summary>更新状态</summary>
+          <StatusNotice status={updateDiagnostic} />
+        </details>
+      ) : null}
     </div>
   );
 }

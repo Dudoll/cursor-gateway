@@ -12,8 +12,10 @@ process.env.RUNNER_WORKSPACES = root;
 process.env.CURSOR_API_KEY = "cursor-test";
 process.env.RUNNER_E2EE_ALLOW_INSECURE_DEV_STORAGE = "true";
 process.env.RUNNER_E2EE_STATE_FILE = join(root, "runner-state.dat");
-delete process.env.RUNNER_E2EE_MASTER_KEY;
-delete process.env.RUNNER_E2EE_MASTER_KEY_FILE;
+// Keep these keys defined-but-empty so config loading cannot pull a developer's
+// real .env master-key path into this isolated insecure-storage test.
+process.env.RUNNER_E2EE_MASTER_KEY = "";
+process.env.RUNNER_E2EE_MASTER_KEY_FILE = "";
 process.env.PAIRING_MAIL_MODE = "log";
 process.env.PAIRING_MAIL_LOG_FILE = join(root, "pairing-mail.log");
 process.env.PAIRING_MAIL_FROM = "no-reply@piallera.com";

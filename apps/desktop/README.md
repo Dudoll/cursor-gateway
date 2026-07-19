@@ -6,15 +6,18 @@ recommended, MITM-resistant way to reach the encrypted-chat gateway on Windows.
 
 This is **not** the browser extension and **not** a plain web PWA.
 
-**Cloudflare Access (desktop):** after setting the Gateway origin, click **「登录
-Cloudflare Access」** on the main auth panel (or the key icon top-right). The shell
+**Cloudflare Access (desktop):** click **「登录以继续」**. The shell
 opens a same-site Access bridge window (local `tauri.localhost` cannot send Access
 cookies cross-site). After login the bridge WebView stays alive but is **hidden to
 the system tray** (right-click tray icon → show bridge / quit). See
 [`docs/windows-client.md`](../../docs/windows-client.md).
 
-**Upgrade:** when a newer installer is published (`/api/desktop/version`), an
-arrow-up icon appears; click to download and run the NSIS setup.
+**Passkey:** WebAuthn runs in a trusted `https://secure.joelzt.org` bridge window
+whose origin matches the RP ID, then returns the public result over Tauri IPC.
+
+**Upgrade:** public metadata is checked before login and refreshed after Access,
+on focus/network recovery, and periodically. A newer available installer shows one
+arrow-up icon; download bytes are SHA256-checked before NSIS starts.
 
 ## Build (native Windows or CI — WSL/Linux cannot cross-compile)
 

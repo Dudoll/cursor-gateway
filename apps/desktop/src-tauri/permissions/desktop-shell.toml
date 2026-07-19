@@ -19,6 +19,11 @@ description = "Allow proxying Gateway API requests through the Access bridge Web
 commands.allow = ["desktop_bridge_fetch"]
 
 [[permission]]
+identifier = "allow-desktop-perform-passkey"
+description = "Allow running WebAuthn in the trusted HTTPS Passkey bridge."
+commands.allow = ["desktop_perform_passkey"]
+
+[[permission]]
 identifier = "allow-desktop-install-update"
 description = "Allow downloading and launching the desktop installer update."
 commands.allow = ["desktop_install_update"]

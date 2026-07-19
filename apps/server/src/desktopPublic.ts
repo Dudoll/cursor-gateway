@@ -42,9 +42,9 @@ export function desktopAccessBridgeHtml(): string {
 </head>
 <body>
   <main>
-    <h1 class="ok">Cloudflare Access 已登录</h1>
-    <p>可返回 Cursor Gateway 桌面窗口继续配对。本窗口已收纳到系统托盘；桌面壳通过此页同源转发 API，以便带上 Access Cookie。</p>
-    <p id="status">桥接就绪</p>
+    <h1 class="ok">登录成功</h1>
+    <p>现在可以返回客户端继续。</p>
+    <p id="status">已准备好</p>
   </main>
   <script>
     window.__CG_ACCESS_BRIDGE__ = { ready: true, version: 1 };

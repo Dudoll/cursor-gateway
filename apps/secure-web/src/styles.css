@@ -173,6 +173,12 @@ body {
 
 .steps .done .n { background: var(--accent); }
 .steps .active { color: var(--ink); font-weight: 600; }
+.steps .locked {
+  opacity: 0.45;
+}
+.steps .locked .n {
+  background: #94a3b8;
+}
 
 label {
   display: block;
@@ -223,6 +229,16 @@ button:disabled {
   cursor: not-allowed;
 }
 
+button:focus-visible,
+input:focus-visible,
+textarea:focus-visible,
+select:focus-visible,
+summary:focus-visible,
+[tabindex="-1"]:focus-visible {
+  outline: 3px solid rgba(15, 118, 110, 0.35);
+  outline-offset: 3px;
+}
+
 .status {
   margin-top: 12px;
   padding: 10px 12px;
@@ -236,6 +252,46 @@ button:disabled {
 .status.error { background: #fef2f2; color: var(--danger); }
 .status.warn { background: #fffbeb; color: var(--warn); }
 .status.ok { background: #ecfdf5; color: #065f46; }
+
+.status-message {
+  margin: 0.45rem 0 0;
+}
+
+.diagnostic {
+  margin-top: 0.75rem;
+  color: var(--muted);
+}
+
+.diagnostic summary,
+.update-diagnostic summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.diagnostic dl {
+  display: grid;
+  gap: 0.55rem;
+  margin: 0.75rem 0;
+}
+
+.diagnostic dl div {
+  display: grid;
+  gap: 0.15rem;
+}
+
+.diagnostic dt {
+  font-size: 0.75rem;
+  font-weight: 700;
+}
+
+.diagnostic dd {
+  margin: 0;
+}
+
+.diagnostic-copy {
+  font-size: 0.8rem;
+  padding: 7px 10px;
+}
 
 .meta {
   font-size: 0.85rem;
@@ -280,4 +336,116 @@ button:disabled {
 .blocker {
   border-color: #fecaca;
   background: #fff5f5;
+}
+
+.flow-panel {
+  scroll-margin-top: 1rem;
+}
+
+.flow-panel > p {
+  color: var(--muted);
+  line-height: 1.6;
+}
+
+.method-list {
+  display: grid;
+  gap: 8px;
+  margin: 14px 0;
+}
+
+button.method {
+  width: 100%;
+  text-align: left;
+}
+
+button.method.active {
+  background: var(--accent);
+  color: var(--accent-ink);
+}
+
+.pairing-action {
+  display: grid;
+  gap: 10px;
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
+}
+
+.pairing-action p {
+  margin: 0;
+  color: var(--muted);
+}
+
+.pairing-action button {
+  justify-self: start;
+}
+
+.word-check {
+  display: grid;
+  gap: 7px;
+  margin-top: 12px;
+  padding: 12px;
+  border-radius: 12px;
+  background: #ecfdf5;
+  color: #065f46;
+}
+
+.word-check strong {
+  font-size: 1.05rem;
+  letter-spacing: 0.03em;
+}
+
+.section-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.section-heading h2 {
+  margin: 0;
+}
+
+.chat-settings {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.runner-role {
+  margin-top: 8px;
+}
+
+.checkbox-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 10px 0;
+}
+
+.checkbox-label input {
+  width: auto;
+}
+
+.update-diagnostic {
+  margin-top: 18px;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+@media (min-width: 700px) {
+  .steps {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+
+  .method-list {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 620px) {
+  .chat-settings {
+    grid-template-columns: 1fr;
+  }
 }

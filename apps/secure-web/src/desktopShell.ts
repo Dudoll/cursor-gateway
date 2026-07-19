@@ -11,6 +11,7 @@ export type DesktopBridgeFetchResult = {
   status: number;
   body: string;
   contentType?: string | null;
+  requestId?: string | null;
   opaqueRedirect: boolean;
 };
 
@@ -70,6 +71,7 @@ export async function desktopBridgeFetch(input: {
     status: number;
     body: string;
     contentType?: string | null;
+    requestId?: string | null;
     opaqueRedirect: boolean;
   }>("desktop_bridge_fetch", {
     request: {
@@ -85,12 +87,39 @@ export async function desktopBridgeFetch(input: {
     status: raw.status,
     body: raw.body,
     contentType: raw.contentType ?? null,
+    requestId: raw.requestId ?? null,
     opaqueRedirect: raw.opaqueRedirect
   };
 }
 
-export async function desktopInstallUpdate(gatewayOrigin: string): Promise<void> {
-  await tauriInvoke("desktop_install_update", { gatewayOrigin });
+/**
+ * Run WebAuthn inside the trusted HTTPS bridge instead of `tauri.localhost`.
+ * WebAuthn requires the calling origin to be the RP ID or its subdomain.
+ */
+export async function desktopPerformPasskey(input: {
+  passkeyOrigin: string;
+  mode: "registration" | "authentication";
+  options: Record<string, unknown>;
+}): Promise<Record<string, unknown>> {
+  return tauriInvoke<Record<string, unknown>>("desktop_perform_passkey", {
+    request: {
+      passkeyOrigin: input.passkeyOrigin,
+      mode: input.mode,
+      options: input.options
+    }
+  });
+}
+
+export async function desktopInstallUpdate(input: {
+  gatewayOrigin: string;
+  expectedVersion: string;
+  expectedSha256: string;
+}): Promise<void> {
+  await tauriInvoke("desktop_install_update", {
+    gatewayOrigin: input.gatewayOrigin,
+    expectedVersion: input.expectedVersion,
+    expectedSha256: input.expectedSha256
+  });
 }
 
 /**

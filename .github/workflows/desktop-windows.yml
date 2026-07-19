@@ -13,6 +13,8 @@ on:
         type: boolean
         default: false
   push:
+    branches:
+      - main
     tags:
       - "desktop-v*"
 
@@ -20,7 +22,59 @@ permissions:
   contents: write
 
 jobs:
+  integration:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: cursor_gateway_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d cursor_gateway_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      redis:
+        image: redis:8-alpine
+        ports:
+          - 6379:6379
+    env:
+      TEST_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/cursor_gateway_test
+      TEST_REDIS_URL: redis://127.0.0.1:6379
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install workspace dependencies
+        run: npm install
+
+      - name: Build test dependencies
+        run: |
+          npm run build -w @cursor-gateway/shared
+          npm run build -w @cursor-gateway/e2ee
+          npm run build -w @cursor-gateway/server
+
+      - name: Type-check changed applications
+        run: |
+          npm run typecheck -w @cursor-gateway/server
+          npm run typecheck -w @cursor-gateway/secure-web
+
+      - name: Run Secure Web unit tests
+        run: npm test -w @cursor-gateway/secure-web
+
+      - name: Run server tests with real Postgres
+        run: npx tsx --test --test-concurrency=1 apps/server/test/*.test.ts
+
   build:
+    needs: integration
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -50,6 +104,12 @@ jobs:
           npm run build -w @cursor-gateway/shared
           npm run build -w @cursor-gateway/e2ee
           npm run build -w @cursor-gateway/secure-web
+
+      - name: Run Secure Web unit tests
+        run: npm test -w @cursor-gateway/secure-web
+
+      - name: Run desktop UI and virtual-Passkey E2E
+        run: npm run test:e2e -w @cursor-gateway/secure-web
 
       - name: Generate application icons
         run: npm run icon -w @cursor-gateway/desktop

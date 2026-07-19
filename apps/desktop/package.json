@@ -1,6 +1,6 @@
 {
   "name": "@cursor-gateway/desktop",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "private": true,
   "type": "module",
   "description": "Windows desktop shell (Tauri v2 + WebView2) that loads the Secure Web E2EE UI locally.",
