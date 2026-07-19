@@ -15,6 +15,17 @@ export type DesktopBridgeFetchResult = {
   opaqueRedirect: boolean;
 };
 
+export type DesktopDiagnosticEntry = {
+  stage: string;
+  operation: string;
+  endpoint?: string;
+  errorCode: string;
+  clientRequestId?: string;
+  requestId?: string;
+  httpStatus?: number;
+  retryAttempt?: number;
+};
+
 type TauriGlobal = {
   core?: { invoke: (cmd: string, args?: Record<string, unknown>) => Promise<unknown> };
   invoke?: (cmd: string, args?: Record<string, unknown>) => Promise<unknown>;
@@ -47,6 +58,23 @@ export function shouldRegisterServiceWorker(): boolean {
 export async function desktopAppVersion(): Promise<string> {
   const info = await tauriInvoke<{ version: string }>("desktop_app_version");
   return info.version;
+}
+
+export async function desktopLogDiagnostic(entry: DesktopDiagnosticEntry): Promise<void> {
+  if (!isDesktopShell()) return;
+  await tauriInvoke("desktop_log_diagnostic", { entry });
+}
+
+export async function desktopReadDiagnostics(limit = 100): Promise<
+  Array<Record<string, unknown>>
+> {
+  if (!isDesktopShell()) return [];
+  return tauriInvoke("desktop_read_diagnostics", { limit });
+}
+
+export async function desktopDiagnosticsPath(): Promise<string | null> {
+  if (!isDesktopShell()) return null;
+  return tauriInvoke<string>("desktop_diagnostics_path");
 }
 
 /** Open / reuse the Access bridge window and wait until CF Access has succeeded. */

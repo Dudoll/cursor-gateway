@@ -1,6 +1,8 @@
 {
-  "version": "0.1.8",
-  "sha256": "60aecacc65cfc123468b897b3fbd68a13cbe6204bec38656174634110612b19a",
-  "installerAvailable": true,
-  "downloadPath": "/api/desktop/download"
+  "schemaVersion": 1,
+  "version": "0.1.9",
+  "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+  "installerAvailable": false,
+  "installerUrl": "https://cs.joelzt.org/api/desktop/download",
+  "publishedAt": "2026-07-19T00:00:00.000Z"
 }

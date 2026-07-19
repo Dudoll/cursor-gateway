@@ -62,6 +62,27 @@ test("opaque errors become actionable diagnostics instead of unknown_error", () 
   assert.doesNotMatch(copied, /token=/);
 });
 
+test("cross-origin fetch failures are not falsely asserted to be CORS", () => {
+  const previous = Object.getOwnPropertyDescriptor(globalThis, "window");
+  try {
+    Object.defineProperty(globalThis, "window", {
+      configurable: true,
+      value: { location: { href: "http://tauri.localhost/", origin: "http://tauri.localhost" } }
+    });
+    const value = normalizeFailure(new TypeError("Failed to fetch"), {
+      stage: "update-check",
+      operation: "检查新版本",
+      endpoint:
+        "https://raw.githubusercontent.com/Dudoll/cursor-gateway/main/apps/secure-web/public/desktop-version.json"
+    });
+    assert.equal(value.code, "network_or_cors");
+    assert.notEqual(value.code, "cors_origin_blocked");
+  } finally {
+    if (previous) Object.defineProperty(globalThis, "window", previous);
+    else Reflect.deleteProperty(globalThis, "window");
+  }
+});
+
 test("upgrade and device-code branches remain concrete and actionable", () => {
   const cases = [
     "desktop_installer_unavailable",

@@ -367,10 +367,12 @@ export async function registerRoutes(app: FastifyInstance) {
         installerPath: currentDesktopInstallerPath()
       });
       return {
+        schemaVersion: 1,
         version: meta.version,
         sha256: meta.sha256,
         installerAvailable: meta.installerAvailable,
-        downloadPath: DESKTOP_DOWNLOAD_PATH
+        installerUrl: new URL(DESKTOP_DOWNLOAD_PATH, config.publicOrigin).toString(),
+        publishedAt: meta.publishedAt
       };
     });
 

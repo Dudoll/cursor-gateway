@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 
 /** Paths served under `/api` (Fastify prefix) for the Windows desktop shell. */
@@ -65,6 +65,7 @@ export type DesktopVersionMeta = {
   version: string;
   sha256: string | null;
   installerAvailable: boolean;
+  publishedAt: string;
 };
 
 /**
@@ -119,7 +120,10 @@ export function readDesktopVersionMeta(paths: {
   return {
     version,
     sha256,
-    installerAvailable: existsSync(paths.installerPath)
+    installerAvailable: existsSync(paths.installerPath),
+    publishedAt: existsSync(paths.versionPath)
+      ? new Date(statSync(paths.versionPath).mtimeMs).toISOString()
+      : new Date(0).toISOString()
   };
 }
 

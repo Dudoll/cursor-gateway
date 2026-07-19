@@ -10,7 +10,9 @@
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::path::PathBuf;
+use std::fs::{self, File, OpenOptions};
+use std::io::{BufRead, BufReader, Write};
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
@@ -185,6 +187,38 @@ struct DesktopPasskeyRequest {
     options: serde_json::Value,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DesktopDiagnosticInput {
+    stage: String,
+    operation: String,
+    endpoint: Option<String>,
+    error_code: String,
+    client_request_id: Option<String>,
+    request_id: Option<String>,
+    http_status: Option<u16>,
+    retry_attempt: Option<u16>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DesktopDiagnosticRecord {
+    timestamp_ms: u128,
+    stage: String,
+    operation: String,
+    endpoint_host: Option<String>,
+    endpoint_path: Option<String>,
+    error_code: String,
+    client_request_id: Option<String>,
+    request_id: Option<String>,
+    http_status: Option<u16>,
+    retry_attempt: Option<u16>,
+}
+
+const DIAGNOSTIC_LOG_NAME: &str = "diagnostics.jsonl";
+const DIAGNOSTIC_LOG_MAX_BYTES: u64 = 512 * 1024;
+const DIAGNOSTIC_LOG_ROTATIONS: usize = 4;
+
 fn normalize_gateway_origin(raw: &str) -> Result<String, String> {
     let url = url::Url::parse(raw.trim()).map_err(|e| format!("invalid_gateway_origin:{e}"))?;
     if url.scheme() != "https" && url.scheme() != "http" {
@@ -265,6 +299,156 @@ fn origin_can_use_rp_id(origin: &str, rp_id: &str) -> bool {
     host == rp_id || host.ends_with(&format!(".{rp_id}"))
 }
 
+fn safe_diagnostic_token(value: &str, max: usize) -> Result<String, String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty()
+        || trimmed.len() > max
+        || !trimmed
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || "._:-".contains(ch))
+    {
+        return Err("diagnostic_field_invalid".into());
+    }
+    Ok(trimmed.to_string())
+}
+
+fn safe_diagnostic_label(value: &str, max: usize) -> Result<String, String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty()
+        || trimmed.len() > max
+        || trimmed
+            .chars()
+            .any(|ch| ch == '\r' || ch == '\n' || ch == '\0' || ch.is_control())
+    {
+        return Err("diagnostic_field_invalid".into());
+    }
+    Ok(trimmed.to_string())
+}
+
+fn safe_diagnostic_request_id(value: Option<String>) -> Result<Option<String>, String> {
+    value
+        .map(|item| safe_diagnostic_token(&item, 96))
+        .transpose()
+        .map_err(|_| "diagnostic_request_id_invalid".to_string())
+}
+
+fn safe_diagnostic_endpoint(value: Option<&str>) -> Result<(Option<String>, Option<String>), String> {
+    let Some(raw) = value else {
+        return Ok((None, None));
+    };
+    if raw.chars().any(|ch| ch == '\r' || ch == '\n' || ch == '\0') || raw.len() > 512 {
+        return Err("diagnostic_endpoint_invalid".into());
+    }
+    if raw.starts_with("https://") {
+        let url = url::Url::parse(raw).map_err(|_| "diagnostic_endpoint_invalid".to_string())?;
+        let host = url
+            .host_str()
+            .ok_or_else(|| "diagnostic_endpoint_invalid".to_string())?;
+        return Ok((Some(host.to_string()), Some(url.path().to_string())));
+    }
+    if !raw.starts_with('/') {
+        return Err("diagnostic_endpoint_invalid".into());
+    }
+    let path = raw
+        .split(|ch| ch == '?' || ch == '#')
+        .next()
+        .unwrap_or("/");
+    Ok((None, Some(path.to_string())))
+}
+
+fn diagnostic_record(input: DesktopDiagnosticInput) -> Result<DesktopDiagnosticRecord, String> {
+    let (endpoint_host, endpoint_path) = safe_diagnostic_endpoint(input.endpoint.as_deref())?;
+    let timestamp_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|_| "diagnostic_clock_invalid".to_string())?
+        .as_millis();
+    Ok(DesktopDiagnosticRecord {
+        timestamp_ms,
+        stage: safe_diagnostic_token(&input.stage, 64)?,
+        operation: safe_diagnostic_label(&input.operation, 128)?,
+        endpoint_host,
+        endpoint_path,
+        error_code: safe_diagnostic_token(&input.error_code, 128)?,
+        client_request_id: safe_diagnostic_request_id(input.client_request_id)?,
+        request_id: safe_diagnostic_request_id(input.request_id)?,
+        http_status: input.http_status,
+        retry_attempt: input.retry_attempt,
+    })
+}
+
+fn rotated_diagnostic_path(path: &Path, index: usize) -> PathBuf {
+    PathBuf::from(format!("{}.{}", path.to_string_lossy(), index))
+}
+
+fn rotate_diagnostic_log(path: &Path, incoming_bytes: u64) -> Result<(), String> {
+    let current_bytes = fs::metadata(path).map(|meta| meta.len()).unwrap_or(0);
+    if current_bytes + incoming_bytes <= DIAGNOSTIC_LOG_MAX_BYTES {
+        return Ok(());
+    }
+    for index in (1..=DIAGNOSTIC_LOG_ROTATIONS).rev() {
+        let target = rotated_diagnostic_path(path, index);
+        if target.exists() {
+            fs::remove_file(&target).map_err(|_| "diagnostic_rotate_remove_failed".to_string())?;
+        }
+        let source = if index == 1 {
+            path.to_path_buf()
+        } else {
+            rotated_diagnostic_path(path, index - 1)
+        };
+        if source.exists() {
+            fs::rename(source, target)
+                .map_err(|_| "diagnostic_rotate_rename_failed".to_string())?;
+        }
+    }
+    Ok(())
+}
+
+fn append_diagnostic(path: &Path, record: &DesktopDiagnosticRecord) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|_| "diagnostic_log_dir_failed".to_string())?;
+    }
+    let mut line =
+        serde_json::to_string(record).map_err(|_| "diagnostic_serialize_failed".to_string())?;
+    line.push('\n');
+    rotate_diagnostic_log(path, line.len() as u64)?;
+    let mut file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .map_err(|_| "diagnostic_log_open_failed".to_string())?;
+    file.write_all(line.as_bytes())
+        .map_err(|_| "diagnostic_log_write_failed".to_string())
+}
+
+fn read_diagnostic_records(path: &Path, limit: usize) -> Result<Vec<DesktopDiagnosticRecord>, String> {
+    let mut records = Vec::new();
+    for candidate in [rotated_diagnostic_path(path, 1), path.to_path_buf()] {
+        if !candidate.exists() {
+            continue;
+        }
+        let file = File::open(candidate).map_err(|_| "diagnostic_log_read_failed".to_string())?;
+        for line in BufReader::new(file).lines() {
+            let line = line.map_err(|_| "diagnostic_log_read_failed".to_string())?;
+            if let Ok(record) = serde_json::from_str::<DesktopDiagnosticRecord>(&line) {
+                records.push(record);
+            }
+        }
+    }
+    let keep = limit.clamp(1, 200);
+    if records.len() > keep {
+        records.drain(0..records.len() - keep);
+    }
+    Ok(records)
+}
+
+fn diagnostic_log_path(app: &AppHandle) -> Result<PathBuf, String> {
+    let dir = app
+        .path()
+        .app_log_dir()
+        .map_err(|_| "diagnostic_log_path_failed".to_string())?;
+    Ok(dir.join(DIAGNOSTIC_LOG_NAME))
+}
+
 /// WebView2 (Windows) throttles and eventually suspends the renderer of a
 /// hidden / minimized / occluded WebView. That silently stalled the Access
 /// bridge's `fetch()` — the injected request never ran, so the POST to
@@ -283,6 +467,9 @@ const WEBVIEW2_NO_THROTTLE_FLAGS: &[&str] = &[
     "--disable-background-timer-throttling",
     "--disable-renderer-backgrounding",
     "--disable-backgrounding-occluded-windows",
+    // Production evidence showed repeated h3/QUIC alternative-service failures
+    // while HTTPS over TCP/H2 remained healthy. Prefer H2 for bridge reliability.
+    "--disable-quic",
 ];
 
 /// Merge our no-throttle flags into any pre-existing WebView2 argument string
@@ -790,6 +977,28 @@ async fn desktop_app_version(app: AppHandle) -> Result<DesktopVersionInfo, Strin
 }
 
 #[tauri::command]
+fn desktop_log_diagnostic(
+    app: AppHandle,
+    entry: DesktopDiagnosticInput,
+) -> Result<(), String> {
+    let record = diagnostic_record(entry)?;
+    append_diagnostic(&diagnostic_log_path(&app)?, &record)
+}
+
+#[tauri::command]
+fn desktop_read_diagnostics(
+    app: AppHandle,
+    limit: Option<usize>,
+) -> Result<Vec<DesktopDiagnosticRecord>, String> {
+    read_diagnostic_records(&diagnostic_log_path(&app)?, limit.unwrap_or(100))
+}
+
+#[tauri::command]
+fn desktop_diagnostics_path(app: AppHandle) -> Result<String, String> {
+    Ok(diagnostic_log_path(&app)?.to_string_lossy().to_string())
+}
+
+#[tauri::command]
 async fn desktop_access_ensure(app: AppHandle, gateway_origin: String) -> Result<(), String> {
     let origin = normalize_gateway_origin(&gateway_origin)?;
     let window = open_bridge_window(&app, &origin).await?;
@@ -989,6 +1198,9 @@ pub fn run() {
         .manage(BridgeState::default())
         .invoke_handler(tauri::generate_handler![
             desktop_app_version,
+            desktop_log_diagnostic,
+            desktop_read_diagnostics,
+            desktop_diagnostics_path,
             desktop_access_ensure,
             desktop_access_show,
             desktop_bridge_fetch,
@@ -1126,5 +1338,65 @@ mod tests {
             validate_installer_payload(&bytes, &sha256_hex(&bytes)).unwrap_err(),
             "desktop_download_invalid_executable"
         );
+    }
+
+    #[test]
+    fn diagnostics_redact_endpoint_query_and_reject_log_injection() {
+        let record = diagnostic_record(DesktopDiagnosticInput {
+            stage: "access".into(),
+            operation: "poll_policy".into(),
+            endpoint: Some("https://cs.joelzt.org/api/e2ee-policy?token=secret".into()),
+            error_code: "network_unreachable".into(),
+            client_request_id: Some("15ceaed3-3c72-4814-a465-a4f061016726".into()),
+            request_id: Some("req-safe".into()),
+            http_status: Some(0),
+            retry_attempt: Some(2),
+        })
+        .unwrap();
+        assert_eq!(record.endpoint_host.as_deref(), Some("cs.joelzt.org"));
+        assert_eq!(record.endpoint_path.as_deref(), Some("/api/e2ee-policy"));
+        let serialized = serde_json::to_string(&record).unwrap();
+        assert!(!serialized.contains("secret"));
+        assert!(diagnostic_record(DesktopDiagnosticInput {
+            stage: "access\nforged".into(),
+            operation: "poll".into(),
+            endpoint: None,
+            error_code: "network".into(),
+            client_request_id: None,
+            request_id: None,
+            http_status: None,
+            retry_attempt: None,
+        })
+        .is_err());
+        assert!(safe_diagnostic_request_id(Some("bad\nid".into())).is_err());
+    }
+
+    #[test]
+    fn diagnostics_rotate_and_preserve_recent_history() {
+        let dir = std::env::temp_dir().join(format!(
+            "cursor-gateway-diagnostic-test-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(DIAGNOSTIC_LOG_NAME);
+        fs::write(&path, vec![b'x'; DIAGNOSTIC_LOG_MAX_BYTES as usize]).unwrap();
+        let record = diagnostic_record(DesktopDiagnosticInput {
+            stage: "update-check".into(),
+            operation: "read_manifest".into(),
+            endpoint: Some("https://raw.githubusercontent.com/path?ignored=yes".into()),
+            error_code: "desktop_update_json_invalid".into(),
+            client_request_id: Some("client-safe-1".into()),
+            request_id: None,
+            http_status: Some(200),
+            retry_attempt: Some(1),
+        })
+        .unwrap();
+        append_diagnostic(&path, &record).unwrap();
+        assert!(rotated_diagnostic_path(&path, 1).exists());
+        let records = read_diagnostic_records(&path, 10).unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].error_code, "desktop_update_json_invalid");
+        fs::remove_dir_all(dir).unwrap();
     }
 }

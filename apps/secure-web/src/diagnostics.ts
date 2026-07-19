@@ -1,4 +1,5 @@
 import { GatewayApiError } from "./api.js";
+import { desktopLogDiagnostic } from "./desktopShell.js";
 
 export type FailureStage =
   | "startup"
@@ -30,6 +31,7 @@ export type UserDiagnostic = {
   endpoint: string | null;
   diagnosticId: string;
   requestId: string | null;
+  httpStatus: number | null;
 };
 
 type ErrorCopy = Pick<
@@ -43,6 +45,12 @@ const COPY: Record<string, ErrorCopy> = {
     message: "当前操作没有到达服务端。",
     possibleCause: "网络中断、域名无法访问，或安全软件拦截了连接。",
     nextStep: "检查网络后重试；如果网页可以打开，请重新登录后再试。"
+  },
+  network_or_cors: {
+    title: "无法读取远程信息",
+    message: "浏览器没有返回可读取的响应。",
+    possibleCause: "网络瞬断、安全软件拦截，或目标站点未允许当前页面读取响应。",
+    nextStep: "恢复网络后重试；客户端不会把它直接断定为 CORS。"
   },
   cors_origin_blocked: {
     title: "当前页面未获准连接",
@@ -85,6 +93,18 @@ const COPY: Record<string, ErrorCopy> = {
     message: "登录窗口没有在规定时间内完成请求。",
     possibleCause: "登录窗口被系统暂停，或网络连接中断。",
     nextStep: "重新登录后重试。"
+  },
+  access_network_retry_exhausted: {
+    title: "登录网络持续不稳定",
+    message: "客户端已自动重试，但仍无法稳定确认登录。",
+    possibleCause: "网络持续中断，或登录窗口无法连接服务。",
+    nextStep: "确认网络恢复后重新点击登录。"
+  },
+  access_login_cancelled: {
+    title: "登录已取消",
+    message: "客户端已停止登录检查。",
+    possibleCause: "你选择了取消。",
+    nextStep: "准备好后重新点击登录。"
   },
   passkey_rp_id_mismatch: {
     title: "此处不能使用 Passkey",
@@ -188,6 +208,42 @@ const COPY: Record<string, ErrorCopy> = {
     possibleCause: "网络暂时不可用，或版本信息尚未发布。",
     nextStep: "客户端会自动重试，也可以在窗口恢复后再次检查。"
   },
+  desktop_update_html_fallback: {
+    title: "版本地址返回了网页",
+    message: "更新地址返回的是 HTML 页面，不是版本清单。",
+    possibleCause: "静态文件缺失，被站点的 SPA fallback 接管。",
+    nextStep: "等待发布端修复清单地址；客户端不会显示升级按钮。"
+  },
+  desktop_update_content_type_invalid: {
+    title: "版本清单类型不正确",
+    message: "更新地址返回了不受支持的内容类型。",
+    possibleCause: "CDN 或静态站点配置错误。",
+    nextStep: "客户端会停止使用该响应并稍后重试。"
+  },
+  desktop_update_json_invalid: {
+    title: "版本清单不是有效 JSON",
+    message: "客户端无法解析更新清单。",
+    possibleCause: "清单发布不完整或内容已损坏。",
+    nextStep: "等待发布端重新生成清单。"
+  },
+  desktop_update_hash_missing: {
+    title: "版本清单缺少校验值",
+    message: "清单没有提供安装包 SHA256。",
+    possibleCause: "发布流程未完成。",
+    nextStep: "客户端不会显示或安装这个版本。"
+  },
+  desktop_update_schema_unsupported: {
+    title: "版本清单格式不受支持",
+    message: "清单版本与当前客户端不兼容。",
+    possibleCause: "发布端使用了未知格式。",
+    nextStep: "等待兼容清单或新版客户端。"
+  },
+  desktop_update_installer_url_invalid: {
+    title: "安装包地址不可信",
+    message: "清单中的安装包地址不在允许范围内。",
+    possibleCause: "清单配置错误或被替换。",
+    nextStep: "不要下载安装；等待发布端修复。"
+  },
   recovery_code_missing: {
     title: "恢复信息不完整",
     message: "恢复编号或恢复码尚未填写。",
@@ -233,9 +289,10 @@ const COPY: Record<string, ErrorCopy> = {
 };
 
 const CODE_ALIASES: Record<string, string> = {
-  "Failed to fetch": "network_unreachable",
-  failed_to_fetch: "network_unreachable",
-  network_error: "network_unreachable",
+  "Failed to fetch": "network_or_cors",
+  failed_to_fetch: "network_or_cors",
+  network_error: "network_or_cors",
+  e2ee_runner_offline: "runner_offline",
   access_expired: "cloudflare_login_required",
   passkey_ceremony_failed: "passkey_not_allowed",
   passkey_unsupported_browser: "passkey_not_allowed",
@@ -255,7 +312,7 @@ function stableCode(value: unknown): string {
   if (value instanceof Error) {
     if (value.name === "AbortError") return "request_timeout";
     if (value instanceof TypeError && /fetch|network/i.test(value.message)) {
-      return "network_unreachable";
+      return "network_or_cors";
     }
     return value.message.trim() || "internal_client_error";
   }
@@ -333,15 +390,7 @@ function copyFor(code: string, error: unknown): ErrorCopy {
 }
 
 export function normalizeFailure(error: unknown, context: FailureContext): UserDiagnostic {
-  let code = errorCode(error);
-  if (
-    code === "network_unreachable" &&
-    typeof window !== "undefined" &&
-    context.endpoint?.startsWith("http") &&
-    new URL(context.endpoint, window.location.href).origin !== window.location.origin
-  ) {
-    code = "cors_origin_blocked";
-  }
+  const code = errorCode(error);
   const copy = copyFor(code, error);
   const requestId = error instanceof GatewayApiError ? error.requestId : null;
   return {
@@ -351,8 +400,44 @@ export function normalizeFailure(error: unknown, context: FailureContext): UserD
     operation: context.operation,
     endpoint: safeEndpoint(context.endpoint),
     diagnosticId: diagnosticId(requestId),
-    requestId
+    requestId,
+    httpStatus: error instanceof GatewayApiError ? error.status : null
   };
+}
+
+export function persistDiagnostic(
+  value: UserDiagnostic,
+  retryAttempt?: number
+): void {
+  void desktopLogDiagnostic({
+    stage: value.stage,
+    operation: value.operation,
+    ...(value.endpoint ? { endpoint: value.endpoint } : {}),
+    errorCode: value.code,
+    clientRequestId: value.diagnosticId,
+    ...(value.requestId ? { requestId: value.requestId } : {}),
+    ...(value.httpStatus !== null ? { httpStatus: value.httpStatus } : {}),
+    ...(retryAttempt !== undefined ? { retryAttempt } : {})
+  }).catch(() => {
+    // Diagnostics must never break the user flow.
+  });
+}
+
+export function persistOperationalDiagnostic(entry: {
+  stage: FailureStage | "gateway-request";
+  operation: string;
+  endpoint?: string;
+  errorCode: string;
+  clientRequestId?: string;
+  requestId?: string;
+  httpStatus?: number;
+  retryAttempt?: number;
+}): void {
+  void desktopLogDiagnostic({
+    ...entry
+  }).catch(() => {
+    // Best-effort and always redacted by the Rust boundary.
+  });
 }
 
 export function diagnosticClipboardText(value: UserDiagnostic): string {

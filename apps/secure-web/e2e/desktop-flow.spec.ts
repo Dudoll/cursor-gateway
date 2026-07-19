@@ -14,14 +14,17 @@ import {
 } from "../../../packages/shared/dist/index.js";
 
 const SECURE_ORIGIN = "https://secure.joelzt.org";
-const UPDATE_URL = `${SECURE_ORIGIN}/desktop-version.json`;
+const UPDATE_URL =
+  "https://raw.githubusercontent.com/Dudoll/cursor-gateway/main/apps/secure-web/public/desktop-version.json";
 const UPDATE_HASH = "a".repeat(64);
 
 type UpdateMetadata = {
+  schemaVersion: 1;
   version: string;
   sha256: string;
   installerAvailable: boolean;
-  downloadPath: string;
+  installerUrl: string;
+  publishedAt: string;
 };
 
 type BridgeInput = {
@@ -177,13 +180,18 @@ async function runnerCertificate(input: {
 class DesktopBackend {
   loggedIn = false;
   passkeyFailuresLeft = 0;
+  accessTransientFailuresLeft = 0;
+  permanentAccessError = false;
   calls: string[] = [];
   passkeyOrigins: string[] = [];
+  diagnosticEntries: Array<Record<string, unknown>> = [];
   updateMetadata: UpdateMetadata = {
+    schemaVersion: 1,
     version: "0.1.7",
     sha256: UPDATE_HASH,
     installerAvailable: true,
-    downloadPath: "/api/desktop/download"
+    installerUrl: "https://cs.joelzt.org/api/desktop/download",
+    publishedAt: "2026-07-19T00:00:00.000Z"
   };
 
   private requestNumber = 0;
@@ -223,6 +231,15 @@ class DesktopBackend {
     switch (command) {
       case "desktop_app_version":
         return { version: "0.1.6" };
+      case "desktop_log_diagnostic":
+        this.diagnosticEntries.push(
+          (args?.entry ?? {}) as Record<string, unknown>
+        );
+        return null;
+      case "desktop_read_diagnostics":
+        return this.diagnosticEntries;
+      case "desktop_diagnostics_path":
+        return "C:\\safe\\diagnostics.jsonl";
       case "desktop_access_show":
         this.loggedIn = true;
         return null;
@@ -287,6 +304,13 @@ class DesktopBackend {
     }
 
     if (input.path === "/api/e2ee-policy") {
+      if (this.permanentAccessError) {
+        return this.response(403, { error: "email_not_allowed" });
+      }
+      if (this.accessTransientFailuresLeft > 0) {
+        this.accessTransientFailuresLeft -= 1;
+        throw new Error("Failed to fetch");
+      }
       return this.response(200, {
         runnerCodePairingEnabled: false,
         secureClientOrigin: SECURE_ORIGIN,
@@ -424,7 +448,7 @@ async function installDesktopMock(page: Page, backend: DesktopBackend) {
 
 async function mockPublicUpdate(page: Page, metadata: UpdateMetadata, failures = 0) {
   let requests = 0;
-  await page.route(UPDATE_URL, async (route) => {
+  await page.route(`${UPDATE_URL}*`, async (route) => {
     requests += 1;
     if (requests <= failures) {
       await route.fulfill({
@@ -448,6 +472,7 @@ test("desktop flow stays top-down, explains failure, retries, and reaches chat",
 }) => {
   const backend = await DesktopBackend.create();
   backend.passkeyFailuresLeft = 1;
+  backend.accessTransientFailuresLeft = 2;
   await installDesktopMock(page, backend);
   await mockPublicUpdate(page, backend.updateMetadata);
   await page.goto("/");
@@ -485,9 +510,17 @@ test("desktop flow stays top-down, explains failure, retries, and reaches chat",
   await expect(page.locator("[data-flow-step]")).toHaveCount(1);
   await page.getByRole("button", { name: "开始对话" }).click();
   await expect(page.locator('[data-flow-step="chat"]')).toBeVisible();
+  await expect(page.locator('[data-flow-step="chat"]')).toContainText(
+    "授权设备离线"
+  );
   await expect(page.locator("[data-flow-step]")).toHaveCount(1);
 
   expect(backend.passkeyOrigins).toEqual([SECURE_ORIGIN, SECURE_ORIGIN]);
+  expect(
+    backend.diagnosticEntries.some(
+      (entry) => entry.errorCode === "network_unreachable"
+    )
+  ).toBe(true);
   expect(backend.calls).toEqual(
     expect.arrayContaining([
       "POST /api/e2ee/v1/passkey/start",
@@ -497,6 +530,22 @@ test("desktop flow stays top-down, explains failure, retries, and reaches chat",
       "GET /api/e2ee/v1/conversations"
     ])
   );
+});
+
+test("permanent Access error stops without blind retry", async ({ page }) => {
+  const backend = await DesktopBackend.create();
+  backend.permanentAccessError = true;
+  await installDesktopMock(page, backend);
+  await mockPublicUpdate(page, backend.updateMetadata);
+  await page.goto("/");
+  await page.getByRole("button", { name: "登录以继续" }).click();
+  await expect(page.locator('[data-flow-step="access"]')).toBeVisible();
+  await expect(page.getByRole("alert")).toContainText("请求未被接受");
+  const policyCalls = backend.calls.filter(
+    (call) => call === "GET /api/e2ee-policy"
+  );
+  // One startup probe plus one login probe; no retry storm for HTTP 403.
+  expect(policyCalls.length).toBeLessThanOrEqual(2);
 });
 
 for (const item of [
@@ -525,7 +574,7 @@ for (const item of [
 test("temporary public metadata failure recovers after Access login", async ({ page }) => {
   const backend = await DesktopBackend.create();
   await installDesktopMock(page, backend);
-  await page.route(UPDATE_URL, (route) =>
+  await page.route(`${UPDATE_URL}*`, (route) =>
     route.fulfill({
       status: 503,
       contentType: "application/json",
@@ -626,4 +675,21 @@ test("trusted bridge completes registration and authentication with a virtual au
     await client.send("WebAuthn.removeVirtualAuthenticator", { authenticatorId });
     await client.send("WebAuthn.disable");
   }
+});
+
+test("built Secure Web serves an exact JSON update manifest instead of SPA HTML", async ({
+  request
+}) => {
+  const response = await request.get("/desktop-version.json", {
+    headers: { origin: "http://tauri.localhost" }
+  });
+  expect(response.status()).toBe(200);
+  expect(response.headers()["content-type"]).toContain("application/json");
+  const manifest = await response.json();
+  expect(manifest).toMatchObject({
+    schemaVersion: 1,
+    version: "0.1.9",
+    installerUrl: "https://cs.joelzt.org/api/desktop/download"
+  });
+  expect(manifest.sha256).toMatch(/^[a-f0-9]{64}$/);
 });

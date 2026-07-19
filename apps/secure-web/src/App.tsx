@@ -71,7 +71,9 @@ import {
 import {
   desktopAccessShow,
   desktopAppVersion,
+  desktopDiagnosticsPath,
   desktopInstallUpdate,
+  desktopReadDiagnostics,
   isDesktopShell
 } from "./desktopShell.js";
 import { ArrowUpCircle } from "lucide-react";
@@ -82,12 +84,22 @@ import {
   type FlowState,
   type PairingMethod
 } from "./flowMachine.js";
-import { normalizeFailure, type FailureContext } from "./diagnostics.js";
+import {
+  normalizeFailure,
+  persistDiagnostic,
+  persistOperationalDiagnostic,
+  type FailureContext
+} from "./diagnostics.js";
 import { StatusNotice, type UiStatus } from "./StatusNotice.js";
 import {
   checkDesktopUpdate,
+  DESKTOP_UPDATE_METADATA_URL,
   type DesktopUpdateMetadata
 } from "./updateChecker.js";
+import {
+  waitForStableAccess,
+  type AccessRetryEvent
+} from "./accessRetry.js";
 
 type BootState =
   | { kind: "loading" }
@@ -100,8 +112,6 @@ type DesktopAccessPolicy = {
   secureClientOrigin?: string | null;
 };
 
-const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-
 /**
  * Desktop: after the Access bridge window pops, poll the Gateway until Cloudflare
  * Access login completes (the bridge stops returning `cloudflare_login_required`).
@@ -110,20 +120,20 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
  */
 async function waitForDesktopAccessLogin(
   clientApi: GatewayApi,
-  timeoutMs = 300_000
-): Promise<DesktopAccessPolicy> {
-  const deadline = Date.now() + timeoutMs;
-  for (;;) {
-    try {
-      return await clientApi.get<DesktopAccessPolicy>("/api/e2ee-policy");
-    } catch (error) {
-      const stillWaiting =
-        error instanceof GatewayApiError && error.code === "cloudflare_login_required";
-      if (!stillWaiting) throw error;
-      if (Date.now() >= deadline) throw new Error("access_bridge_login_timeout");
-      await sleep(2_000);
-    }
+  options?: {
+    signal?: AbortSignal;
+    onAttempt?: (event: AccessRetryEvent) => void;
   }
+): Promise<DesktopAccessPolicy> {
+  return waitForStableAccess({
+    probe: () => clientApi.get<DesktopAccessPolicy>("/api/e2ee-policy"),
+    ...(options?.signal ? { signal: options.signal } : {}),
+    ...(options?.onAttempt ? { onAttempt: options.onAttempt } : {}),
+    totalTimeoutMs: 300_000,
+    maxAttempts: 120,
+    maxTransientFailures: 8,
+    requiredConsecutiveSuccesses: 2
+  });
 }
 
 function flowReducer(
@@ -175,17 +185,26 @@ export function App() {
   const [localDesktopVersion, setLocalDesktopVersion] = useState<string | null>(null);
   const [passkeyOrigin, setPasskeyOrigin] = useState("https://secure.joelzt.org");
   const [updateCheckGeneration, setUpdateCheckGeneration] = useState(0);
+  const [diagnosticHistory, setDiagnosticHistory] = useState<{
+    count: number;
+    path: string | null;
+  }>({ count: 0, path: null });
   const accessStepRef = useRef<HTMLElement>(null);
   const pairingStepRef = useRef<HTMLElement>(null);
   const verificationStepRef = useRef<HTMLElement>(null);
   const completeStepRef = useRef<HTMLElement>(null);
   const chatStepRef = useRef<HTMLElement>(null);
   const verificationAbortRef = useRef<AbortController | null>(null);
+  const accessLoginAbortRef = useRef<AbortController | null>(null);
+  const accessAutoRetryArmedRef = useRef(false);
+  const updateAbortRef = useRef<AbortController | null>(null);
 
   const pairingPanel: PairingMethod =
     flow.phase === "pairing" || flow.phase === "verification"
       ? (flow.method ?? (runnerCodeEnabled ? "runnercode" : "passkey"))
       : "passkey";
+  const activeRunner = runners.find((item) => item.runnerId === runnerId);
+  const activeRunnerOffline = runners.length > 0 && (!activeRunner || !activeRunner.online);
 
   const api = useMemo(() => {
     try {
@@ -201,6 +220,7 @@ export function App() {
 
   function showFailure(error: unknown, context: FailureContext) {
     const diagnostic = normalizeFailure(error, context);
+    persistDiagnostic(diagnostic);
     setStatus({ tone: "error", text: diagnostic.title, diagnostic });
     if (diagnostic.code === "cloudflare_login_required") {
       setAccessReady(false);
@@ -208,6 +228,15 @@ export function App() {
     }
     return diagnostic;
   }
+
+  useEffect(
+    () => () => {
+      accessLoginAbortRef.current?.abort();
+      verificationAbortRef.current?.abort();
+      updateAbortRef.current?.abort();
+    },
+    []
+  );
 
   useEffect(() => {
     const target =
@@ -260,6 +289,7 @@ export function App() {
               stage: "update-check",
               operation: "读取当前客户端版本"
             });
+            persistDiagnostic(diagnostic);
             setUpdateDiagnostic({ tone: "error", text: diagnostic.title, diagnostic });
           }
         }
@@ -339,12 +369,25 @@ export function App() {
   useEffect(() => {
     if (!desktopShell) return;
     let cancelled = false;
+    const controller = new AbortController();
+    updateAbortRef.current?.abort();
+    updateAbortRef.current = controller;
     (async () => {
       const local = localDesktopVersion ?? (await desktopAppVersion());
       if (cancelled) return;
       setLocalDesktopVersion(local);
       const decision = await checkDesktopUpdate({
         localVersion: local,
+        signal: controller.signal,
+        onAttempt: ({ attempt, code }) => {
+          persistOperationalDiagnostic({
+            stage: "update-check",
+            operation: "检查更新清单",
+            endpoint: DESKTOP_UPDATE_METADATA_URL,
+            errorCode: code ?? "request_ok",
+            retryAttempt: attempt
+          });
+        },
         ...(accessReady && api
           ? {
               authenticatedLoader: () =>
@@ -367,6 +410,7 @@ export function App() {
               endpoint: "/api/desktop/version"
             }
           );
+          persistDiagnostic(diagnostic);
           setUpdateDiagnostic({ tone: "warn", text: diagnostic.title, diagnostic });
         } else {
           setUpdateDiagnostic(null);
@@ -376,8 +420,9 @@ export function App() {
         const diagnostic = normalizeFailure(new Error(decision.code), {
           stage: "update-check",
           operation: "检查新版本",
-          endpoint: "https://secure.joelzt.org/desktop-version.json"
+          endpoint: DESKTOP_UPDATE_METADATA_URL
         });
+        persistDiagnostic(diagnostic, decision.attempts);
         setUpdateDiagnostic({ tone: "warn", text: diagnostic.title, diagnostic });
       }
     })().catch((error) => {
@@ -385,13 +430,16 @@ export function App() {
         const diagnostic = normalizeFailure(error, {
           stage: "update-check",
           operation: "检查新版本",
-          endpoint: "https://secure.joelzt.org/desktop-version.json"
+          endpoint: DESKTOP_UPDATE_METADATA_URL
         });
+        persistDiagnostic(diagnostic);
         setUpdateDiagnostic({ tone: "warn", text: diagnostic.title, diagnostic });
       }
     });
     return () => {
       cancelled = true;
+      controller.abort();
+      if (updateAbortRef.current === controller) updateAbortRef.current = null;
     };
   }, [
     desktopShell,
@@ -413,6 +461,38 @@ export function App() {
       window.clearInterval(timer);
     };
   }, [desktopShell]);
+
+  useEffect(() => {
+    if (!desktopShell) return;
+    const resumeAccess = () => {
+      if (
+        accessAutoRetryArmedRef.current &&
+        flow.phase === "access" &&
+        !accessReady &&
+        !busy &&
+        !accessLoginAbortRef.current
+      ) {
+        void onDesktopAccessLogin();
+      }
+    };
+    window.addEventListener("online", resumeAccess);
+    window.addEventListener("focus", resumeAccess);
+    return () => {
+      window.removeEventListener("online", resumeAccess);
+      window.removeEventListener("focus", resumeAccess);
+    };
+  }, [desktopShell, flow.phase, accessReady, busy]);
+
+  useEffect(() => {
+    if (!desktopShell) return;
+    Promise.all([desktopReadDiagnostics(100), desktopDiagnosticsPath()])
+      .then(([records, path]) => {
+        setDiagnosticHistory({ count: records.length, path });
+      })
+      .catch(() => {
+        // Logging is diagnostic-only and must never block startup.
+      });
+  }, [desktopShell, status?.diagnostic?.diagnosticId]);
 
   async function tryFinishCsAuth(
     clientApi: GatewayApi,
@@ -637,6 +717,7 @@ export function App() {
 
   async function onDesktopAccessLogin(): Promise<boolean> {
     if (!desktopShell) return false;
+    if (accessLoginAbortRef.current) return false;
     let origin: string;
     try {
       origin = normalizeGatewayOrigin(gatewayInput);
@@ -647,6 +728,9 @@ export function App() {
       });
       return false;
     }
+    const controller = new AbortController();
+    accessLoginAbortRef.current = controller;
+    accessAutoRetryArmedRef.current = true;
     setBusy(true);
     try {
       saveGatewayOrigin(origin);
@@ -659,7 +743,18 @@ export function App() {
       await desktopAccessShow(origin);
       const clientApi = new GatewayApi(origin);
       // Poll the Gateway until Access login completes (bridge becomes ready).
-      const policy = await waitForDesktopAccessLogin(clientApi);
+      const policy = await waitForDesktopAccessLogin(clientApi, {
+        signal: controller.signal,
+        onAttempt: (event) => {
+          persistOperationalDiagnostic({
+            stage: "access",
+            operation: "检查登录状态",
+            endpoint: `${clientApi.origin}/api/e2ee-policy`,
+            errorCode: event.code ?? "request_ok",
+            retryAttempt: event.attempt
+          });
+        }
+      });
       setAccessReady(true);
       if (policy.secureClientOrigin) setPasskeyOrigin(policy.secureClientOrigin);
       if (policy.cfAccessLogoutUrl) setCfAccessLogoutUrl(policy.cfAccessLogoutUrl);
@@ -685,8 +780,24 @@ export function App() {
         tone: "ok",
         text: "登录成功。"
       });
+      accessAutoRetryArmedRef.current = false;
       return true;
     } catch (error) {
+      if (
+        controller.signal.aborted ||
+        (error instanceof Error && error.message === "access_login_cancelled")
+      ) {
+        accessAutoRetryArmedRef.current = false;
+        setStatus({ tone: "info", text: "已取消登录。" });
+        return false;
+      }
+      const code = errorText(error);
+      if (
+        code !== "access_network_retry_exhausted" &&
+        code !== "access_bridge_login_timeout"
+      ) {
+        accessAutoRetryArmedRef.current = false;
+      }
       setAccessReady(false);
       showFailure(error, {
         stage: "access",
@@ -695,15 +806,23 @@ export function App() {
       });
       return false;
     } finally {
+      if (accessLoginAbortRef.current === controller) {
+        accessLoginAbortRef.current = null;
+      }
       setBusy(false);
     }
+  }
+
+  function onCancelAccessLogin() {
+    accessAutoRetryArmedRef.current = false;
+    accessLoginAbortRef.current?.abort();
   }
 
   async function onDesktopUpgrade() {
     if (!desktopShell || !updateAvailable) return;
     let origin: string;
     try {
-      origin = normalizeGatewayOrigin(gatewayInput);
+      origin = normalizeGatewayOrigin(new URL(updateAvailable.installerUrl).origin);
     } catch (error) {
       showFailure(error, {
         stage: "update-download",
@@ -1305,9 +1424,16 @@ export function App() {
           <h2 tabIndex={-1}>登录以继续</h2>
           <p>完成登录后，客户端会自动进入下一步。</p>
           {desktopShell ? (
-            <button type="button" disabled={busy} onClick={onDesktopAccessLogin}>
-              {busy ? "等待登录…" : "登录以继续"}
-            </button>
+            <div className="row">
+              <button type="button" disabled={busy} onClick={onDesktopAccessLogin}>
+                {busy ? "等待登录…" : "登录以继续"}
+              </button>
+              {accessLoginAbortRef.current ? (
+                <button type="button" className="secondary" onClick={onCancelAccessLogin}>
+                  取消
+                </button>
+              ) : null}
+            </div>
           ) : (
             <form onSubmit={onSaveGateway}>
               <label htmlFor="gateway">服务地址</label>
@@ -1549,7 +1675,7 @@ export function App() {
           </div>
           {runners.length === 0 ? (
             <>
-              <p>正在等待授权设备上线。</p>
+              <p>授权设备离线。启动 Runner 后重新检查。</p>
               <button type="button" className="secondary" disabled={busy} onClick={onRefresh}>
                 重新检查
               </button>
@@ -1568,6 +1694,11 @@ export function App() {
                   </option>
                 ))}
               </select>
+              {activeRunnerOffline ? (
+                <div className="status warn" role="status">
+                  授权设备当前离线。启动 Runner 后再发送消息。
+                </div>
+              ) : null}
 
               <div className="chat-settings">
                 <div>
@@ -1649,7 +1780,10 @@ export function App() {
                   />
                   允许修改文件
                 </label>
-                <button type="submit" disabled={busy || !runnerId || !prompt.trim()}>
+                <button
+                  type="submit"
+                  disabled={busy || !runnerId || activeRunnerOffline || !prompt.trim()}
+                >
                   发送
                 </button>
               </form>
@@ -1662,6 +1796,16 @@ export function App() {
         <details className="update-diagnostic">
           <summary>更新状态</summary>
           <StatusNotice status={updateDiagnostic} />
+        </details>
+      ) : null}
+      {desktopShell && diagnosticHistory.path ? (
+        <details className="update-diagnostic">
+          <summary>诊断记录</summary>
+          <p>
+            已保留最近 {diagnosticHistory.count} 条脱敏记录。
+            <br />
+            <code>{diagnosticHistory.path}</code>
+          </p>
         </details>
       ) : null}
     </div>

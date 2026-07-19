@@ -25,6 +25,7 @@
     "core:window:allow-set-focus",
     "core:window:allow-close",
     "allow-desktop-app-version",
+    "allow-desktop-diagnostics",
     "allow-desktop-access-ensure",
     "allow-desktop-access-show",
     "allow-desktop-bridge-fetch",

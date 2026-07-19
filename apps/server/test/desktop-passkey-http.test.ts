@@ -27,7 +27,8 @@ test(
     process.env.DATABASE_URL = databaseUrl!;
     process.env.RUNNER_SHARED_SECRET = "r".repeat(32);
     process.env.ALLOWED_EMAILS = email;
-    process.env.SECURE_CLIENT_ORIGIN = "https://secure.example.com";
+    process.env.SECURE_CLIENT_ORIGIN =
+      "https://secure.example.com,http://tauri.localhost";
 
     const [{ registerHttpMiddleware }, { registerRoutes }, db] = await Promise.all([
       import("../src/httpMiddleware.js"),
@@ -82,12 +83,27 @@ test(
       assert.ok(bridge.headers.get("x-request-id"));
 
       const version = await fetch(`${address}/api/desktop/version`, {
-        headers: userHeaders
+        headers: {
+          ...userHeaders,
+          "x-client-request-id": "release-http-test-1",
+          origin: "http://tauri.localhost"
+        }
       });
       assert.equal(version.status, 200);
       const versionBody = (await version.json()) as Record<string, unknown>;
+      assert.equal(version.headers.get("x-client-request-id"), "release-http-test-1");
+      assert.equal(
+        version.headers.get("access-control-allow-origin"),
+        "http://tauri.localhost"
+      );
+      assert.equal(versionBody.schemaVersion, 1);
       assert.equal(typeof versionBody.version, "string");
       assert.equal(typeof versionBody.installerAvailable, "boolean");
+      assert.equal(
+        versionBody.installerUrl,
+        "https://gateway.test/api/desktop/download"
+      );
+      assert.equal(typeof versionBody.publishedAt, "string");
 
       const clientSigning = await generateSigningKeyPair();
       const clientEncryption = await generateHpkeKeyPair();
@@ -149,6 +165,40 @@ test(
         allowedSecureOrigins: ["https://secure.example.com"],
         allowedRpIds: ["secure.example.com"]
       });
+      await db.pool.query(
+        `insert into runner_devices (
+           runner_id, runner_version, protocols, encryption_key, signing_key,
+           models, workspaces, last_seen_at
+         ) values ($1, 'test', $2::jsonb, $3::jsonb, $4::jsonb, '[]', '[]', now())
+         on conflict (runner_id) do update set last_seen_at = now(), revoked_at = null`,
+        [
+          "runner-http-test",
+          JSON.stringify([E2EE_PROTOCOL]),
+          JSON.stringify(runnerEncryptionKey),
+          JSON.stringify(runnerSigningKey)
+        ]
+      );
+      const onlineResponse = await fetch(`${address}/api/e2ee/v1/runners`, {
+        headers: userHeaders
+      });
+      assert.equal(onlineResponse.status, 200);
+      assert.equal(
+        ((await onlineResponse.json()) as { runners: Array<{ online: boolean }> })
+          .runners[0]?.online,
+        true
+      );
+      await db.pool.query(
+        "update runner_devices set last_seen_at = now() - interval '10 minutes' where runner_id = $1",
+        ["runner-http-test"]
+      );
+      const offlineResponse = await fetch(`${address}/api/e2ee/v1/runners`, {
+        headers: userHeaders
+      });
+      assert.equal(
+        ((await offlineResponse.json()) as { runners: Array<{ online: boolean }> })
+          .runners[0]?.online,
+        false
+      );
       const now = new Date().toISOString();
       const options = {
         protocol: E2EE_PROTOCOL,
@@ -264,6 +314,9 @@ test(
       const user = await db.pool.query("select id from app_users where email = $1", [email]);
       const userId = user.rows[0]?.id;
       await db.pool.query("delete from e2ee_passkey_pairings where pair_id = $1", [pairId]);
+      await db.pool.query("delete from runner_devices where runner_id = $1", [
+        "runner-http-test"
+      ]);
       if (userId) {
         await db.pool.query("delete from audit_logs where actor_user_id = $1", [userId]);
         await db.pool.query("delete from app_users where id = $1", [userId]);

@@ -4,6 +4,15 @@ description = "Allow reading the installed desktop app version."
 commands.allow = ["desktop_app_version"]
 
 [[permission]]
+identifier = "allow-desktop-diagnostics"
+description = "Allow writing and reading redacted rolling desktop diagnostics."
+commands.allow = [
+  "desktop_log_diagnostic",
+  "desktop_read_diagnostics",
+  "desktop_diagnostics_path"
+]
+
+[[permission]]
 identifier = "allow-desktop-access-ensure"
 description = "Allow ensuring the Cloudflare Access bridge window is ready."
 commands.allow = ["desktop_access_ensure"]

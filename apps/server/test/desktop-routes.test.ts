@@ -61,6 +61,7 @@ test("readDesktopVersionMeta reports missing installer as unavailable (404 path)
   assert.equal(meta.version, "0.1.2");
   assert.equal(meta.sha256, "a".repeat(64));
   assert.equal(meta.installerAvailable, false);
+  assert.ok(Number.isFinite(Date.parse(meta.publishedAt)));
 });
 
 test("readDesktopVersionMeta detects installer file and falls back to SHA256SUMS", () => {
@@ -77,6 +78,7 @@ test("readDesktopVersionMeta detects installer file and falls back to SHA256SUMS
   assert.equal(meta.version, "0.1.2");
   assert.equal(meta.sha256, "c".repeat(64));
   assert.equal(meta.installerAvailable, true);
+  assert.ok(Number.isFinite(Date.parse(meta.publishedAt)));
 });
 
 test("desktopArtifactPaths resolve under repo artifacts/ (canonical desktop/ layout)", () => {

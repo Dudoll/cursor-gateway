@@ -16,9 +16,13 @@ the system tray** (right-click tray icon → show bridge / quit). See
 window using a minimal adapter injected by the signed shell (so it does not
 depend on a static bridge deploy), then returns the public result over Tauri IPC.
 
-**Upgrade:** public metadata is checked before login and refreshed after Access,
-on focus/network recovery, and periodically. A newer available installer shows one
-arrow-up icon; download bytes are SHA256-checked before NSIS starts.
+**Upgrade:** a strict manifest on `raw.githubusercontent.com` is checked before
+login and refreshed after Access, on focus/network recovery, and periodically.
+A newer available installer shows one arrow-up icon; download bytes are
+SHA256-checked before NSIS starts.
+
+**Diagnostics:** redacted request/retry records persist in a bounded rolling
+`diagnostics.jsonl`; request IDs are echoed by the Gateway for end-to-end lookup.
 
 ## Build (native Windows or CI — WSL/Linux cannot cross-compile)
 

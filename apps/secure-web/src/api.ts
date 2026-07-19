@@ -1,5 +1,6 @@
 import {
   desktopBridgeFetch,
+  desktopLogDiagnostic,
   isDesktopShell
 } from "./desktopShell.js";
 
@@ -27,6 +28,27 @@ function requestId(): string {
 
 function safeRequestId(value: unknown): string | null {
   return typeof value === "string" && /^[A-Za-z0-9._:-]{1,96}$/.test(value) ? value : null;
+}
+
+function logDesktopGatewayRequest(input: {
+  operation: string;
+  endpoint: string;
+  errorCode: string;
+  clientRequestId: string;
+  requestId?: string | null;
+  httpStatus?: number;
+}) {
+  void desktopLogDiagnostic({
+    stage: "gateway-request",
+    operation: input.operation,
+    endpoint: input.endpoint,
+    errorCode: input.errorCode,
+    clientRequestId: input.clientRequestId,
+    ...(input.requestId ? { requestId: input.requestId } : {}),
+    ...(input.httpStatus !== undefined ? { httpStatus: input.httpStatus } : {})
+  }).catch(() => {
+    // Request diagnostics are best-effort.
+  });
 }
 
 export function normalizeGatewayOrigin(value: string) {
@@ -128,6 +150,9 @@ export class GatewayApi {
     }
 
     let result: Awaited<ReturnType<typeof desktopBridgeFetch>>;
+    const operation = (init.method ?? "GET").toUpperCase();
+    const endpoint = `${this.origin}${path}`;
+    const clientRequestId = headers["x-client-request-id"]!;
     try {
       const bridgeInput: {
         gatewayOrigin: string;
@@ -146,6 +171,13 @@ export class GatewayApi {
     } catch (error) {
       const code = error instanceof Error ? error.message : String(error);
       if (code.includes("cloudflare_login_required")) {
+        logDesktopGatewayRequest({
+          operation,
+          endpoint,
+          errorCode: "cloudflare_login_required",
+          clientRequestId,
+          httpStatus: 401
+        });
         throw new GatewayApiError(401, "cloudflare_login_required", path, headers["x-client-request-id"] ?? null);
       }
       // Tauri's `invoke` rejects with a plain string when the Rust bridge
@@ -156,6 +188,12 @@ export class GatewayApi {
         code.includes("Failed to fetch") || code.includes("NetworkError")
           ? "network_unreachable"
           : code.split(":")[0] || "access_bridge_error";
+      logDesktopGatewayRequest({
+        operation,
+        endpoint,
+        errorCode: stable,
+        clientRequestId
+      });
       throw new GatewayApiError(
         0,
         stable,
@@ -165,6 +203,14 @@ export class GatewayApi {
     }
 
     if (result.opaqueRedirect || result.status === 0) {
+      logDesktopGatewayRequest({
+        operation,
+        endpoint,
+        errorCode: "cloudflare_login_required",
+        clientRequestId,
+        ...(result.requestId ? { requestId: result.requestId } : {}),
+        httpStatus: 401
+      });
       throw new GatewayApiError(
         401,
         "cloudflare_login_required",
@@ -184,6 +230,15 @@ export class GatewayApi {
       } catch {
         // Never surface untrusted HTML/error bodies.
       }
+      const responseRequestId = bodyRequestId ?? result.requestId;
+      logDesktopGatewayRequest({
+        operation,
+        endpoint,
+        errorCode: code,
+        clientRequestId,
+        ...(responseRequestId ? { requestId: responseRequestId } : {}),
+        httpStatus: result.status
+      });
       throw new GatewayApiError(
         result.status,
         code,
@@ -191,6 +246,14 @@ export class GatewayApi {
         bodyRequestId ?? result.requestId ?? headers["x-client-request-id"] ?? null
       );
     }
+    logDesktopGatewayRequest({
+      operation,
+      endpoint,
+      errorCode: "request_ok",
+      clientRequestId,
+      ...(result.requestId ? { requestId: result.requestId } : {}),
+      httpStatus: result.status
+    });
     if (result.status === 204 || !result.body) return undefined as T;
     try {
       return JSON.parse(result.body) as T;
