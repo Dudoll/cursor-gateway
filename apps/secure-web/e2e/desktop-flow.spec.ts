@@ -182,6 +182,7 @@ class DesktopBackend {
   passkeyFailuresLeft = 0;
   accessTransientFailuresLeft = 0;
   permanentAccessError = false;
+  accessPolicyCallsAfterShow = 0;
   calls: string[] = [];
   passkeyOrigins: string[] = [];
   diagnosticEntries: Array<Record<string, unknown>> = [];
@@ -304,6 +305,7 @@ class DesktopBackend {
     }
 
     if (input.path === "/api/e2ee-policy") {
+      this.accessPolicyCallsAfterShow += 1;
       if (this.permanentAccessError) {
         return this.response(403, { error: "email_not_allowed" });
       }
@@ -538,18 +540,10 @@ test("permanent Access error stops without blind retry", async ({ page }) => {
   await installDesktopMock(page, backend);
   await mockPublicUpdate(page, backend.updateMetadata);
   await page.goto("/");
-  const callsBeforeLogin = backend.calls.filter(
-    (call) => call === "GET /api/e2ee-policy"
-  ).length;
   await page.getByRole("button", { name: "登录以继续" }).click();
   await expect(page.locator('[data-flow-step="access"]')).toBeVisible();
   await expect(page.getByRole("alert")).toContainText("请求未被接受");
-  const policyCalls = backend.calls.filter(
-    (call) => call === "GET /api/e2ee-policy"
-  );
-  // StrictMode may run startup probes twice; the explicit login itself must
-  // stop after exactly one permanent HTTP 403.
-  expect(policyCalls.length - callsBeforeLogin).toBe(1);
+  expect(backend.accessPolicyCallsAfterShow).toBe(1);
 });
 
 for (const item of [
