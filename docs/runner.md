@@ -65,23 +65,22 @@ systemctl --user disable --now cursor-gateway-runner   # stop
 
 ### WSL on Windows
 
-WSL1 has no systemd, so use a Windows Scheduled Task that launches the runner at
-boot and restarts it on crash. From an elevated PowerShell in the repo:
+Windows boot/logon startup is intentionally disabled. Start the WSL E2EE
+supervisor explicitly when needed:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File apps\windows-runner\scripts\install-wsl-runner-daemon.ps1
+powershell -ExecutionPolicy Bypass -File apps\windows-runner\scripts\start-wsl-e2ee-runner.ps1
 ```
 
-This registers `CursorGatewayWslRunner`, which runs
-`apps/windows-runner/scripts/wsl-runner-daemon.sh` inside WSL. Logs:
+The command first removes all legacy Cursor Gateway scheduled tasks, then starts
+the single-instance WSL supervisor. It does not register a service or scheduled
+task. Logs:
 
 ```
-~/cursor-vps/cursor-gateway/apps/windows-runner/logs/wsl-runner-daemon.log
+~/cursor-e2ee/apps/windows-runner/logs/e2ee-runner.log
 ```
 
-The task runs as the WSL distro owner (S4U, so it starts whether or not the user
-is logged on). After the first reboot, confirm it came back up by checking that
-log or the dashboard.
+After a Windows reboot, start it manually again when the gateway is needed.
 
 Notes for WSL:
 - Keep the project and its workspaces on the Linux filesystem (`~/...`) for best

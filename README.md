@@ -31,14 +31,14 @@ nano apps/windows-runner/.env
 ./apps/windows-runner/scripts/setup-runner.sh
 ```
 
-That's it. To keep it running in the background:
+That's it. Runner startup options:
 
 ```bash
 # Linux with systemd:
 ./apps/windows-runner/scripts/install-runner-service.sh
 
-# WSL on Windows (run in an elevated PowerShell):
-powershell -ExecutionPolicy Bypass -File apps\windows-runner\scripts\install-wsl-runner-daemon.ps1
+# WSL on Windows is manual-only (no boot/logon task is installed):
+powershell -ExecutionPolicy Bypass -File apps\windows-runner\scripts\start-wsl-e2ee-runner.ps1
 ```
 
 Details and troubleshooting: [`docs/runner.md`](docs/runner.md).

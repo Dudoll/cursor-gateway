@@ -119,12 +119,19 @@ RUNNER_E2EE_ENABLED=true
 RUNNER_LEGACY_ENABLED=true
 ```
 
-从 PowerShell 注册唯一的 WSL 启动任务；脚本会删除旧 WSL 和 Windows
-原生 runner/watchdog 任务：
+Windows 开机/登录自启被明确禁用。仅在需要时从 PowerShell 手动启动；
+该脚本会先删除任何遗留的 Cursor Gateway 计划任务：
 
 ```powershell
 powershell -ExecutionPolicy Bypass `
-  -File apps\windows-runner\scripts\install-wsl-e2ee-supervisor.ps1 -Start
+  -File apps\windows-runner\scripts\start-wsl-e2ee-runner.ps1
+```
+
+只清理自启项而不启动：
+
+```powershell
+powershell -ExecutionPolicy Bypass `
+  -File apps\windows-runner\scripts\remove-windows-runner-autostart.ps1
 ```
 
 运行中的任务每 30 秒续租。客户端取消或租约失效会取消 Cursor SDK run；
