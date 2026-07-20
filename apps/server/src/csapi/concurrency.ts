@@ -5,34 +5,104 @@
 //    concurrently (cross-session parallel).
 //  - KeyConcurrencyLimiter: per-API-key in-flight cap for backpressure (429).
 
+/** Raised when a queued same-session request disconnects before acquiring. */
+export class SessionSerializerAbortError extends Error {
+  constructor() {
+    super("session_wait_aborted");
+    this.name = "SessionSerializerAbortError";
+  }
+}
+
+interface SessionTask {
+  fn: () => Promise<unknown>;
+  resolve: (value: unknown) => void;
+  reject: (reason: unknown) => void;
+  signal: AbortSignal | undefined;
+  onAbort: (() => void) | undefined;
+  started: boolean;
+}
+
 /** Runs functions keyed by a string strictly serially; distinct keys run in parallel. */
 export class SessionSerializer {
-  private tail = new Map<string, Promise<void>>();
+  private queues = new Map<string, SessionTask[]>();
+  private active = new Set<string>();
   private pending = new Map<string, number>();
 
-  run<T>(key: string, fn: () => Promise<T>): Promise<T> {
-    const prev = this.tail.get(key) ?? Promise.resolve();
+  run<T>(key: string, fn: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+    if (signal?.aborted) {
+      return Promise.reject(new SessionSerializerAbortError());
+    }
     this.pending.set(key, (this.pending.get(key) ?? 0) + 1);
 
-    // Run `fn` after the previous holder settles, regardless of its outcome.
-    const result = prev.then(fn, fn);
-    const settled = result.then(
-      () => undefined,
-      () => undefined
-    );
-    this.tail.set(key, settled);
+    return new Promise<T>((resolve, reject) => {
+      const task: SessionTask = {
+        fn,
+        resolve: (value) => resolve(value as T),
+        reject,
+        signal,
+        onAbort: undefined,
+        started: false
+      };
 
-    void settled.then(() => {
-      const remaining = (this.pending.get(key) ?? 1) - 1;
-      if (remaining <= 0) {
-        this.pending.delete(key);
-        if (this.tail.get(key) === settled) this.tail.delete(key);
-      } else {
-        this.pending.set(key, remaining);
+      task.onAbort = () => {
+        if (task.started) return;
+        const queue = this.queues.get(key);
+        const index = queue?.indexOf(task) ?? -1;
+        if (queue && index >= 0) queue.splice(index, 1);
+        signal?.removeEventListener("abort", task.onAbort!);
+        this.finishPending(key);
+        task.reject(new SessionSerializerAbortError());
+        if (!this.active.has(key)) this.drain(key);
+        else if (queue?.length === 0) this.queues.delete(key);
+      };
+      signal?.addEventListener("abort", task.onAbort, { once: true });
+
+      const queue = this.queues.get(key) ?? [];
+      queue.push(task);
+      this.queues.set(key, queue);
+      if (signal?.aborted) {
+        task.onAbort();
+        return;
       }
+      this.drain(key);
     });
+  }
 
-    return result;
+  private drain(key: string): void {
+    if (this.active.has(key)) return;
+    const queue = this.queues.get(key);
+    const task = queue?.shift();
+    if (!task) {
+      this.queues.delete(key);
+      return;
+    }
+    if (queue?.length === 0) this.queues.delete(key);
+
+    if (task.signal?.aborted) {
+      task.signal.removeEventListener("abort", task.onAbort!);
+      this.finishPending(key);
+      task.reject(new SessionSerializerAbortError());
+      this.drain(key);
+      return;
+    }
+
+    task.started = true;
+    task.signal?.removeEventListener("abort", task.onAbort!);
+    this.active.add(key);
+    void Promise.resolve()
+      .then(task.fn)
+      .then(task.resolve, task.reject)
+      .finally(() => {
+        this.active.delete(key);
+        this.finishPending(key);
+        this.drain(key);
+      });
+  }
+
+  private finishPending(key: string): void {
+    const remaining = (this.pending.get(key) ?? 1) - 1;
+    if (remaining <= 0) this.pending.delete(key);
+    else this.pending.set(key, remaining);
   }
 
   /** Number of queued+running tasks for a key (test/introspection helper). */

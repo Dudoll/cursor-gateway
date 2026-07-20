@@ -4,6 +4,7 @@ import test from "node:test";
 import Fastify, { type FastifyInstance } from "fastify";
 import type { RunStatus } from "@cursor-gateway/shared";
 import type { CsapiBackend, CsapiRunHandle, CsapiRunSnapshot } from "../src/csapi/backend.js";
+import { SessionSerializer } from "../src/csapi/concurrency.js";
 import { createCsapi, registerCsapi } from "../src/csapi/server.js";
 
 // In-memory backend that simulates a runner: a run created at T becomes
@@ -302,6 +303,40 @@ test("same-session requests serialize; only one conversation is created", async 
   assert.equal(backend.createConversationCount, 1);
   assert.equal(backend.createRunCount, 2);
   await closeApp(app);
+});
+
+test("a disconnected queued session request releases immediately", async () => {
+  const serializer = new SessionSerializer();
+  let releaseFirst!: () => void;
+  const first = serializer.run(
+    "session-a",
+    () =>
+      new Promise<void>((resolve) => {
+        releaseFirst = resolve;
+      })
+  );
+  await new Promise<void>((resolve) => setImmediate(resolve));
+
+  const controller = new AbortController();
+  let secondStarted = false;
+  const second = serializer.run(
+    "session-a",
+    async () => {
+      secondStarted = true;
+    },
+    controller.signal
+  );
+  assert.equal(serializer.depth("session-a"), 2);
+
+  controller.abort();
+  await assert.rejects(second, /session_wait_aborted/);
+  assert.equal(secondStarted, false);
+  assert.equal(serializer.depth("session-a"), 1);
+
+  releaseFirst();
+  await first;
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(serializer.depth("session-a"), 0);
 });
 
 test("cross-session requests run in parallel", async () => {

@@ -18,7 +18,12 @@ import {
   verifyValue
 } from "@cursor-gateway/e2ee";
 import { config as appConfig } from "../config.js";
-import { createE2eeRun, getE2eeRunForUser, listE2eeRunners } from "../e2eeDb.js";
+import {
+  cancelE2eeRun,
+  createE2eeRun,
+  getE2eeRunForUser,
+  listE2eeRunners
+} from "../e2eeDb.js";
 import { buildCsRelayRunRequest } from "./csRelayDispatch.js";
 import type { TruncatedTurn } from "./runnerSeal.js";
 
@@ -106,6 +111,7 @@ export async function executeCsRelayReencrypt(input: {
 
   for (;;) {
     if (input.signal?.aborted) {
+      await cancelE2eeRun(run.id, input.principalId);
       throw new CsRelayExecuteError("client_aborted", 499);
     }
     const snapshot = await getE2eeRunForUser(run.id, input.principalId);
@@ -145,6 +151,7 @@ export async function executeCsRelayReencrypt(input: {
       throw new CsRelayExecuteError("run_cancelled", 502);
     }
     if (Date.now() > deadline) {
+      await cancelE2eeRun(run.id, input.principalId);
       throw new CsRelayExecuteError("run_timed_out", 504);
     }
     await new Promise((r) => setTimeout(r, pollMs));

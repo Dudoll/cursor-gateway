@@ -94,7 +94,7 @@ def atomic_json(path: Path, value: dict[str, Any]) -> None:
     os.chmod(path, 0o600)
 
 
-def submit_progress(run_id: str, kind: str, message: str) -> None:
+def submit_progress(run_id: str, lease_id: str, kind: str, message: str) -> None:
     text = message.strip()
     if not text:
         return
@@ -104,6 +104,7 @@ def submit_progress(run_id: str, kind: str, message: str) -> None:
             f"/api/hermes-runner/jobs/{run_id}/progress",
             {
                 "runId": run_id,
+                "leaseId": lease_id,
                 "kind": kind,
                 "message": text[-200_000:],
             },
@@ -132,6 +133,7 @@ def build_prompt(job: dict[str, Any]) -> str:
 
 def run_hermes(job: dict[str, Any]) -> dict[str, Any]:
     run_id = str(job["runId"])
+    lease_id = str(job["leaseId"])
     if job.get("allowWrites"):
         return {
             "runId": run_id,
@@ -159,7 +161,7 @@ def run_hermes(job: dict[str, Any]) -> dict[str, Any]:
         "PYTHONUNBUFFERED": "1",
     }
 
-    submit_progress(run_id, "working", "Starting Hermes…")
+    submit_progress(run_id, lease_id, "working", "Starting Hermes…")
     started = time.monotonic()
     stdout_chunks: list[str] = []
     live_log = ""
@@ -172,12 +174,14 @@ def run_hermes(job: dict[str, Any]) -> dict[str, Any]:
             if tail:
                 submit_progress(
                     run_id,
+                    lease_id,
                     "thinking",
                     f"Hermes still running · {elapsed}s\n\n{tail}",
                 )
             else:
                 submit_progress(
                     run_id,
+                    lease_id,
                     "working",
                     f"Hermes still running · {elapsed}s (waiting for model output…)",
                 )
@@ -239,6 +243,7 @@ def run_hermes(job: dict[str, Any]) -> dict[str, Any]:
                     kind = "responding"
                 submit_progress(
                     run_id,
+                    lease_id,
                     kind,
                     f"Hermes · {int(time.monotonic() - started)}s\n\n{live_log.strip()}",
                 )
@@ -331,6 +336,7 @@ def main() -> int:
                 flush=True,
             )
             result = run_hermes(job)
+            result["leaseId"] = str(job["leaseId"])
             atomic_json(PENDING_RESULT, result)
             flush_pending_result()
             print(

@@ -127,6 +127,13 @@ export const runnerJobSchema = z.object({
 });
 export type RunnerJob = z.infer<typeof runnerJobSchema>;
 
+export const runnerClaimedJobSchema = runnerJobSchema
+  .extend({
+    leaseId: z.string().uuid()
+  })
+  .strict();
+export type RunnerClaimedJob = z.infer<typeof runnerClaimedJobSchema>;
+
 export const runnerJobResultSchema = z.object({
   runId: z.string().uuid(),
   status: z.enum(["finished", "error", "cancelled"]),

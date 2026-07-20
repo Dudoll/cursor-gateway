@@ -478,6 +478,30 @@ export async function getE2eeRunForUser(runId: string, userId: string) {
   return result.rows[0] ? mapRun(result.rows[0]) : undefined;
 }
 
+export async function cancelE2eeRun(runId: string, userId: string) {
+  const result = await pool.query(
+    `
+      update runs
+      set status = 'cancelled',
+          progress_envelope = null,
+          progress_sequence = null,
+          claim_lease_id = null,
+          claimed_by = null,
+          lease_expires_at = null,
+          finished_at = now(),
+          updated_at = now()
+      where id = $1
+        and user_id = $2
+        and content_mode = $3
+        and status in ('queued', 'waiting_approval', 'running')
+        and deleted_at is null
+      returning *
+    `,
+    [runId, userId, CONTENT_MODE]
+  );
+  return result.rows[0] ? mapRun(result.rows[0]) : undefined;
+}
+
 export async function addE2eeMemory(input: {
   userId: string;
   envelope: E2eeMemoryEnvelope;

@@ -931,6 +931,7 @@ export async function claimNextRun(executor: RunExecutor, runnerId: string) {
           started_at = now(),
           updated_at = now(),
           claimed_by = $2,
+          claim_lease_id = gen_random_uuid(),
           claim_attempts = claim_attempts + 1
       where id = (
         select r.id
@@ -954,7 +955,12 @@ export async function claimNextRun(executor: RunExecutor, runnerId: string) {
     `,
     [executor, runnerId]
   );
-  return result.rows[0] ? mapRun(result.rows[0]) : undefined;
+  return result.rows[0]
+    ? {
+        run: mapRun(result.rows[0]),
+        leaseId: String(result.rows[0].claim_lease_id)
+      }
+    : undefined;
 }
 
 export type StaleRunRecovery = {
@@ -975,7 +981,9 @@ export async function recoverStaleRuns(
             error = 'runner interrupted too many times',
             progress = null,
             progress_kind = null,
+            claim_lease_id = null,
             claimed_by = null,
+            lease_expires_at = null,
             finished_at = now(),
             updated_at = now()
         where status = 'running'
@@ -999,7 +1007,9 @@ export async function recoverStaleRuns(
             error = 'requeued after runner interruption',
             progress = null,
             progress_kind = null,
+            claim_lease_id = null,
             claimed_by = null,
+            lease_expires_at = null,
             started_at = null,
             updated_at = now()
         where status = 'running'
@@ -1023,25 +1033,32 @@ export async function recoverStaleRuns(
   });
 }
 
-export async function renewRunLease(runId: string, runnerId: string) {
+export async function renewRunLease(input: {
+  runId: string;
+  runnerId: string;
+  leaseId: string;
+}) {
   const result = await pool.query(
     `
       update runs
       set updated_at = now()
       where id = $1
         and claimed_by = $2
+        and claim_lease_id = $3
         and status = 'running'
         and content_mode = 'plaintext'
         and deleted_at is null
       returning id
     `,
-    [runId, runnerId]
+    [input.runId, input.runnerId, input.leaseId]
   );
   return (result.rowCount ?? 0) > 0;
 }
 
 export async function finishRun(input: {
   runId: string;
+  runnerId: string;
+  leaseId: string;
   status: "finished" | "error" | "cancelled";
   response: string | null;
   error: string | null;
@@ -1058,12 +1075,13 @@ export async function finishRun(input: {
           output_tokens = $6,
           progress = null,
           progress_kind = null,
-          claimed_by = null,
           finished_at = now(),
           updated_at = now()
       where id = $1
         and content_mode = 'plaintext'
         and status = 'running'
+        and claimed_by = $7
+        and claim_lease_id = $8
       returning *
     `,
     [
@@ -1072,14 +1090,48 @@ export async function finishRun(input: {
       input.response,
       input.error,
       input.inputTokens ?? null,
-      input.outputTokens ?? null
+      input.outputTokens ?? null,
+      input.runnerId,
+      input.leaseId
     ]
   );
-  return result.rows[0] ? mapRun(result.rows[0]) : undefined;
+  if (result.rows[0]) return mapRun(result.rows[0]);
+
+  // If the first HTTP response was lost after commit, let the same attempt
+  // replay the exact terminal result. A different attempt has a different
+  // lease id and remains fenced out.
+  const existing = await pool.query(
+    `
+      select *
+      from runs
+      where id = $1
+        and content_mode = 'plaintext'
+        and claimed_by = $7
+        and claim_lease_id = $8
+        and status = $2
+        and response is not distinct from $3
+        and error is not distinct from $4
+        and input_tokens is not distinct from $5
+        and output_tokens is not distinct from $6
+    `,
+    [
+      input.runId,
+      input.status,
+      input.response,
+      input.error,
+      input.inputTokens ?? null,
+      input.outputTokens ?? null,
+      input.runnerId,
+      input.leaseId
+    ]
+  );
+  return existing.rows[0] ? mapRun(existing.rows[0]) : undefined;
 }
 
 export async function updateRunProgress(input: {
   runId: string;
+  runnerId: string;
+  leaseId: string;
   kind: NonNullable<RunRecord["progressKind"]>;
   message: string;
 }) {
@@ -1089,10 +1141,14 @@ export async function updateRunProgress(input: {
       set progress = $2,
           progress_kind = $3,
           updated_at = now()
-      where id = $1 and content_mode = 'plaintext' and status = 'running'
+      where id = $1
+        and content_mode = 'plaintext'
+        and status = 'running'
+        and claimed_by = $4
+        and claim_lease_id = $5
       returning id
     `,
-    [input.runId, input.message, input.kind]
+    [input.runId, input.message, input.kind, input.runnerId, input.leaseId]
   );
   return (result.rowCount ?? 0) > 0;
 }
@@ -1562,7 +1618,9 @@ export async function cancelRun(runId: string, userId: string) {
           error = 'cancelled by caller',
           progress = null,
           progress_kind = null,
+          claim_lease_id = null,
           claimed_by = null,
+          lease_expires_at = null,
           finished_at = now(),
           updated_at = now()
       where id = $1

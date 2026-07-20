@@ -7,6 +7,7 @@ import type {
   E2eeRunRejectionCode,
   E2eeRunnerJob,
   PublicWorkspace,
+  RunnerClaimedJob,
   RunnerJobProgress,
   RunnerJobResult,
   Workspace
@@ -14,7 +15,7 @@ import type {
 import {
   E2EE_PROTOCOL,
   e2eeRunnerJobSchema,
-  runnerJobSchema
+  runnerClaimedJobSchema
 } from "@cursor-gateway/shared";
 import { config } from "./config.js";
 import { listCursorModels, runCursorJob } from "./cursorAgent.js";
@@ -170,7 +171,7 @@ async function claimJob() {
   if (response.status === 204) return undefined;
   if (!response.ok) throw new Error(`claim failed: ${response.status} ${await response.text()}`);
   const payload = (await response.json()) as { job?: unknown };
-  return payload.job ? runnerJobSchema.parse(payload.job) : undefined;
+  return payload.job ? runnerClaimedJobSchema.parse(payload.job) : undefined;
 }
 
 async function claimE2eeJob(state: RunnerE2eeState): Promise<E2eeRunnerJob | undefined> {
@@ -188,24 +189,34 @@ async function claimE2eeJob(state: RunnerE2eeState): Promise<E2eeRunnerJob | und
   return payload.job ? e2eeRunnerJobSchema.parse(payload.job) : undefined;
 }
 
-async function submitResult(result: RunnerJobResult) {
+async function submitResult(job: RunnerClaimedJob, result: RunnerJobResult) {
   const response = await gatewayFetch(`/api/runner/jobs/${result.runId}/result`, {
     method: "POST",
-    body: JSON.stringify(result)
+    body: JSON.stringify({
+      ...result,
+      runnerId: config.runnerId,
+      leaseId: job.leaseId
+    })
   });
   if (!response.ok) {
     throw new Error(`result submit failed: ${response.status} ${await response.text()}`);
   }
 }
 
-async function submitProgress(progress: RunnerJobProgress) {
+async function submitProgress(job: RunnerClaimedJob, progress: RunnerJobProgress) {
   const response = await gatewayFetch(`/api/runner/jobs/${progress.runId}/progress`, {
     method: "POST",
-    body: JSON.stringify(progress)
+    body: JSON.stringify({
+      ...progress,
+      runnerId: config.runnerId,
+      leaseId: job.leaseId
+    })
   });
-  if (!response.ok && response.status !== 409) {
+  if (response.status === 409) return false;
+  if (!response.ok) {
     throw new Error(`progress submit failed: ${response.status} ${await response.text()}`);
   }
+  return true;
 }
 
 async function submitE2eeProgress(
@@ -219,9 +230,11 @@ async function submitE2eeProgress(
       body: JSON.stringify({ leaseId, envelope })
     }
   );
-  if (!response.ok && response.status !== 409) {
+  if (response.status === 409) return false;
+  if (!response.ok) {
     throw new Error(`e2ee progress submit failed with status ${response.status}`);
   }
+  return true;
 }
 
 async function submitE2eeResult(
@@ -302,24 +315,30 @@ function startE2eeLeaseRenewal(
   };
 }
 
-function startLegacyLeaseRenewal(runId: string, abortController: AbortController) {
+function startLegacyLeaseRenewal(
+  job: RunnerClaimedJob,
+  abortController: AbortController
+) {
   let stopped = false;
   let timer: ReturnType<typeof setTimeout> | undefined;
   const renew = async () => {
     if (stopped) return;
     try {
-      const response = await gatewayFetch(`/api/runner/jobs/${runId}/lease`, {
+      const response = await gatewayFetch(`/api/runner/jobs/${job.runId}/lease`, {
         method: "POST",
-        body: JSON.stringify({ runnerId: config.runnerId })
+        body: JSON.stringify({
+          runnerId: config.runnerId,
+          leaseId: job.leaseId
+        })
       });
       if (!response.ok) {
-        console.warn(`Legacy lease renewal failed with status ${response.status} for ${runId}`);
+        console.warn(`Legacy lease renewal failed with status ${response.status} for ${job.runId}`);
         if (response.status === 404 || response.status === 409) {
           abortController.abort();
         }
       }
     } catch {
-      console.warn(`Legacy lease renewal failed for ${runId}`);
+      console.warn(`Legacy lease renewal failed for ${job.runId}`);
     } finally {
       if (!stopped) timer = setTimeout(() => void renew(), LEGACY_LEASE_RENEW_INTERVAL_MS);
     }
@@ -331,11 +350,14 @@ function startLegacyLeaseRenewal(runId: string, abortController: AbortController
   };
 }
 
-async function submitResultWithRetry(result: RunnerJobResult) {
+async function submitResultWithRetry(
+  job: RunnerClaimedJob,
+  result: RunnerJobResult
+) {
   let lastError: unknown;
   for (let attempt = 1; attempt <= RESULT_SUBMIT_ATTEMPTS; attempt += 1) {
     try {
-      await submitResult(result);
+      await submitResult(job, result);
       return;
     } catch (error) {
       lastError = error;
@@ -441,6 +463,7 @@ async function runLegacyJob(
   console.log(`Worker ${workerId} running legacy job ${job.runId} with model ${job.model}`);
   let lastProgressAt = 0;
   let lastProgress = "";
+  const abortController = new AbortController();
   const reportProgress = async (progress: Omit<RunnerJobProgress, "runId">) => {
     const message = progress.message.slice(-200_000);
     const fingerprint = `${progress.kind}:${message}`;
@@ -449,21 +472,25 @@ async function runLegacyJob(
     lastProgress = fingerprint;
     lastProgressAt = now;
     try {
-      await submitProgress({ runId: job.runId, ...progress, message });
+      const accepted = await submitProgress(job, {
+        runId: job.runId,
+        ...progress,
+        message
+      });
+      if (!accepted) abortController.abort();
     } catch {
       console.warn(`Failed to report legacy progress for ${job.runId}`);
     }
   };
   await reportProgress({ kind: "working", message: "Starting the model..." });
-  const abortController = new AbortController();
-  const stopLeaseRenewal = startLegacyLeaseRenewal(job.runId, abortController);
+  const stopLeaseRenewal = startLegacyLeaseRenewal(job, abortController);
   try {
     const result = await runCursorJob(job, reportProgress, abortController.signal);
     if (abortController.signal.aborted) {
       console.warn(`Worker ${workerId} stopped legacy run ${job.runId} after lease loss`);
       return;
     }
-    await submitResultWithRetry(result);
+    await submitResultWithRetry(job, result);
     console.log(`Worker ${workerId} completed legacy run ${job.runId} with ${result.status}`);
   } finally {
     stopLeaseRenewal();
@@ -500,7 +527,11 @@ async function e2eeJobLoop(
             const now = Date.now();
             if (now - lastProgressAt < PROGRESS_THROTTLE_MS) return;
             lastProgressAt = now;
-            await submitE2eeProgress(encryptedJob.leaseId, envelope);
+            const accepted = await submitE2eeProgress(
+              encryptedJob.leaseId,
+              envelope
+            );
+            if (!accepted) abortController.abort();
           },
           abortController.signal
         );

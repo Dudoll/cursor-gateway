@@ -61,6 +61,26 @@ import {
   requireRole
 } from "./auth.js";
 import { config, isAllowedSecureOrigin } from "./config.js";
+import { verifyRunnerEnvelopeSignature } from "./e2eeRunnerSignature.js";
+
+const runnerLeaseIdentitySchema = z
+  .object({
+    runnerId: z.string().trim().min(1).max(128),
+    leaseId: z.string().uuid()
+  })
+  .strict();
+const runnerResultSubmissionSchema = runnerJobResultSchema
+  .extend(runnerLeaseIdentitySchema.shape)
+  .strict();
+const runnerProgressSubmissionSchema = runnerJobProgressSchema
+  .extend(runnerLeaseIdentitySchema.shape)
+  .strict();
+const hermesResultSubmissionSchema = runnerJobResultSchema
+  .extend({ leaseId: z.string().uuid() })
+  .strict();
+const hermesProgressSubmissionSchema = runnerJobProgressSchema
+  .extend({ leaseId: z.string().uuid() })
+  .strict();
 
 const serverRoot = dirname(fileURLToPath(import.meta.url));
 const extensionZipPath = join(serverRoot, "../../../artifacts/cursor-gateway-secure.zip");
@@ -246,14 +266,17 @@ function looksLikeMissingAgent(error: string | null): boolean {
 }
 
 async function claimJobFor(executor: RunExecutor, runnerId: string) {
-  const run = await claimNextRun(executor, runnerId);
-  if (!run) return undefined;
+  const claimed = await claimNextRun(executor, runnerId);
+  if (!claimed) return undefined;
+  const { run, leaseId } = claimed;
 
   const row = await getRunWithConversation(run.id);
   const workspace = await getWorkspace(run.workspaceId);
   if (!row || !workspace) {
     await finishRun({
       runId: run.id,
+      runnerId,
+      leaseId,
       status: "error",
       response: null,
       error: "run_workspace_or_conversation_missing"
@@ -276,6 +299,7 @@ async function claimJobFor(executor: RunExecutor, runnerId: string) {
 
   return {
     runId: run.id,
+    leaseId,
     conversationId: run.conversationId,
     agentId: row.agent_id,
     model: run.model,
@@ -1626,11 +1650,12 @@ export async function registerRoutes(app: FastifyInstance) {
 
     runner.post("/jobs/:runId/lease", async (request, reply) => {
       const params = z.object({ runId: z.string().uuid() }).parse(request.params);
-      const body = z
-        .object({ runnerId: z.string().trim().min(1).max(128) })
-        .strict()
-        .parse(request.body);
-      const renewed = await renewRunLease(params.runId, body.runnerId);
+      const body = runnerLeaseIdentitySchema.parse(request.body);
+      const renewed = await renewRunLease({
+        runId: params.runId,
+        runnerId: body.runnerId,
+        leaseId: body.leaseId
+      });
       return renewed
         ? reply.code(204).send()
         : reply.code(409).send({ error: "run_lease_invalid" });
@@ -1638,9 +1663,14 @@ export async function registerRoutes(app: FastifyInstance) {
 
     runner.post("/jobs/:runId/result", async (request, reply) => {
       const params = z.object({ runId: z.string().uuid() }).parse(request.params);
-      const body = runnerJobResultSchema.parse({ ...(request.body as object), runId: params.runId });
+      const body = runnerResultSubmissionSchema.parse({
+        ...(request.body as object),
+        runId: params.runId
+      });
       const run = await finishRun({
         runId: body.runId,
+        runnerId: body.runnerId,
+        leaseId: body.leaseId,
         status: body.status,
         response: body.response,
         error: body.error,
@@ -1648,7 +1678,7 @@ export async function registerRoutes(app: FastifyInstance) {
         outputTokens: body.outputTokens
       });
 
-      if (!run) return reply.code(404).send({ error: "run_not_found" });
+      if (!run) return reply.code(409).send({ error: "run_lease_invalid" });
       // Only trust an agent id from a successful run. Storing the id from a
       // failed run (e.g. a created agent that then hit a region/model error)
       // poisons the conversation: every later turn tries to resume a dead
@@ -1674,9 +1704,14 @@ export async function registerRoutes(app: FastifyInstance) {
 
     runner.post("/jobs/:runId/progress", async (request, reply) => {
       const params = z.object({ runId: z.string().uuid() }).parse(request.params);
-      const body = runnerJobProgressSchema.parse({ ...(request.body as object), runId: params.runId });
+      const body = runnerProgressSubmissionSchema.parse({
+        ...(request.body as object),
+        runId: params.runId
+      });
       const updated = await updateRunProgress({
         runId: body.runId,
+        runnerId: body.runnerId,
+        leaseId: body.leaseId,
         kind: body.kind,
         message: body.message
       });
@@ -1748,10 +1783,17 @@ export async function registerRoutes(app: FastifyInstance) {
       const registered = await getE2eeRunner(body.envelope.runnerId);
       if (
         !registered ||
-        registered.e2ee.signingKey.keyId !== body.envelope.signature.keyId ||
         registered.e2ee.encryptionKey.keyId !== body.envelope.runnerKeyId
       ) {
         return reply.code(409).send({ error: "runner_e2ee_identity_mismatch" });
+      }
+      if (
+        !(await verifyRunnerEnvelopeSignature(
+          body.envelope,
+          registered.e2ee.signingKey
+        ))
+      ) {
+        return reply.code(409).send({ error: "runner_e2ee_signature_invalid" });
       }
       const updated = await updateE2eeProgress({
         runnerId: body.envelope.runnerId,
@@ -1771,10 +1813,17 @@ export async function registerRoutes(app: FastifyInstance) {
       const registered = await getE2eeRunner(body.envelope.runnerId);
       if (
         !registered ||
-        registered.e2ee.signingKey.keyId !== body.envelope.signature.keyId ||
         registered.e2ee.encryptionKey.keyId !== body.envelope.runnerKeyId
       ) {
         return reply.code(409).send({ error: "runner_e2ee_identity_mismatch" });
+      }
+      if (
+        !(await verifyRunnerEnvelopeSignature(
+          body.envelope,
+          registered.e2ee.signingKey
+        ))
+      ) {
+        return reply.code(409).send({ error: "runner_e2ee_signature_invalid" });
       }
       const run = await finishE2eeRun({
         runnerId: body.envelope.runnerId,
@@ -2351,9 +2400,14 @@ export async function registerRoutes(app: FastifyInstance) {
 
     hermesRunner.post("/jobs/:runId/result", async (request, reply) => {
       const params = z.object({ runId: z.string().uuid() }).parse(request.params);
-      const body = runnerJobResultSchema.parse({ ...(request.body as object), runId: params.runId });
+      const body = hermesResultSubmissionSchema.parse({
+        ...(request.body as object),
+        runId: params.runId
+      });
       const run = await finishRun({
         runId: body.runId,
+        runnerId: "hermes",
+        leaseId: body.leaseId,
         status: body.status,
         response: body.response,
         error: body.error,
@@ -2361,7 +2415,7 @@ export async function registerRoutes(app: FastifyInstance) {
         outputTokens: body.outputTokens
       });
 
-      if (!run) return reply.code(404).send({ error: "run_not_found" });
+      if (!run) return reply.code(409).send({ error: "run_lease_invalid" });
       if (body.status === "finished") {
         // A later Windows turn must rebuild from PostgreSQL history so it
         // includes turns answered by Hermes.
@@ -2379,9 +2433,14 @@ export async function registerRoutes(app: FastifyInstance) {
 
     hermesRunner.post("/jobs/:runId/progress", async (request, reply) => {
       const params = z.object({ runId: z.string().uuid() }).parse(request.params);
-      const body = runnerJobProgressSchema.parse({ ...(request.body as object), runId: params.runId });
+      const body = hermesProgressSubmissionSchema.parse({
+        ...(request.body as object),
+        runId: params.runId
+      });
       const updated = await updateRunProgress({
         runId: body.runId,
+        runnerId: "hermes",
+        leaseId: body.leaseId,
         kind: body.kind,
         message: body.message
       });

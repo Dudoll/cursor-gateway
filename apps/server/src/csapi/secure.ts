@@ -873,6 +873,11 @@ export function createCsapiSecure(deps: CsapiSecureDeps) {
       const cleanup = () => {
         if (inflight.get(env.idempotencyKey) === abort) inflight.delete(env.idempotencyKey);
       };
+      // Both JSON and SSE exchanges must abort the DB/runner task when the
+      // downstream connection disappears before a response is completed.
+      reply.raw.on("close", () => {
+        if (!reply.raw.writableFinished) abort.abort();
+      });
 
       if (!wantsStream) {
         try {
@@ -937,9 +942,6 @@ export function createCsapiSecure(deps: CsapiSecureDeps) {
 
       // --- ciphertext SSE: open → delta* → usage → done (or error) ---
       beginCgStream(reply);
-      reply.raw.on("close", () => {
-        if (!reply.raw.writableFinished) abort.abort();
-      });
       const heartbeat = setInterval(() => writeCgHeartbeat(reply), 10_000);
       try {
         const result =

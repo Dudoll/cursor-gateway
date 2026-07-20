@@ -16,20 +16,27 @@ test(
 
     const {
       claimNextRun,
+      finishRun,
       migrate,
       pool,
-      recoverStaleRuns
+      recoverStaleRuns,
+      renewRunLease,
+      updateRunProgress
     } = await import("../src/db.js");
     const {
+      cancelE2eeRun,
       claimNextE2eeRun,
       createE2eeRun,
-      rejectE2eeRun
+      rejectE2eeRun,
+      renewE2eeLease
     } = await import("../src/e2eeDb.js");
     await migrate();
 
     const userId = globalThis.crypto.randomUUID();
     const conversationId = globalThis.crypto.randomUUID();
     const runId = globalThis.crypto.randomUUID();
+    const cancelledConversationId = globalThis.crypto.randomUUID();
+    const cancelledRunId = globalThis.crypto.randomUUID();
     const plaintextConversationId = globalThis.crypto.randomUUID();
     const plaintextRunId = globalThis.crypto.randomUUID();
     const workspaceId = `ws-test-${runId.slice(0, 8)}`;
@@ -133,6 +140,31 @@ test(
       });
       assert.equal(idempotent?.status, "error");
 
+      const cancelledRequest = e2eeRunRequestEnvelopeSchema.parse({
+        ...request,
+        messageId: cancelledRunId,
+        runId: cancelledRunId,
+        conversationId: cancelledConversationId
+      });
+      await createE2eeRun({ userId, request: cancelledRequest });
+      const cancelledJob = await claimNextE2eeRun({
+        runnerId: "runner-test",
+        runnerKeyId: "runner-key-test",
+        maxAttempts: 3
+      });
+      assert.equal(cancelledJob?.request.runId, cancelledRunId);
+      const cancelled = await cancelE2eeRun(cancelledRunId, userId);
+      assert.equal(cancelled?.status, "cancelled");
+      assert.equal(
+        await renewE2eeLease({
+          runId: cancelledRunId,
+          runnerId: "runner-test",
+          runnerKeyId: "runner-key-test",
+          leaseId: cancelledJob!.leaseId
+        }),
+        false
+      );
+
       await pool.query(
         `
           insert into conversations (id, user_id, workspace_id, title, content_mode)
@@ -151,7 +183,7 @@ test(
         [plaintextRunId, plaintextConversationId, userId, workspaceId]
       );
       const firstClaim = await claimNextRun("windows", "runner-test");
-      assert.equal(firstClaim?.id, plaintextRunId);
+      assert.equal(firstClaim?.run.id, plaintextRunId);
       await pool.query(
         "update runs set updated_at = now() - interval '1 hour' where id = $1",
         [plaintextRunId]
@@ -161,7 +193,45 @@ test(
         failed: 0
       });
       const secondClaim = await claimNextRun("windows", "runner-test");
-      assert.equal(secondClaim?.id, plaintextRunId);
+      assert.equal(secondClaim?.run.id, plaintextRunId);
+      assert.notEqual(secondClaim?.leaseId, firstClaim?.leaseId);
+      assert.equal(
+        await renewRunLease({
+          runId: plaintextRunId,
+          runnerId: "runner-test",
+          leaseId: firstClaim!.leaseId
+        }),
+        false
+      );
+      assert.equal(
+        await updateRunProgress({
+          runId: plaintextRunId,
+          runnerId: "runner-test",
+          leaseId: firstClaim!.leaseId,
+          kind: "working",
+          message: "stale attempt"
+        }),
+        false
+      );
+      assert.equal(
+        await finishRun({
+          runId: plaintextRunId,
+          runnerId: "runner-test",
+          leaseId: firstClaim!.leaseId,
+          status: "finished",
+          response: "stale result",
+          error: null
+        }),
+        undefined
+      );
+      assert.equal(
+        await renewRunLease({
+          runId: plaintextRunId,
+          runnerId: "runner-test",
+          leaseId: secondClaim!.leaseId
+        }),
+        true
+      );
       await pool.query(
         "update runs set updated_at = now() - interval '1 hour' where id = $1",
         [plaintextRunId]
@@ -173,6 +243,8 @@ test(
     } finally {
       await pool.query("delete from runs where id = $1", [plaintextRunId]);
       await pool.query("delete from conversations where id = $1", [plaintextConversationId]);
+      await pool.query("delete from runs where id = $1", [cancelledRunId]);
+      await pool.query("delete from conversations where id = $1", [cancelledConversationId]);
       await pool.query("delete from runs where id = $1", [runId]);
       await pool.query("delete from conversations where id = $1", [conversationId]);
       await pool.query("delete from workspaces where id = $1", [workspaceId]);

@@ -33,6 +33,21 @@ import {
 } from "@cursor-gateway/e2ee";
 import { config } from "./config.js";
 
+export function csRelayServerKeyRequestHeaders(
+  accessClientId?: string,
+  accessClientSecret?: string
+): Record<string, string> {
+  return {
+    accept: "application/json",
+    ...(accessClientId && accessClientSecret
+      ? {
+          "cf-access-client-id": accessClientId,
+          "cf-access-client-secret": accessClientSecret
+        }
+      : {})
+  };
+}
+
 const privateJwkSchema = z
   .object({
     kty: z.literal("EC"),
@@ -327,7 +342,10 @@ export class RunnerE2eeState {
     try {
       const url = `${config.gatewayUrl}/cg/v1/server-keys`;
       const response = await fetch(url, {
-        headers: { accept: "application/json" },
+        headers: csRelayServerKeyRequestHeaders(
+          config.cloudflareAccessClientId,
+          config.cloudflareAccessClientSecret
+        ),
         signal: AbortSignal.timeout(10_000)
       });
       if (!response.ok) return null;

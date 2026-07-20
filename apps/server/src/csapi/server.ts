@@ -6,7 +6,11 @@
 // gateway queue, the runner and the model. See docs/csapi.md.
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import type { CsapiBackend } from "./backend.js";
-import { KeyConcurrencyLimiter, SessionSerializer } from "./concurrency.js";
+import {
+  KeyConcurrencyLimiter,
+  SessionSerializer,
+  SessionSerializerAbortError
+} from "./concurrency.js";
 import {
   OPENAI_STREAM_DONE,
   anthropicError,
@@ -243,7 +247,12 @@ export function createCsapi(deps: CsapiDeps) {
 
     // Same session -> serial; stateless -> unique key so it runs in parallel.
     const serialKey = sessionKey ? `${input.keyId}:${sessionKey}` : `stateless:${cryptoRandom()}`;
-    return serializer.run(serialKey, perform);
+    try {
+      return await serializer.run(serialKey, perform, input.signal);
+    } catch (error) {
+      if (error instanceof SessionSerializerAbortError) throw new AbortedError();
+      throw error;
+    }
   }
 
   function beginStream(reply: FastifyReply): void {

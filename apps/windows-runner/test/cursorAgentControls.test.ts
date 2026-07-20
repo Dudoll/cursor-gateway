@@ -56,3 +56,18 @@ test("gateway abort cancels the Cursor SDK run", async () => {
   await assert.rejects(waiting, /runner_job_cancelled/);
   assert.equal(cancellations, 1);
 });
+
+test("relay server-key fetch forwards the Cloudflare service token", async () => {
+  const { csRelayServerKeyRequestHeaders } = await import("../src/e2eeState.js");
+  assert.deepEqual(
+    csRelayServerKeyRequestHeaders("service-id", "service-secret"),
+    {
+      accept: "application/json",
+      "cf-access-client-id": "service-id",
+      "cf-access-client-secret": "service-secret"
+    }
+  );
+  assert.deepEqual(csRelayServerKeyRequestHeaders("service-id"), {
+    accept: "application/json"
+  });
+});
