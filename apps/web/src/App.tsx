@@ -19,6 +19,10 @@ import {
   Sparkles,
   Trash2
 } from "lucide-react";
+import {
+  createRunPollingLoop,
+  isRunStatusInFlight
+} from "@cursor-gateway/shared";
 import type {
   Conversation,
   E2eeDeviceApprovalRequest,
@@ -104,9 +108,19 @@ type ApiState = {
   memory: MemoryFact[];
 };
 
+type ConversationRunPollSnapshot =
+  | { kind: "plaintext"; runs: RunRecord[] }
+  | { kind: "e2ee"; runs: DecryptedRun[] };
+
+type ConversationRunPollTarget = {
+  conversationId: string;
+  kind: ConversationRunPollSnapshot["kind"];
+};
+
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, {
     ...init,
+    cache: "no-store",
     headers: {
       ...(init?.body ? { "content-type": "application/json" } : {}),
       ...(init?.headers ?? {})
@@ -229,7 +243,7 @@ function formatDayLabel(day: string) {
 
 function isRunInFlight(run: RunRecord) {
   if (run.response || run.error) return false;
-  return run.status === "queued" || run.status === "running" || run.status === "waiting_approval";
+  return isRunStatusInFlight(run.status);
 }
 
 function RunProgressPanel({ run }: { run: RunRecord }) {
@@ -410,6 +424,8 @@ function GatewayDashboard() {
     () => window.localStorage.getItem("cursor-gateway:workspace") || ""
   );
   const [selectedConversationId, setSelectedConversationId] = useState("");
+  const [runPollTarget, setRunPollTarget] =
+    useState<ConversationRunPollTarget | null>(null);
   const [prompt, setPrompt] = useState("");
   const [allowWrites, setAllowWrites] = useState(false);
   const [memoryText, setMemoryText] = useState("");
@@ -663,13 +679,13 @@ function GatewayDashboard() {
   }
 
   useEffect(() => {
+    let current = true;
     refresh(selectedConversationId).catch((err) =>
-      setError(err instanceof Error ? err.message : String(err))
+      current ? setError(err instanceof Error ? err.message : String(err)) : undefined
     );
-    const timer = window.setInterval(() => {
-      refresh(selectedConversationId).catch(() => undefined);
-    }, 4000);
-    return () => window.clearInterval(timer);
+    return () => {
+      current = false;
+    };
   }, [selectedConversationId, e2eeKeys, e2eePaired]);
 
   /** When E2EE is required, auto-enter Secure authorization after login (no manual「启用加密」). */
@@ -774,6 +790,7 @@ function GatewayDashboard() {
       setE2eeConversations([]);
       setLastE2eeRunId(null);
       setSelectedConversationId("");
+      setRunPollTarget(null);
       const keys = await CsWebKeyStore.open();
       const device = await keys.device();
       setE2eeKeys(keys);
@@ -825,6 +842,31 @@ function GatewayDashboard() {
       }),
     [state.conversationRuns, e2eeRuns]
   );
+  const selectedRunKind =
+    (runPollTarget?.conversationId === selectedConversationId
+      ? runPollTarget.kind
+      : undefined) ??
+    selectedMerged?.kind ??
+    (e2eeRuns.some((run) => run.record.conversationId === selectedConversationId)
+      ? "e2ee"
+      : state.conversationRuns.some(
+            (run) => run.conversationId === selectedConversationId
+          )
+        ? "plaintext"
+        : undefined);
+  const selectedConversationHasInFlightRun =
+    state.conversationRuns.some(
+      (run) =>
+        run.conversationId === selectedConversationId && isRunInFlight(run)
+    ) ||
+    e2eeRuns.some(
+      (run) =>
+        run.record.conversationId === selectedConversationId &&
+        isRunStatusInFlight(run.record.status)
+    );
+  const selectedConversationNeedsPolling =
+    selectedConversationHasInFlightRun ||
+    runPollTarget?.conversationId === selectedConversationId;
   const viewingHistoricalPlaintext = selectedMerged?.kind === "plaintext";
   const selectedHermesModel = model.startsWith("hermes:");
   const hasOnlineRunner = state.runners.some((runner) => runner.online);
@@ -837,6 +879,83 @@ function GatewayDashboard() {
           (runner) =>
             runner.online && runner.models.some((runnerModel) => runnerModel.id === model)
         );
+
+  useEffect(() => {
+    if (
+      !selectedConversationId ||
+      !selectedRunKind ||
+      !selectedConversationNeedsPolling ||
+      loading
+    ) {
+      return;
+    }
+    if (selectedRunKind === "e2ee" && !e2eeKeys) return;
+
+    const conversationId = selectedConversationId;
+    const kind = selectedRunKind;
+    const secureClient =
+      kind === "e2ee" && e2eeKeys
+        ? new SecureGatewayClient(gatewayApi, e2eeKeys)
+        : null;
+    const poller = createRunPollingLoop<ConversationRunPollSnapshot>({
+      load: async () => {
+        if (kind === "e2ee") {
+          return {
+            kind,
+            runs: await secureClient!.runs(conversationId)
+          };
+        }
+        const response = await api<{ runs: RunRecord[] }>(
+          `/api/conversations/${conversationId}/runs`
+        );
+        return { kind, runs: response.runs };
+      },
+      apply: (snapshot) => {
+        const statuses =
+          snapshot.kind === "e2ee"
+            ? snapshot.runs.map((run) => run.record.status)
+            : snapshot.runs.map((run) => run.status);
+        if (snapshot.kind === "e2ee") {
+          setE2eeRuns(snapshot.runs);
+        } else {
+          setState((current) => ({
+            ...current,
+            conversationRuns: snapshot.runs
+          }));
+        }
+        if (!statuses.some(isRunStatusInFlight)) {
+          setRunPollTarget((current) =>
+            current?.conversationId === conversationId ? null : current
+          );
+        }
+      },
+      statuses: (snapshot) =>
+        snapshot.kind === "e2ee"
+          ? snapshot.runs.map((run) => run.record.status)
+          : snapshot.runs.map((run) => run.status),
+      isBackground: () => document.visibilityState === "hidden"
+    });
+    const wakeWhenVisible = () => {
+      if (document.visibilityState === "visible") poller.wake();
+    };
+    const wakeOnFocus = () => poller.wake();
+
+    document.addEventListener("visibilitychange", wakeWhenVisible);
+    window.addEventListener("focus", wakeOnFocus);
+    poller.start();
+    return () => {
+      document.removeEventListener("visibilitychange", wakeWhenVisible);
+      window.removeEventListener("focus", wakeOnFocus);
+      poller.stop();
+    };
+  }, [
+    e2eeKeys,
+    gatewayApi,
+    loading,
+    selectedConversationId,
+    selectedConversationNeedsPolling,
+    selectedRunKind
+  ]);
 
   useEffect(() => {
     if (!selectedWorkspace?.writable || selectedHermesModel) setAllowWrites(false);
@@ -868,6 +987,7 @@ function GatewayDashboard() {
 
   function startNewConversation() {
     setSelectedConversationId("");
+    setRunPollTarget(null);
     setPrompt("");
     setError("");
   }
@@ -905,6 +1025,7 @@ function GatewayDashboard() {
           ...(continueE2eeId ? { conversationId: continueE2eeId } : {})
         });
         setLastE2eeRunId(run.id);
+        setRunPollTarget({ conversationId: run.conversationId, kind: "e2ee" });
         setPrompt("");
         setSelectedConversationId(run.conversationId);
         await refresh(run.conversationId);
@@ -924,6 +1045,10 @@ function GatewayDashboard() {
           })
         });
         setPrompt("");
+        setRunPollTarget({
+          conversationId: result.run.conversationId,
+          kind: "plaintext"
+        });
         setSelectedConversationId(result.run.conversationId);
         await refresh(result.run.conversationId);
       }

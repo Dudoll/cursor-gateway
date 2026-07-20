@@ -1164,6 +1164,8 @@ export const e2eeRunnerCodePairingConfirmRequestSchema = z
   .object({ confirm: e2eeRunnerCodePairingConfirmSchema })
   .strict();
 
+export * from "./runPolling.js";
+
 // cg-mitm/1 application-layer anti-MITM channel schema (P1). Re-exported last so the
 // base e2ee* schemas above are fully initialized before cgMitm.ts consumes them.
 export * from "./cgMitm.js";

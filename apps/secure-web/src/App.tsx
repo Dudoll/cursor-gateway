@@ -62,6 +62,10 @@ import type {
   E2eeRunnerDirectoryEntry
 } from "@cursor-gateway/shared";
 import {
+  createRunPollingLoop,
+  isRunStatusInFlight
+} from "@cursor-gateway/shared";
+import {
   E2EE_ACCESS_LOGOUT_CONFIRM,
   E2EE_LOGOUT_CONFIRM,
   E2EE_LOGOUT_DONE,
@@ -169,6 +173,7 @@ export function App() {
   const [conversations, setConversations] = useState<E2eeConversationRecord[]>([]);
   const [titles, setTitles] = useState<Record<string, string>>({});
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
+  const [runPollConversationId, setRunPollConversationId] = useState<string | null>(null);
   const [runs, setRuns] = useState<DecryptedRun[]>([]);
   const [runnerId, setRunnerId] = useState("");
   const [workspaceId, setWorkspaceId] = useState("default");
@@ -205,6 +210,13 @@ export function App() {
       : "passkey";
   const activeRunner = runners.find((item) => item.runnerId === runnerId);
   const activeRunnerOffline = runners.length > 0 && (!activeRunner || !activeRunner.online);
+  const activeConversationHasInFlightRun = runs.some((run) =>
+    isRunStatusInFlight(run.record.status)
+  );
+  const activeConversationNeedsPolling =
+    (activeConversationHasInFlightRun && activeConversationId !== null) ||
+    (runPollConversationId !== null &&
+      runPollConversationId === activeConversationId);
 
   const api = useMemo(() => {
     try {
@@ -213,6 +225,53 @@ export function App() {
       return null;
     }
   }, [gatewayInput]);
+
+  useEffect(() => {
+    if (
+      boot.kind !== "ready" ||
+      !api ||
+      !activeConversationId ||
+      !activeConversationNeedsPolling ||
+      busy
+    ) {
+      return;
+    }
+
+    const conversationId = activeConversationId;
+    const client = new SecureGatewayClient(api, boot.keys);
+    const poller = createRunPollingLoop<DecryptedRun[]>({
+      load: () => client.runs(conversationId),
+      apply: (snapshot) => {
+        setRuns(snapshot);
+        if (!snapshot.some((run) => isRunStatusInFlight(run.record.status))) {
+          setRunPollConversationId((current) =>
+            current === conversationId ? null : current
+          );
+        }
+      },
+      statuses: (snapshot) => snapshot.map((run) => run.record.status),
+      isBackground: () => document.visibilityState === "hidden"
+    });
+    const wakeWhenVisible = () => {
+      if (document.visibilityState === "visible") poller.wake();
+    };
+    const wakeOnFocus = () => poller.wake();
+
+    document.addEventListener("visibilitychange", wakeWhenVisible);
+    window.addEventListener("focus", wakeOnFocus);
+    poller.start();
+    return () => {
+      document.removeEventListener("visibilitychange", wakeWhenVisible);
+      window.removeEventListener("focus", wakeOnFocus);
+      poller.stop();
+    };
+  }, [
+    activeConversationId,
+    activeConversationNeedsPolling,
+    api,
+    boot,
+    busy
+  ]);
 
   function selectPairingMethod(method: PairingMethod) {
     dispatchFlow({ type: "SELECT_METHOD", method });
@@ -872,6 +931,7 @@ export function App() {
       setConversations([]);
       setTitles({});
       setActiveConversationId(null);
+      setRunPollConversationId(null);
       setRuns([]);
       setRunnerId("");
       setCsAuthPending(null);
@@ -1323,6 +1383,7 @@ export function App() {
       });
       setPrompt("");
       setActiveConversationId(run.conversationId);
+      setRunPollConversationId(run.conversationId);
       await refreshDirectory(api, boot.keys);
       await openConversation(run.conversationId);
       setStatus({ tone: "ok", text: "消息已发送。" });
@@ -1725,6 +1786,7 @@ export function App() {
                   className="conv-item"
                   onClick={() => {
                     setActiveConversationId(null);
+                    setRunPollConversationId(null);
                     setRuns([]);
                   }}
                 >
