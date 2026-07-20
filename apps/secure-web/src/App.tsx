@@ -1,4 +1,13 @@
-import { FormEvent, useEffect, useMemo, useReducer, useRef, useState } from "react";
+import {
+  type CSSProperties,
+  type FormEvent,
+  type KeyboardEvent,
+  useEffect,
+  useMemo,
+  useReducer,
+  useRef,
+  useState
+} from "react";
 import { flushSync } from "react-dom";
 import {
   GatewayApi,
@@ -55,11 +64,12 @@ import {
   loadPendingCsAuthRedirect
 } from "./csAuthReturn.js";
 import type { CsAuthRedirectParams } from "@cursor-gateway/e2ee";
-import { SecureGatewayClient, progressLabel, type DecryptedRun } from "./secureClient.js";
+import { SecureGatewayClient, type DecryptedRun } from "./secureClient.js";
 import type {
   E2eeConversationRecord,
   E2eeDeviceApprovalRequest,
-  E2eeRunnerDirectoryEntry
+  E2eeRunnerDirectoryEntry,
+  RunProgressKind
 } from "@cursor-gateway/shared";
 import {
   createRunPollingLoop,
@@ -80,7 +90,17 @@ import {
   desktopReadDiagnostics,
   isDesktopShell
 } from "./desktopShell.js";
-import { ArrowUpCircle } from "lucide-react";
+import {
+  ArrowUp,
+  ArrowUpCircle,
+  LockKeyhole,
+  LogOut,
+  MessageSquare,
+  PanelLeftClose,
+  PanelLeftOpen,
+  Plus,
+  RefreshCw
+} from "lucide-react";
 import {
   initialFlowState,
   transitionFlow,
@@ -104,6 +124,7 @@ import {
   waitForStableAccess,
   type AccessRetryEvent
 } from "./accessRetry.js";
+import { Markdown } from "./Markdown.js";
 
 type BootState =
   | { kind: "loading" }
@@ -147,6 +168,79 @@ function flowReducer(
   return transitionFlow(state, event).state;
 }
 
+function useNow(intervalMs = 1000) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), intervalMs);
+    return () => window.clearInterval(timer);
+  }, [intervalMs]);
+  return now;
+}
+
+function formatElapsed(ms: number) {
+  const total = Math.max(0, Math.floor(ms / 1000));
+  const minutes = Math.floor(total / 60);
+  const seconds = total % 60;
+  return minutes > 0 ? `${minutes}m ${seconds.toString().padStart(2, "0")}s` : `${seconds}s`;
+}
+
+function formatMessageTime(iso: string) {
+  return new Date(iso).toLocaleString("zh-CN", { hour12: false });
+}
+
+function formatLatency(startedAt: string, finishedAt: string) {
+  const milliseconds = Math.max(0, Date.parse(finishedAt) - Date.parse(startedAt));
+  if (milliseconds < 1000) return `${milliseconds} ms`;
+  const seconds = milliseconds / 1000;
+  if (seconds < 60) return `${seconds.toFixed(1)} s`;
+  return `${Math.floor(seconds / 60)}m ${(seconds % 60).toFixed(1)}s`;
+}
+
+function MessageMetrics({ run }: { run: DecryptedRun }) {
+  if (!run.record.finishedAt) return null;
+  const inputTokens = run.result?.inputTokens;
+  const outputTokens = run.result?.outputTokens;
+  const hasInput = typeof inputTokens === "number";
+  const hasOutput = typeof outputTokens === "number";
+  return (
+    <div className="message-metrics">
+      <span>
+        Latency {formatLatency(run.record.startedAt ?? run.record.createdAt, run.record.finishedAt)}
+      </span>
+      {hasInput ? <span>Input {inputTokens!.toLocaleString()} tokens</span> : null}
+      {hasOutput ? <span>Output {outputTokens!.toLocaleString()} tokens</span> : null}
+      {hasInput && hasOutput ? (
+        <span>Total {(inputTokens! + outputTokens!).toLocaleString()} tokens</span>
+      ) : null}
+    </div>
+  );
+}
+
+function E2eeRunProgressPanel({ run }: { run: DecryptedRun }) {
+  const now = useNow();
+  if (run.result || (run.record.status !== "queued" && run.record.status !== "running")) {
+    return null;
+  }
+  const kind: RunProgressKind | "queued" =
+    run.progress?.progressKind ?? (run.record.status === "queued" ? "queued" : "thinking");
+  const message =
+    run.progress?.message?.trim() ||
+    (run.record.status === "queued"
+      ? "已进入队列，正在等待 Runner 接收任务。"
+      : "Runner 已接收任务，正在安全处理。实时进度会显示在这里。");
+  return (
+    <div className="run-progress" data-kind={kind}>
+      <div className="run-progress-bar">
+        <span className="run-progress-kind">{kind}</span>
+        <span className="run-progress-status">{run.record.status}</span>
+        <span>elapsed {formatElapsed(now - Date.parse(run.record.createdAt))}</span>
+        <span className="run-progress-pulse" aria-hidden="true" />
+      </div>
+      <pre className="run-progress-body">{message}</pre>
+    </div>
+  );
+}
+
 export function App() {
   const [boot, setBoot] = useState<BootState>({ kind: "loading" });
   const [gatewayInput, setGatewayInput] = useState(
@@ -180,6 +274,7 @@ export function App() {
   const [model, setModel] = useState("auto");
   const [prompt, setPrompt] = useState("");
   const [allowWrites, setAllowWrites] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [busy, setBusy] = useState(false);
   const [csAuthPending, setCsAuthPending] = useState<CsAuthRedirectParams | null>(null);
   const [cfAccessLogoutUrl, setCfAccessLogoutUrl] = useState<string | null>(null);
@@ -199,6 +294,8 @@ export function App() {
   const verificationStepRef = useRef<HTMLElement>(null);
   const completeStepRef = useRef<HTMLElement>(null);
   const chatStepRef = useRef<HTMLElement>(null);
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const promptRef = useRef<HTMLTextAreaElement>(null);
   const verificationAbortRef = useRef<AbortController | null>(null);
   const accessLoginAbortRef = useRef<AbortController | null>(null);
   const accessAutoRetryArmedRef = useRef(false);
@@ -217,6 +314,12 @@ export function App() {
     (activeConversationHasInFlightRun && activeConversationId !== null) ||
     (runPollConversationId !== null &&
       runPollConversationId === activeConversationId);
+  const workspaceOptions = activeRunner?.workspaces ?? [];
+  const modelOptions = activeRunner?.models ?? [];
+  const activeConversation = conversations.find((item) => item.id === activeConversationId);
+  const activeConversationTitle = activeConversationId
+    ? (titles[activeConversationId] ?? "未命名对话")
+    : "新加密会话";
 
   const api = useMemo(() => {
     try {
@@ -315,6 +418,17 @@ export function App() {
     );
     window.setTimeout(() => focusable?.focus({ preventScroll: true }), 100);
   }, [flow.phase]);
+
+  useEffect(() => {
+    if (flow.phase !== "chat") return;
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+  }, [flow.phase, runs]);
+
+  useEffect(() => {
+    if (flow.phase !== "chat" || status?.tone !== "ok") return;
+    const timer = window.setTimeout(() => setStatus(null), 3500);
+    return () => window.clearTimeout(timer);
+  }, [flow.phase, status]);
 
   useEffect(() => {
     let cancelled = false;
@@ -713,6 +827,13 @@ export function App() {
       if (firstWorkspace && preferred) {
         setWorkspaceId((current) =>
           preferred.workspaces.some((item) => item.id === current) ? current : firstWorkspace
+        );
+      }
+      const firstModel =
+        preferred?.models.find((item) => item.id === "auto")?.id ?? preferred?.models[0]?.id;
+      if (firstModel && preferred) {
+        setModel((current) =>
+          preferred.models.some((item) => item.id === current) ? current : firstModel
         );
       }
     }
@@ -1353,7 +1474,15 @@ export function App() {
     setBusy(true);
     try {
       const client = new SecureGatewayClient(api, boot.keys);
-      const decrypted = await client.runs(id);
+      const [decrypted, secret] = await Promise.all([
+        client.runs(id),
+        boot.keys.conversation(id)
+      ]);
+      if (secret) {
+        setRunnerId(secret.runnerId);
+        setWorkspaceId(secret.workspaceId);
+        setModel(secret.model);
+      }
       setActiveConversationId(id);
       setRuns(decrypted);
     } catch (error) {
@@ -1365,6 +1494,39 @@ export function App() {
     } finally {
       setBusy(false);
     }
+  }
+
+  function startNewConversation() {
+    setActiveConversationId(null);
+    setRunPollConversationId(null);
+    setRuns([]);
+    setStatus(null);
+    window.setTimeout(() => promptRef.current?.focus(), 0);
+  }
+
+  function selectRunner(nextRunnerId: string) {
+    const nextRunner = runners.find((item) => item.runnerId === nextRunnerId);
+    setRunnerId(nextRunnerId);
+    setActiveConversationId(null);
+    setRunPollConversationId(null);
+    setRuns([]);
+    if (nextRunner?.workspaces[0]) setWorkspaceId(nextRunner.workspaces[0].id);
+    const nextModel =
+      nextRunner?.models.find((item) => item.id === "auto") ?? nextRunner?.models[0];
+    if (nextModel) setModel(nextModel.id);
+  }
+
+  function submitOnEnter(event: KeyboardEvent<HTMLTextAreaElement>) {
+    if (
+      event.key !== "Enter" ||
+      event.shiftKey ||
+      event.nativeEvent.isComposing ||
+      busy
+    ) {
+      return;
+    }
+    event.preventDefault();
+    event.currentTarget.form?.requestSubmit();
   }
 
   async function onSubmitRun(event: FormEvent) {
@@ -1431,7 +1593,7 @@ export function App() {
   const guideLabels = ["登录", "验证设备", "完成", "加密聊天"];
 
   return (
-    <div className="app">
+    <div className={flow.phase === "chat" ? "app chat-app" : "app"}>
       <header className="app-top">
         <div className="app-top-row">
           <div>
@@ -1478,7 +1640,11 @@ export function App() {
         })}
       </ol>
 
-      {status ? <StatusNotice status={status} /> : null}
+      {status ? (
+        <div className={flow.phase === "chat" ? "chat-status-overlay" : undefined}>
+          <StatusNotice status={status} />
+        </div>
+      ) : null}
 
       {flow.phase === "access" ? (
         <section className="panel flow-panel" data-flow-step="access" ref={accessStepRef}>
@@ -1722,135 +1888,272 @@ export function App() {
       ) : null}
 
       {flow.phase === "chat" ? (
-        <section className="panel flow-panel chat-panel" data-flow-step="chat" ref={chatStepRef}>
-          <div className="section-heading">
-            <h2 tabIndex={-1}>加密聊天</h2>
-            <button
-              type="button"
-              className="logout-quiet"
-              disabled={busy}
-              onClick={onLogoutE2ee}
-            >
-              {E2EE_LOGOUT_LABEL}
-            </button>
-          </div>
-          {runners.length === 0 ? (
-            <>
-              <p>授权设备离线。启动 Runner 后重新检查。</p>
-              <button type="button" className="secondary" disabled={busy} onClick={onRefresh}>
-                重新检查
-              </button>
-            </>
-          ) : (
-            <>
-              <label htmlFor="runner">设备</label>
-              <select
-                id="runner"
-                value={runnerId}
-                onChange={(event) => setRunnerId(event.target.value)}
+        <section
+          className={`secure-chat-layout${sidebarCollapsed ? " sidebar-collapsed" : ""}`}
+          data-flow-step="chat"
+          ref={chatStepRef}
+        >
+          <aside className="secure-chat-sidebar" aria-label="对话">
+            <div className="sidebar-toolbar">
+              <button
+                className="new-chat-button"
+                type="button"
+                onClick={startNewConversation}
+                title="新对话"
               >
-                {runners.map((runner) => (
-                  <option key={runner.runnerId} value={runner.runnerId}>
-                    {runner.runnerId}
-                  </option>
-                ))}
-              </select>
-              {activeRunnerOffline ? (
-                <div className="status warn" role="status">
-                  授权设备当前离线。启动 Runner 后再发送消息。
+                <Plus aria-hidden="true" size={17} strokeWidth={2} />
+                <span>新对话</span>
+              </button>
+              <button
+                className="sidebar-collapse-toggle"
+                type="button"
+                onClick={() => setSidebarCollapsed((value) => !value)}
+                title={sidebarCollapsed ? "展开侧栏" : "收起侧栏"}
+                aria-label={sidebarCollapsed ? "展开侧栏" : "收起侧栏"}
+              >
+                {sidebarCollapsed ? (
+                  <PanelLeftOpen aria-hidden="true" size={16} strokeWidth={1.75} />
+                ) : (
+                  <PanelLeftClose aria-hidden="true" size={16} strokeWidth={1.75} />
+                )}
+              </button>
+            </div>
+
+            <div className="secure-conversation-list">
+              {conversations.map((conversation, index) => (
+                <button
+                  className={conversation.id === activeConversationId ? "active" : ""}
+                  key={conversation.id}
+                  onClick={() => void openConversation(conversation.id)}
+                  style={{ ["--i" as string]: index } as CSSProperties}
+                  title={titles[conversation.id] ?? "未命名对话"}
+                  type="button"
+                >
+                  <span className="conversation-glyph">
+                    <LockKeyhole aria-hidden="true" size={15} strokeWidth={1.75} />
+                  </span>
+                  <span>
+                    <strong>{titles[conversation.id] ?? "未命名对话"}</strong>
+                    <small>加密 · {conversation.workspaceId}</small>
+                  </span>
+                </button>
+              ))}
+              {conversations.length === 0 ? (
+                <p className="sidebar-empty">新建加密会话后会出现在这里。</p>
+              ) : null}
+            </div>
+
+            <div className="secure-sidebar-footer" title="消息内容仅在本机和已授权 Runner 解密">
+              <LockKeyhole aria-hidden="true" size={15} strokeWidth={1.75} />
+              <span>
+                <strong>端到端加密</strong>
+                <small>{runnerId || "等待 Runner"}</small>
+              </span>
+            </div>
+          </aside>
+
+          <section className="secure-chat-pane">
+            <header className="secure-chat-header">
+              <div>
+                <h1 tabIndex={-1}>{activeConversationTitle}</h1>
+                <p>
+                  <span className={`runner-dot ${activeRunner?.online ? "online" : ""}`} />
+                  {activeRunner?.online ? "Ready" : "Will queue"} · {model}
+                </p>
+              </div>
+              <div className="secure-header-actions">
+                <select
+                  aria-label="模型"
+                  className="model-switcher"
+                  value={model}
+                  disabled={Boolean(activeConversation)}
+                  onChange={(event) => setModel(event.target.value)}
+                >
+                  {!modelOptions.some((item) => item.id === model) ? (
+                    <option value={model}>{model}</option>
+                  ) : null}
+                  {modelOptions.map((item) => (
+                    <option value={item.id} key={item.id}>
+                      {item.displayName ?? item.id}
+                    </option>
+                  ))}
+                </select>
+                <button
+                  className={`chat-icon-button${busy ? " busy" : ""}`}
+                  type="button"
+                  disabled={busy}
+                  onClick={onRefresh}
+                  title="重新检查"
+                  aria-label="重新检查"
+                >
+                  <RefreshCw aria-hidden="true" size={16} strokeWidth={1.75} />
+                </button>
+                {desktopShell && updateAvailable ? (
+                  <button
+                    className="chat-icon-button update-ready"
+                    type="button"
+                    disabled={busy}
+                    onClick={onDesktopUpgrade}
+                    title={`升级到 ${updateAvailable.version}`}
+                    aria-label={`升级到 ${updateAvailable.version}`}
+                  >
+                    <ArrowUpCircle aria-hidden="true" size={17} strokeWidth={1.75} />
+                  </button>
+                ) : null}
+                <button
+                  className="chat-icon-button logout-button"
+                  type="button"
+                  disabled={busy}
+                  onClick={onLogoutE2ee}
+                  title={E2EE_LOGOUT_LABEL}
+                  aria-label={E2EE_LOGOUT_LABEL}
+                >
+                  <LogOut aria-hidden="true" size={16} strokeWidth={1.75} />
+                </button>
+              </div>
+            </header>
+
+            <div className="secure-messages" aria-live="polite">
+              {runners.length === 0 || activeRunnerOffline ? (
+                <section className="runner-offline-notice" role="status">
+                  <RefreshCw aria-hidden="true" size={20} strokeWidth={1.75} />
+                  <div>
+                    <strong>授权设备离线</strong>
+                    <p>启动 Runner 后点击“重新检查”，恢复后即可继续发送加密消息。</p>
+                    <button type="button" disabled={busy} onClick={onRefresh}>
+                      重新检查
+                    </button>
+                  </div>
+                </section>
+              ) : null}
+
+              {runs.length === 0 ? (
+                <div className="secure-chat-welcome">
+                  <div className="welcome-mark">
+                    <MessageSquare aria-hidden="true" size={22} strokeWidth={1.7} />
+                  </div>
+                  <h2>开始一段安全对话</h2>
+                  <p>消息在本机加密，只会在已授权的 Runner 上解密和处理。</p>
                 </div>
               ) : null}
 
-              <div className="chat-settings">
-                <div>
-                  <label htmlFor="workspace">工作区</label>
-                  <input
-                    id="workspace"
-                    value={workspaceId}
-                    onChange={(event) => setWorkspaceId(event.target.value)}
-                  />
-                </div>
-                <div>
-                  <label htmlFor="model">模型</label>
-                  <input
-                    id="model"
-                    value={model}
-                    onChange={(event) => setModel(event.target.value)}
-                  />
-                </div>
-              </div>
-
-              <div className="conv-list" aria-label="对话列表">
-                <button
-                  type="button"
-                  className="conv-item"
-                  onClick={() => {
-                    setActiveConversationId(null);
-                    setRunPollConversationId(null);
-                    setRuns([]);
-                  }}
+              {runs.map((run, index) => (
+                <div
+                  className="chat-turn"
+                  key={run.record.id}
+                  style={{ ["--i" as string]: index } as CSSProperties}
                 >
-                  新对话
-                </button>
-                {conversations.map((conversation) => (
-                  <button
-                    key={conversation.id}
-                    type="button"
-                    className="conv-item"
-                    onClick={() => openConversation(conversation.id)}
-                  >
-                    {titles[conversation.id] ?? "未命名对话"}
-                  </button>
-                ))}
-              </div>
-
-              <div className="messages" aria-live="polite">
-                {runs.map((run) => (
-                  <div key={run.record.id} className="msg">
-                    <div className="role">你</div>
-                    <div>{run.request.prompt}</div>
-                    {run.progress && !run.result ? (
-                      <>
-                        <div className="role runner-role">助手</div>
-                        <div>{progressLabel(run.progress.progressKind)}</div>
-                      </>
-                    ) : null}
-                    {run.result ? (
-                      <>
-                        <div className="role runner-role">助手</div>
-                        <div>{run.result.response ?? run.result.error ?? "暂无内容"}</div>
-                      </>
-                    ) : null}
+                  <div className="chat-message user-message">
+                    <div className="message-body">{run.request.prompt}</div>
+                    <div className="user-message-meta">
+                      <time dateTime={run.record.createdAt}>
+                        Sent {formatMessageTime(run.record.createdAt)}
+                      </time>
+                    </div>
                   </div>
-                ))}
-              </div>
+                  <div className="chat-message assistant-message">
+                    <div className="message-avatar">AI</div>
+                    <div className="message-main">
+                      <div className="message-meta">
+                        <strong>Agent</strong>
+                        <span className="message-model">{run.request.routing.model}</span>
+                      </div>
+                      {run.result?.response ? <Markdown>{run.result.response}</Markdown> : null}
+                      {run.result?.error ? <pre className="error-pre">{run.result.error}</pre> : null}
+                      <E2eeRunProgressPanel run={run} />
+                      <MessageMetrics run={run} />
+                      <div
+                        className="e2ee-run-meta"
+                        title={`端到端加密已验证 · ${run.record.id}`}
+                      >
+                        e2ee-v1 · {run.record.id.slice(0, 8)}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              ))}
+              <div ref={messagesEndRef} />
+            </div>
 
-              <form onSubmit={onSubmitRun}>
-                <label htmlFor="prompt">消息</label>
-                <textarea
-                  id="prompt"
-                  value={prompt}
-                  onChange={(event) => setPrompt(event.target.value)}
-                  placeholder="输入消息…"
-                  required
-                />
-                <label className="checkbox-label">
-                  <input
-                    type="checkbox"
-                    checked={allowWrites}
-                    onChange={(event) => setAllowWrites(event.target.checked)}
+            <div className="secure-composer-shell">
+              <form className="secure-composer" onSubmit={onSubmitRun}>
+                <div className="composer-input">
+                  <textarea
+                    id="prompt"
+                    aria-label="消息"
+                    ref={promptRef}
+                    value={prompt}
+                    onChange={(event) => setPrompt(event.target.value)}
+                    onKeyDown={submitOnEnter}
+                    placeholder={activeRunner?.online ? "加密消息发给已配对 Runner" : "等待 Runner 上线…"}
+                    rows={1}
+                    required
+                    disabled={!activeRunner?.online}
                   />
-                  允许修改文件
-                </label>
-                <button
-                  type="submit"
-                  disabled={busy || !runnerId || activeRunnerOffline || !prompt.trim()}
-                >
-                  发送
-                </button>
+                  <button
+                    type="submit"
+                    aria-label="发送消息"
+                    disabled={busy || !activeRunner?.online || !prompt.trim()}
+                  >
+                    {busy ? (
+                      <span className="send-loading" aria-hidden="true" />
+                    ) : (
+                      <ArrowUp aria-hidden="true" size={18} strokeWidth={2} />
+                    )}
+                  </button>
+                </div>
+                <div className="composer-options">
+                  {runners.length > 1 ? (
+                    <label>
+                      <span>Runner</span>
+                      <select
+                        value={runnerId}
+                        disabled={Boolean(activeConversation)}
+                        onChange={(event) => selectRunner(event.target.value)}
+                      >
+                        {runners.map((runner) => (
+                          <option key={runner.runnerId} value={runner.runnerId}>
+                            {runner.runnerId}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  ) : null}
+                  <label>
+                    <span>Workspace</span>
+                    <select
+                      value={workspaceId}
+                      disabled={Boolean(activeConversation)}
+                      onChange={(event) => setWorkspaceId(event.target.value)}
+                    >
+                      {!workspaceOptions.some((workspace) => workspace.id === workspaceId) ? (
+                        <option value={workspaceId}>{workspaceId}</option>
+                      ) : null}
+                      {workspaceOptions.map((workspace) => (
+                        <option value={workspace.id} key={workspace.id}>
+                          {workspace.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="compact-checkbox">
+                    <input
+                      type="checkbox"
+                      checked={allowWrites}
+                      disabled={!activeRunner?.online}
+                      onChange={(event) => setAllowWrites(event.target.checked)}
+                    />
+                    允许修改文件
+                  </label>
+                  <span className="composer-hint">
+                    {activeConversation
+                      ? "此会话的 Runner、工作区和模型已固定"
+                      : "Enter 发送 · Shift+Enter 换行"}
+                  </span>
+                </div>
               </form>
-            </>
-          )}
+            </div>
+          </section>
         </section>
       ) : null}
 
