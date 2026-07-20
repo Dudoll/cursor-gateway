@@ -31,7 +31,7 @@ apps/desktop/
 
 - `frontendDist` 指向 `apps/secure-web/dist`：**直接复用** Secure Web 的构建产物。
 - CSP 仅放行连接 `https://secure.joelzt.org` / `https://cs.joelzt.org`（及 `*.joelzt.org`）。
-- 版本号：`apps/desktop/src-tauri/tauri.conf.json`（当前 `0.1.10`），与 `package.json` / `Cargo.toml` /
+- 版本号：`apps/desktop/src-tauri/tauri.conf.json`（当前 `0.1.11`），与 `package.json` / `Cargo.toml` /
   `artifacts/desktop/version.json` 对齐。
 
 ## 如何构建（在 Windows / WSL 之外的原生 Windows，或 CI）
@@ -73,7 +73,7 @@ npm run build -w @cursor-gateway/desktop       # = build:frontend + icon + tauri
 `windows-latest` 上构建，产出 `cursor-gateway-desktop-setup.exe` + `SHA256SUMS`：
 
 - 手动触发：Actions → **desktop-windows** → Run（可勾选 `with_msi`）。
-- 打 tag 触发并附加到 Release：`git tag desktop-v0.1.10 && git push origin desktop-v0.1.10`。
+- 打 tag 触发并附加到 Release：`git tag desktop-v0.1.11 && git push origin desktop-v0.1.11`。
 
 下载 workflow artifact 或 Release 资产，得到 `cursor-gateway-desktop-setup.exe`。
 
@@ -119,9 +119,9 @@ Get-FileHash .\cursor-gateway-desktop-setup.exe -Algorithm SHA256
 
 ### 版本号
 
-- 单一事实源：`apps/desktop/src-tauri/tauri.conf.json` 的 `version`（当前 `0.1.10`），
+- 单一事实源：`apps/desktop/src-tauri/tauri.conf.json` 的 `version`（当前 `0.1.11`），
   与 `apps/desktop/package.json`、`Cargo.toml` 保持一致。
-- 发布用 tag `desktop-v<semver>`（如 `desktop-v0.1.10`）触发 CI 出包并附加到 Release，
+- 发布用 tag `desktop-v<semver>`（如 `desktop-v0.1.11`）触发 CI 出包并附加到 Release，
   产物名恒为 `cursor-gateway-desktop-setup.exe`（便于 `/api/desktop/download` 固定引用）。
 
 ### Cloudflare Access 桥接与系统托盘

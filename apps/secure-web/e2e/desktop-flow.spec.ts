@@ -692,7 +692,7 @@ test("built Secure Web serves an exact JSON update manifest instead of SPA HTML"
   const manifest = await response.json();
   expect(manifest).toMatchObject({
     schemaVersion: 1,
-    version: "0.1.10",
+    version: "0.1.11",
     installerUrl: "https://cs.joelzt.org/api/desktop/download"
   });
   expect(manifest.sha256).toMatch(/^[a-f0-9]{64}$/);

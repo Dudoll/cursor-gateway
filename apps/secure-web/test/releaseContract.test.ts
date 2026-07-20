@@ -27,7 +27,7 @@ test("desktop package, Tauri, Cargo, and public update metadata versions stay al
     publishedAt: string;
   };
 
-  assert.equal(packageJson.version, "0.1.10");
+  assert.equal(packageJson.version, "0.1.11");
   assert.equal(tauri.version, packageJson.version);
   assert.equal(cargoVersion, packageJson.version);
   assert.equal(publicMetadata.version, packageJson.version);
