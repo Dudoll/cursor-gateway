@@ -57,6 +57,7 @@ async function main() {
         defaultWorkspaceId: config.csapi.defaultWorkspaceId,
         maxConcurrencyPerKey: config.csapi.maxConcurrencyPerKey,
         runTimeoutMs: config.csapi.runTimeoutMs,
+        maxPromptChars: config.csapi.maxPromptChars,
         allowWrites: config.csapi.allowWrites
       }
     };

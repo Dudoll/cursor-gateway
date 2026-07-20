@@ -1,0 +1,5 @@
+name: cursor-gateway
+kind: model-provider
+version: 1.1.0
+description: Cursor Gateway CSAPI provider with durable session and retry idempotency
+author: local-ops

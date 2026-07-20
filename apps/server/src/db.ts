@@ -1199,6 +1199,83 @@ export async function getRunByIdempotencyKey(userId: string, idempotencyKey: str
   return result.rows[0] ? mapRun(result.rows[0]) : undefined;
 }
 
+async function resolveAutomationThreadConversation(
+  client: PoolClient,
+  input: {
+    userId: string;
+    threadKey: string;
+    workspaceId: string;
+    title?: string;
+    fallbackTitle: string;
+  }
+): Promise<{ conversationId: string; created: boolean }> {
+  await client.query("select pg_advisory_xact_lock(hashtext($1))", [
+    `automation-thread:${input.userId}:${input.threadKey}`
+  ]);
+
+  const threadResult = await client.query(
+    `
+      select t.conversation_id, c.workspace_id
+      from automation_threads t
+      join conversations c on c.id = t.conversation_id
+      where t.user_id = $1 and t.thread_key = $2 and c.deleted_at is null
+      for update of t, c
+    `,
+    [input.userId, input.threadKey]
+  );
+  const thread = threadResult.rows[0];
+  if (thread) {
+    if (thread.workspace_id !== input.workspaceId) {
+      throw new AutomationThreadWorkspaceMismatchError(thread.workspace_id);
+    }
+    await client.query(
+      `
+        update conversations
+        set title = coalesce(title, $2), updated_at = now()
+        where id = $1
+      `,
+      [thread.conversation_id, input.title ?? null]
+    );
+    await client.query(
+      "update automation_threads set updated_at = now() where user_id = $1 and thread_key = $2",
+      [input.userId, input.threadKey]
+    );
+    return { conversationId: thread.conversation_id, created: false };
+  }
+
+  const conversationResult = await client.query(
+    `
+      insert into conversations (user_id, workspace_id, title)
+      values ($1, $2, $3)
+      returning id
+    `,
+    [input.userId, input.workspaceId, input.title ?? input.fallbackTitle]
+  );
+  const conversationId = String(conversationResult.rows[0].id);
+  await client.query(
+    `
+      insert into automation_threads (user_id, thread_key, conversation_id)
+      values ($1, $2, $3)
+    `,
+    [input.userId, input.threadKey, conversationId]
+  );
+  return { conversationId, created: true };
+}
+
+export async function getOrCreateAutomationThreadConversation(input: {
+  userId: string;
+  threadKey: string;
+  workspaceId: string;
+  title?: string;
+}) {
+  return inTransaction((client) =>
+    resolveAutomationThreadConversation(client, {
+      ...input,
+      fallbackTitle: input.title ?? "Automation conversation"
+    })
+  );
+}
+
 export async function createAutomationThreadRun(input: {
   userId: string;
   threadKey: string;
@@ -1225,58 +1302,13 @@ export async function createAutomationThreadRun(input: {
     );
     if (existing.rows[0]) return { run: mapRun(existing.rows[0]), created: false };
 
-    await client.query("select pg_advisory_xact_lock(hashtext($1))", [
-      `automation-thread:${input.userId}:${input.threadKey}`
-    ]);
-
-    const threadResult = await client.query(
-      `
-        select t.conversation_id, c.workspace_id
-        from automation_threads t
-        join conversations c on c.id = t.conversation_id
-        where t.user_id = $1 and t.thread_key = $2 and c.deleted_at is null
-        for update of t, c
-      `,
-      [input.userId, input.threadKey]
-    );
-
-    let conversationId: string;
-    const thread = threadResult.rows[0];
-    if (thread) {
-      if (thread.workspace_id !== input.workspaceId) {
-        throw new AutomationThreadWorkspaceMismatchError(thread.workspace_id);
-      }
-      conversationId = thread.conversation_id;
-      await client.query(
-        `
-          update conversations
-          set title = coalesce(title, $2), updated_at = now()
-          where id = $1
-        `,
-        [conversationId, input.title ?? null]
-      );
-      await client.query(
-        "update automation_threads set updated_at = now() where user_id = $1 and thread_key = $2",
-        [input.userId, input.threadKey]
-      );
-    } else {
-      const conversationResult = await client.query(
-        `
-          insert into conversations (user_id, workspace_id, title)
-          values ($1, $2, $3)
-          returning id
-        `,
-        [input.userId, input.workspaceId, input.title ?? input.prompt.slice(0, 80)]
-      );
-      conversationId = conversationResult.rows[0].id;
-      await client.query(
-        `
-          insert into automation_threads (user_id, thread_key, conversation_id)
-          values ($1, $2, $3)
-        `,
-        [input.userId, input.threadKey, conversationId]
-      );
-    }
+    const { conversationId } = await resolveAutomationThreadConversation(client, {
+      userId: input.userId,
+      threadKey: input.threadKey,
+      workspaceId: input.workspaceId,
+      ...(input.title !== undefined ? { title: input.title } : {}),
+      fallbackTitle: input.prompt.slice(0, 80)
+    });
 
     const runResult = await client.query(
       `

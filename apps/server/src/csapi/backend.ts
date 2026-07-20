@@ -3,6 +3,7 @@
 // The route layer depends only on this interface, which lets us wire the real
 // PostgreSQL-backed gateway in production and an in-memory fake in tests (no
 // database required). Everything here is plaintext (方案 B); there is no E2EE.
+import { createHash } from "node:crypto";
 import type { RunStatus } from "@cursor-gateway/shared";
 
 export interface CsapiRunHandle {
@@ -39,6 +40,13 @@ export interface CsapiBackend {
   }): Promise<string>;
   /** Whether a conversation still exists and is usable for this principal. */
   conversationExists(conversationId: string, principalId: string): Promise<boolean>;
+  /** Resolve a durable conversation for an upstream session id, when supported. */
+  resolveConversation?(input: {
+    principalId: string;
+    workspaceId: string;
+    sessionKey: string;
+    title: string;
+  }): Promise<{ conversationId: string; created: boolean }>;
   /** Enqueue a plaintext run and return a handle. */
   createRun(input: {
     principalId: string;
@@ -47,6 +55,7 @@ export interface CsapiBackend {
     workspaceId: string;
     prompt: string;
     allowWrites: boolean;
+    idempotencyKey?: string;
   }): Promise<CsapiRunHandle>;
   /** Fetch the current run state for polling. Undefined if not found. */
   getRun(runId: string, principalId: string): Promise<CsapiRunSnapshot | undefined>;
@@ -103,18 +112,50 @@ export async function createDbBackend(): Promise<CsapiBackend> {
       const conversation = await db.getConversation(conversationId, principalId);
       return Boolean(conversation);
     },
-    async createRun(input) {
-      const run = await db.createRun({
-        conversationId: input.conversationId,
+    async resolveConversation(input) {
+      const threadHash = createHash("sha256").update(input.sessionKey).digest("hex");
+      const resolved = await db.getOrCreateAutomationThreadConversation({
         userId: input.principalId,
-        origin: "automation",
-        status: "queued",
-        model: input.model,
+        threadKey: `csapi:${threadHash}`,
         workspaceId: input.workspaceId,
-        prompt: input.prompt,
-        allowWrites: input.allowWrites,
-        memoryEnabled: false
+        title: input.title.slice(0, 80)
       });
+      return resolved;
+    },
+    async createRun(input) {
+      if (input.idempotencyKey) {
+        const existing = await db.getRunByIdempotencyKey(input.principalId, input.idempotencyKey);
+        if (existing) {
+          return { runId: existing.id, conversationId: existing.conversationId, status: existing.status };
+        }
+      }
+      let run;
+      try {
+        run = await db.createRun({
+          conversationId: input.conversationId,
+          userId: input.principalId,
+          origin: "automation",
+          status: "queued",
+          model: input.model,
+          workspaceId: input.workspaceId,
+          prompt: input.prompt,
+          allowWrites: input.allowWrites,
+          memoryEnabled: false,
+          ...(input.idempotencyKey ? { idempotencyKey: input.idempotencyKey } : {})
+        });
+      } catch (error) {
+        if (
+          !input.idempotencyKey ||
+          !error ||
+          typeof error !== "object" ||
+          (error as { code?: unknown }).code !== "23505"
+        ) {
+          throw error;
+        }
+        const existing = await db.getRunByIdempotencyKey(input.principalId, input.idempotencyKey);
+        if (!existing) throw error;
+        return { runId: existing.id, conversationId: existing.conversationId, status: existing.status };
+      }
       return { runId: run.id, conversationId: run.conversationId, status: run.status };
     },
     async getRun(runId, principalId) {

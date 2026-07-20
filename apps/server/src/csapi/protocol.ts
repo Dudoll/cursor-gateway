@@ -158,30 +158,77 @@ export function renderTranscript(messages: NormalizedMessage[]): string {
     .join("\n\n");
 }
 
+export const PROMPT_TRUNCATION_MARKER = "[Earlier context truncated by CS Gateway]";
+
+function clipMiddle(value: string, maxChars: number): string {
+  if (value.length <= maxChars) return value;
+  if (maxChars <= PROMPT_TRUNCATION_MARKER.length + 2) return value.slice(-Math.max(0, maxChars));
+  const available = maxChars - PROMPT_TRUNCATION_MARKER.length - 2;
+  const head = Math.ceil(available / 2);
+  const tail = available - head;
+  return `${value.slice(0, head)}\n${PROMPT_TRUNCATION_MARKER}\n${value.slice(-tail)}`;
+}
+
+function boundedInitialPrompt(system: string, messages: NormalizedMessage[], maxChars: number): string {
+  const transcriptParts = messages
+    .filter((message) => message.role !== "system")
+    .map((message) => `${roleLabel(message.role)}: ${message.text}`.trim())
+    .filter(Boolean);
+  const full = [system, transcriptParts.join("\n\n")].filter(Boolean).join("\n\n").trim();
+  if (full.length <= maxChars) return full;
+
+  const markerBlock = `\n\n${PROMPT_TRUNCATION_MARKER}\n\n`;
+  const systemBudget = Math.min(system.length, Math.floor(maxChars * 0.35));
+  const clippedSystem = clipMiddle(system, systemBudget);
+  let remaining = maxChars - clippedSystem.length - markerBlock.length;
+  const recent: string[] = [];
+
+  for (let index = transcriptParts.length - 1; index >= 0 && remaining > 0; index -= 1) {
+    const part = transcriptParts[index]!;
+    const separatorSize = recent.length > 0 ? 2 : 0;
+    if (part.length + separatorSize <= remaining) {
+      recent.unshift(part);
+      remaining -= part.length + separatorSize;
+      continue;
+    }
+    const available = remaining - separatorSize;
+    if (available > 0) recent.unshift(clipMiddle(part, available));
+    break;
+  }
+
+  return `${clippedSystem}${markerBlock}${recent.join("\n\n")}`.slice(0, maxChars).trim();
+}
+
 /**
  * Build the plaintext prompt sent to the gateway run.
  *
  * - `mode: "stateless"` → embed system + the whole transcript (no gateway-side
  *   history is available for a brand new conversation).
- * - `mode: "session-first"` → system + only the latest user message (the
- *   gateway maintains history for the conversation from here on).
+ * - `mode: "session-first"` → embed the initial transcript, then let the
+ *   gateway maintain history from subsequent turns.
  * - `mode: "session-continued"` → only the latest user message.
+ *
+ * Initial/stateless prompts are bounded so a long-lived upstream session
+ * cannot repeatedly send an unbounded transcript to the local runner.
  */
 export function buildPrompt(input: {
   system: string;
   messages: NormalizedMessage[];
   mode: "stateless" | "session-first" | "session-continued";
+  maxChars?: number;
 }): string {
-  const system = input.system.trim();
-  if (input.mode === "stateless") {
-    const transcript = renderTranscript(input.messages);
-    return [system, transcript].filter(Boolean).join("\n\n").trim();
+  const messageSystem = input.messages
+    .filter((message) => message.role === "system" && message.text.trim())
+    .map((message) => message.text.trim())
+    .join("\n\n");
+  const system = [input.system.trim(), messageSystem].filter(Boolean).join("\n\n");
+  const maxChars = Math.max(1, input.maxChars ?? Number.MAX_SAFE_INTEGER);
+  if (input.mode === "stateless" || input.mode === "session-first") {
+    return boundedInitialPrompt(system, input.messages, maxChars);
   }
+
   const last = lastUserText(input.messages) ?? "";
-  if (input.mode === "session-first") {
-    return [system, last].filter(Boolean).join("\n\n").trim();
-  }
-  return last.trim();
+  return clipMiddle(last.trim(), maxChars);
 }
 
 /** Resolve a session key from headers/body, or null for stateless requests. */

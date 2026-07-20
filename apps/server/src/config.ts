@@ -65,6 +65,7 @@ const envSchema = z.object({
   CSAPI_DEFAULT_WORKSPACE_ID: z.string().default(""),
   CSAPI_MAX_CONCURRENCY_PER_KEY: z.coerce.number().int().positive().default(4),
   CSAPI_RUN_TIMEOUT_MS: z.coerce.number().int().positive().default(300_000),
+  CSAPI_MAX_PROMPT_CHARS: z.coerce.number().int().min(1_024).default(96_000),
   CSAPI_ALLOW_WRITES: booleanEnv(false),
   // --- cg-mitm/1 secure csapi channel (application-layer anti-MITM). ---
   CG_SECURE_ENABLED: booleanEnv(false),
@@ -159,6 +160,7 @@ export const config = {
     defaultWorkspaceId: parsed.CSAPI_DEFAULT_WORKSPACE_ID.trim(),
     maxConcurrencyPerKey: parsed.CSAPI_MAX_CONCURRENCY_PER_KEY,
     runTimeoutMs: parsed.CSAPI_RUN_TIMEOUT_MS,
+    maxPromptChars: parsed.CSAPI_MAX_PROMPT_CHARS,
     allowWrites: parsed.CSAPI_ALLOW_WRITES
   },
   cg: {

@@ -17,6 +17,8 @@ class FakeBackend implements CsapiBackend {
     { createdAt: number; prompt: string; conversationId: string; model: string; cancelledAt?: number }
   >();
   private conversations = new Set<string>();
+  private idempotencyRuns = new Map<string, string>();
+  private sessionConversations = new Map<string, string>();
   createConversationCount = 0;
   createRunCount = 0;
   cancelCount = 0;
@@ -25,6 +27,7 @@ class FakeBackend implements CsapiBackend {
   /** Override advertised models (default includes a Windows-style id). */
   advertisedModels: string[] = ["cursor-fast", "cursor-smart"];
   lastRunModel: string | null = null;
+  lastRunPrompt: string | null = null;
 
   listModelIds() {
     return this.advertisedModels;
@@ -50,11 +53,32 @@ class FakeBackend implements CsapiBackend {
   async conversationExists(conversationId: string) {
     return this.conversations.has(conversationId);
   }
+  async resolveConversation(input: {
+    sessionKey: string;
+  }): Promise<{ conversationId: string; created: boolean }> {
+    const existing = this.sessionConversations.get(input.sessionKey);
+    if (existing) return { conversationId: existing, created: false };
+    const conversationId = await this.createConversation();
+    this.sessionConversations.set(input.sessionKey, conversationId);
+    return { conversationId, created: true };
+  }
   async createRun(input: {
     conversationId: string;
     prompt: string;
     model: string;
+    idempotencyKey?: string;
   }): Promise<CsapiRunHandle> {
+    if (input.idempotencyKey) {
+      const existing = this.idempotencyRuns.get(input.idempotencyKey);
+      if (existing) {
+        const run = this.runs.get(existing)!;
+        return {
+          runId: existing,
+          conversationId: run.conversationId,
+          status: this.statusOf(existing)
+        };
+      }
+    }
     const runId = randomUUID();
     this.runs.set(runId, {
       createdAt: Date.now(),
@@ -64,6 +88,8 @@ class FakeBackend implements CsapiBackend {
     });
     this.createRunCount += 1;
     this.lastRunModel = input.model;
+    this.lastRunPrompt = input.prompt;
+    if (input.idempotencyKey) this.idempotencyRuns.set(input.idempotencyKey, runId);
     return { runId, conversationId: input.conversationId, status: "queued" as RunStatus };
   }
   private statusOf(runId: string): RunStatus {
@@ -116,8 +142,15 @@ class FakeBackend implements CsapiBackend {
 
 const KEY = "test-csapi-key-1";
 
-function buildApp(options?: { maxConc?: number; runTimeoutMs?: number; finishDelayMs?: number }) {
-  const backend = new FakeBackend();
+function buildApp(options?: {
+  maxConc?: number;
+  runTimeoutMs?: number;
+  finishDelayMs?: number;
+  maxPromptChars?: number;
+  heartbeatIntervalMs?: number;
+  backend?: FakeBackend;
+}) {
+  const backend = options?.backend ?? new FakeBackend();
   if (options?.finishDelayMs !== undefined) backend.finishDelayMs = options.finishDelayMs;
   const app = Fastify();
   registerCsapi(app, {
@@ -129,9 +162,11 @@ function buildApp(options?: { maxConc?: number; runTimeoutMs?: number; finishDel
       defaultWorkspaceId: "",
       maxConcurrencyPerKey: options?.maxConc ?? 8,
       runTimeoutMs: options?.runTimeoutMs ?? 5_000,
+      maxPromptChars: options?.maxPromptChars ?? 96_000,
       allowWrites: false
     },
-    pollIntervalMs: 10
+    pollIntervalMs: 10,
+    heartbeatIntervalMs: options?.heartbeatIntervalMs ?? 10_000
   });
   return { app, backend };
 }
@@ -232,6 +267,7 @@ test("Anthropic /v1/messages streaming emits SSE frames", async () => {
   assert.equal(res.statusCode, 200);
   assert.match(res.headers["content-type"] as string, /text\/event-stream/);
   const payload = res.payload;
+  assert.match(payload, /event: ping/);
   assert.match(payload, /event: message_start/);
   assert.match(payload, /event: content_block_delta/);
   assert.match(payload, /streamme/);
@@ -240,7 +276,7 @@ test("Anthropic /v1/messages streaming emits SSE frames", async () => {
 });
 
 test("OpenAI /v1/chat/completions non-stream returns standard shape", async () => {
-  const { app } = buildApp({ finishDelayMs: 30 });
+  const { app, backend } = buildApp({ finishDelayMs: 30 });
   const res = await app.inject({
     method: "POST",
     url: "/v1/chat/completions",
@@ -251,8 +287,9 @@ test("OpenAI /v1/chat/completions non-stream returns standard shape", async () =
   const body = res.json();
   assert.equal(body.object, "chat.completion");
   assert.equal(body.model, "gpt-4o");
-  assert.match(body.choices[0].message.content, /echo:.*ping/);
+  assert.match(body.choices[0].message.content, /echo:[\s\S]*ping/);
   assert.equal(body.choices[0].finish_reason, "stop");
+  assert.match(backend.lastRunPrompt ?? "", /be terse/);
   await closeApp(app);
 });
 
@@ -266,9 +303,100 @@ test("OpenAI streaming emits chunks and [DONE]", async () => {
   });
   assert.equal(res.statusCode, 200);
   const payload = res.payload;
+  assert.match(payload, /chatcmpl-heartbeat/);
   assert.match(payload, /chat\.completion\.chunk/);
   assert.match(payload, /hey/);
   assert.match(payload, /data: \[DONE\]/);
+  await closeApp(app);
+});
+
+test("OpenAI streaming emits protocol heartbeats during a slow run", async () => {
+  const { app } = buildApp({
+    finishDelayMs: 60,
+    heartbeatIntervalMs: 10
+  });
+  const res = await app.inject({
+    method: "POST",
+    url: "/v1/chat/completions",
+    headers: { authorization: `Bearer ${KEY}` },
+    payload: { model: "auto", stream: true, messages: [{ role: "user", content: "slow stream" }] }
+  });
+  const heartbeatCount = (res.payload.match(/chatcmpl-heartbeat/g) ?? []).length;
+  assert.ok(heartbeatCount >= 2, `expected repeated heartbeat frames, saw ${heartbeatCount}`);
+  await closeApp(app);
+});
+
+test("Telegram → Hermes contract → gateway → fake runner → Telegram reply", async () => {
+  const { app } = buildApp({ finishDelayMs: 30, heartbeatIntervalMs: 5 });
+  const telegramEvents: Array<{ kind: "typing" | "message"; text?: string }> = [];
+  telegramEvents.push({ kind: "typing" });
+
+  const response = await app.inject({
+    method: "POST",
+    url: "/v1/chat/completions",
+    headers: {
+      authorization: `Bearer ${KEY}`,
+      "x-session-id": "telegram-chat-1",
+      "idempotency-key": "telegram-update-1001"
+    },
+    payload: {
+      model: "auto",
+      stream: true,
+      messages: [
+        { role: "system", content: "Telegram Hermes bridge" },
+        { role: "user", content: "contract-ping" }
+      ]
+    }
+  });
+  const text = response.payload
+    .split("\n")
+    .filter((line) => line.startsWith("data: ") && line !== "data: [DONE]")
+    .map((line) => JSON.parse(line.slice(6)) as Record<string, unknown>)
+    .flatMap((frame) => (frame.choices as Array<Record<string, unknown>> | undefined) ?? [])
+    .map((choice) => (choice.delta as { content?: string } | undefined)?.content ?? "")
+    .join("");
+  for (let offset = 0; offset < text.length; offset += 4_096) {
+    telegramEvents.push({ kind: "message", text: text.slice(offset, offset + 4_096) });
+  }
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(telegramEvents[0]?.kind, "typing");
+  assert.match(telegramEvents.map((event) => event.text ?? "").join(""), /contract-ping/);
+  await closeApp(app);
+});
+
+test("Telegram contract splits a long Hermes reply without losing content", async () => {
+  const { app } = buildApp({ finishDelayMs: 20 });
+  const source = `LONG-REPLY-${"x".repeat(9_000)}`;
+  const response = await app.inject({
+    method: "POST",
+    url: "/v1/chat/completions",
+    headers: {
+      authorization: `Bearer ${KEY}`,
+      "x-session-id": "telegram-long-reply",
+      "idempotency-key": "telegram-long-reply-turn"
+    },
+    payload: {
+      model: "auto",
+      stream: true,
+      messages: [{ role: "user", content: source }]
+    }
+  });
+  const text = response.payload
+    .split("\n")
+    .filter((line) => line.startsWith("data: ") && line !== "data: [DONE]")
+    .map((line) => JSON.parse(line.slice(6)) as Record<string, unknown>)
+    .flatMap((frame) => (frame.choices as Array<Record<string, unknown>> | undefined) ?? [])
+    .map((choice) => (choice.delta as { content?: string } | undefined)?.content ?? "")
+    .join("");
+  const telegramChunks = Array.from(
+    { length: Math.ceil(text.length / 4_096) },
+    (_, index) => text.slice(index * 4_096, (index + 1) * 4_096)
+  );
+  assert.ok(telegramChunks.length >= 3);
+  assert.ok(telegramChunks.every((chunk) => chunk.length <= 4_096));
+  assert.equal(telegramChunks.join(""), text);
+  assert.match(text, /LONG-REPLY-/);
   await closeApp(app);
 });
 
@@ -303,6 +431,39 @@ test("same-session requests serialize; only one conversation is created", async 
   assert.equal(backend.createConversationCount, 1);
   assert.equal(backend.createRunCount, 2);
   await closeApp(app);
+});
+
+test("session conversation survives csapi instance recreation", async () => {
+  const backend = new FakeBackend();
+  backend.finishDelayMs = 20;
+  const firstApp = buildApp({ backend }).app;
+  const first = await firstApp.inject({
+    method: "POST",
+    url: "/v1/chat/completions",
+    headers: { authorization: `Bearer ${KEY}`, "x-session-id": "durable-session" },
+    payload: { model: "auto", messages: [{ role: "user", content: "first durable turn" }] }
+  });
+  assert.equal(first.statusCode, 200);
+  await closeApp(firstApp);
+
+  const secondApp = buildApp({ backend }).app;
+  const second = await secondApp.inject({
+    method: "POST",
+    url: "/v1/chat/completions",
+    headers: { authorization: `Bearer ${KEY}`, "x-session-id": "durable-session" },
+    payload: {
+      model: "auto",
+      messages: [
+        { role: "user", content: "first durable turn" },
+        { role: "assistant", content: "first reply" },
+        { role: "user", content: "second durable turn" }
+      ]
+    }
+  });
+  assert.equal(second.statusCode, 200);
+  assert.equal(backend.createConversationCount, 1);
+  assert.equal(backend.lastRunPrompt, "second durable turn");
+  await closeApp(secondApp);
 });
 
 test("a disconnected queued session request releases immediately", async () => {
@@ -387,6 +548,75 @@ test("run timeout maps to 504 and cancels the run", async () => {
   await closeApp(app);
 });
 
+test("idempotency key reuses a completed run", async () => {
+  const { app, backend } = buildApp({ finishDelayMs: 20 });
+  const fire = () =>
+    app.inject({
+      method: "POST",
+      url: "/v1/chat/completions",
+      headers: {
+        authorization: `Bearer ${KEY}`,
+        "x-session-id": "idem-session",
+        "idempotency-key": "idem-turn-1"
+      },
+      payload: { model: "auto", messages: [{ role: "user", content: "idempotent" }] }
+    });
+  const first = await fire();
+  const second = await fire();
+  assert.equal(first.statusCode, 200);
+  assert.equal(second.statusCode, 200);
+  assert.equal(backend.createRunCount, 1);
+  await closeApp(app);
+});
+
+test("idempotency key prevents a timed-out retry from creating another run", async () => {
+  const { app, backend } = buildApp({ runTimeoutMs: 30, finishDelayMs: 10_000 });
+  const fire = () =>
+    app.inject({
+      method: "POST",
+      url: "/v1/chat/completions",
+      headers: {
+        authorization: `Bearer ${KEY}`,
+        "x-session-id": "timeout-idem-session",
+        "idempotency-key": "timeout-idem-turn"
+      },
+      payload: { model: "auto", messages: [{ role: "user", content: "slow idempotent" }] }
+    });
+  const first = await fire();
+  const second = await fire();
+  assert.equal(first.statusCode, 504);
+  assert.equal(second.statusCode, 502);
+  assert.equal(backend.createRunCount, 1);
+  assert.equal(backend.cancelCount, 1);
+  await closeApp(app);
+});
+
+test("large initial transcript is bounded and retains latest user turn", async () => {
+  const { app, backend } = buildApp({ finishDelayMs: 20, maxPromptChars: 1_024 });
+  const res = await app.inject({
+    method: "POST",
+    url: "/v1/chat/completions",
+    headers: {
+      authorization: `Bearer ${KEY}`,
+      "x-session-id": "large-context-session"
+    },
+    payload: {
+      model: "auto",
+      messages: [
+        { role: "system", content: `system-${"s".repeat(2_000)}` },
+        { role: "user", content: `old-${"x".repeat(5_000)}` },
+        { role: "assistant", content: `reply-${"y".repeat(5_000)}` },
+        { role: "user", content: "LATEST-CONTEXT-TURN" }
+      ]
+    }
+  });
+  assert.equal(res.statusCode, 200);
+  assert.ok((backend.lastRunPrompt?.length ?? Infinity) <= 1_024);
+  assert.match(backend.lastRunPrompt ?? "", /LATEST-CONTEXT-TURN/);
+  assert.match(backend.lastRunPrompt ?? "", /Earlier context truncated/);
+  await closeApp(app);
+});
+
 test("abort during execute cancels the queued run", async () => {
   const backend = new FakeBackend();
   backend.finishDelayMs = 10_000;
@@ -399,6 +629,7 @@ test("abort during execute cancels the queued run", async () => {
       defaultWorkspaceId: "",
       maxConcurrencyPerKey: 8,
       runTimeoutMs: 10_000,
+      maxPromptChars: 96_000,
       allowWrites: false
     },
     pollIntervalMs: 10

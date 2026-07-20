@@ -70,22 +70,26 @@ Base URL: `https://csapi.joelzt.org`
 
 - 会话标识解析顺序：请求头 `x-session-id` → body `session_id` → body `conversation_id`
   →（Anthropic）`metadata.user_id`。
-- **提供会话标识**：映射到同一个网关 conversation，实现「同会话串行 + 上下文由网关侧维护」。
-  同一会话内只发送**最新一条 user 消息**作为增量（网关按 conversation 维护历史与 agent 续接）。
+- **提供会话标识**：持久映射到同一个网关 conversation，实现「同会话串行 + 上下文由网关侧维护」。
+  首次请求发送有界的初始 transcript；后续只发送**最新一条 user 消息**作为增量。Gateway
+  进程重启后仍从 PostgreSQL 恢复映射。
 - **不提供会话标识**：每次请求都是**无状态**，新建 conversation，并把整段 messages（含 system）
-  渲染进单条 prompt 以保留上下文。
+  渲染进有长度上限的单条 prompt。
+- 客户端可发送 `Idempotency-Key` / `x-idempotency-key`。同一 key 的重试复用既有 run，
+  不会重复占用 Runner 或重复计费。
 
 ### 4.2 并发语义
 
 - **跨会话并行**：不同 session → 不同 conversation → 天然并行。
 - **同会话串行**：同一 session 的请求在 csapi 层用 keyed-mutex 串行，前一次 run 结束前不入队下一条。
-- **取消 / Abort**：客户端断开连接时，csapi 取消仍在 `queued/waiting_approval` 的 run（best-effort）；
-  已被 Runner 领取（`running`）的 run 无法被抢占，csapi 会停止等待并释放槽位（如实记录此限制）。
+- **取消 / Abort**：客户端断开或 csapi 超时时会取消 `queued/waiting_approval/running` run；
+  lease fencing 会让 Runner 中止对应 SDK run、释放 agent/session/worker。
 - **背压**：每个 API key 有并发上限（`CSAPI_MAX_CONCURRENCY_PER_KEY`）；超限返回
   `429` + `Retry-After`。
 
-> 注意：本阶段 SSE 为「完成后分块下发」（run 结束后把整段文本切片成多个 delta 帧），
-> 而不是模型 token 级实时流。CLI 侧能正确解析 SSE；这是方案 B 的已知取舍，见 §6。
+> 注意：本阶段 SSE 为「协议心跳 + 完成后分块下发」，而不是模型 token 级实时流。
+> OpenAI/Anthropic 心跳是协议合法的 no-op/ping 帧，可被 SDK 观察到，避免只有 SSE 注释时被
+> 客户端误判为 stale；最终文本仍在 run 完成后聚合下发。
 
 ## 5. 配置（.env，增量追加 `CSAPI_*`，绝不提交 git）
 
@@ -97,6 +101,7 @@ Base URL: `https://csapi.joelzt.org`
 | `CSAPI_DEFAULT_WORKSPACE_ID` | 空 | 默认 workspace；留空则自动取第一个可用 workspace |
 | `CSAPI_MAX_CONCURRENCY_PER_KEY` | `4` | 每 key 并发上限；超限 429 |
 | `CSAPI_RUN_TIMEOUT_MS` | `300000` | 单次 run 等待超时（毫秒） |
+| `CSAPI_MAX_PROMPT_CHARS` | `96000` | 首次/无状态 prompt 的字符上限；保留 system 与最近消息 |
 | `CSAPI_ALLOW_WRITES` | `false` | 是否允许写文件（默认只读，安全） |
 
 密钥生成建议：`openssl rand -hex 32`。**只写入 `.env`（`0600`），不进 git。**
@@ -104,8 +109,7 @@ Base URL: `https://csapi.joelzt.org`
 ## 6. 已知取舍 / 非目标（本阶段）
 
 - 非 E2EE：明文对网关/Runner/模型可见（见 §2）。
-- SSE 为完成后分块，不是 token 级实时（见 §4.2）。
-- 已 `running` 的 run 不可被真正抢占取消。
+- SSE 含协议心跳，但最终文本仍为完成后分块，不是 token 级实时（见 §4.2）。
 - 工具调用 / function calling / 图片输入未做完整映射（文本为主；图片以占位符处理）。
 - 方案 A（本机 Secure Adapter，cg-mitm/1）**已实现**，客户端一键脚本见 §7.1。
 

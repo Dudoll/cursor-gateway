@@ -4,6 +4,7 @@
 // standard CLIs (OpenCode / Claude Code) work with just "API key + base URL".
 // This is NOT end-to-end encryption: prompts are plaintext to csapi, the
 // gateway queue, the runner and the model. See docs/csapi.md.
+import { createHash } from "node:crypto";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import type { CsapiBackend } from "./backend.js";
 import {
@@ -43,6 +44,7 @@ export interface CsapiConfig {
   defaultWorkspaceId: string;
   maxConcurrencyPerKey: number;
   runTimeoutMs: number;
+  maxPromptChars?: number;
   allowWrites: boolean;
 }
 
@@ -51,6 +53,8 @@ export interface CsapiDeps {
   config: CsapiConfig;
   /** Poll interval when waiting for a run to finish (ms). */
   pollIntervalMs?: number;
+  /** SSE heartbeat interval (ms); injectable for deterministic tests. */
+  heartbeatIntervalMs?: number;
 }
 
 class CsapiError extends Error {
@@ -102,12 +106,16 @@ interface ExecuteInput {
   messages: ReturnType<typeof normalizeMessages>;
   requestedModel: string;
   sessionKey: string | null;
+  idempotencyKey?: string;
+  requestId?: string;
+  log?: FastifyRequest["log"];
   signal?: AbortSignal;
 }
 
 export function createCsapi(deps: CsapiDeps) {
   const { backend, config } = deps;
   const pollIntervalMs = deps.pollIntervalMs ?? 400;
+  const heartbeatIntervalMs = deps.heartbeatIntervalMs ?? 10_000;
   const serializer = new SessionSerializer();
   const limiter = new KeyConcurrencyLimiter(config.maxConcurrencyPerKey);
   // sessionKey (namespaced by API key) -> conversationId
@@ -120,6 +128,18 @@ export function createCsapi(deps: CsapiDeps) {
       throw new CsapiError(401, "authentication_error", "invalid or missing API key");
     }
     return keyId;
+  }
+
+  function idempotencyKeyFor(request: FastifyRequest, keyId: string): string | undefined {
+    const headers = request.headers as Record<string, unknown>;
+    const raw = headers["idempotency-key"] ?? headers["x-idempotency-key"];
+    const value = Array.isArray(raw) ? raw[0] : raw;
+    if (typeof value !== "string" || !value.trim()) return undefined;
+    return createHash("sha256")
+      .update(keyId)
+      .update("\0")
+      .update(value.trim())
+      .digest("hex");
   }
 
   async function resolveConversation(input: {
@@ -141,6 +161,19 @@ export function createCsapi(deps: CsapiDeps) {
     const remembered = sessionConversations.get(mapKey);
     if (remembered && (await backend.conversationExists(remembered, input.principalId))) {
       return { conversationId: remembered, mode: "session-continued" };
+    }
+    if (backend.resolveConversation) {
+      const resolved = await backend.resolveConversation({
+        principalId: input.principalId,
+        workspaceId: input.workspaceId,
+        sessionKey: mapKey,
+        title: input.title
+      });
+      sessionConversations.set(mapKey, resolved.conversationId);
+      return {
+        conversationId: resolved.conversationId,
+        mode: resolved.created ? "session-first" : "session-continued"
+      };
     }
     const conversationId = await backend.createConversation({
       principalId: input.principalId,
@@ -228,21 +261,66 @@ export function createCsapi(deps: CsapiDeps) {
         sessionKey,
         title
       });
-      const prompt = buildPrompt({ system: input.system, messages: input.messages, mode });
+      const prompt = buildPrompt({
+        system: input.system,
+        messages: input.messages,
+        mode,
+        maxChars: config.maxPromptChars ?? 96_000
+      });
       if (!prompt) {
         throw new CsapiError(400, "invalid_request_error", "empty prompt after rendering");
       }
+      const runStartedAt = Date.now();
       const handle = await backend.createRun({
         principalId,
         conversationId,
         model,
         workspaceId,
         prompt,
-        allowWrites: config.allowWrites
+        allowWrites: config.allowWrites,
+        ...(input.idempotencyKey ? { idempotencyKey: input.idempotencyKey } : {})
       });
-      const completed = await waitForRun(handle.runId, principalId, input.signal);
-      completed.conversationId = conversationId;
-      return completed;
+      input.log?.info(
+        {
+          event: "csapi.run.created",
+          requestId: input.requestId,
+          runId: handle.runId,
+          conversationId: handle.conversationId,
+          model,
+          mode,
+          promptChars: prompt.length,
+          initialStatus: handle.status,
+          idempotent: Boolean(input.idempotencyKey)
+        },
+        "csapi run created"
+      );
+      try {
+        const completed = await waitForRun(handle.runId, principalId, input.signal);
+        completed.conversationId = handle.conversationId;
+        input.log?.info(
+          {
+            event: "csapi.run.finished",
+            requestId: input.requestId,
+            runId: handle.runId,
+            durationMs: Date.now() - runStartedAt
+          },
+          "csapi run finished"
+        );
+        return completed;
+      } catch (error) {
+        input.log?.warn(
+          {
+            event: "csapi.run.failed",
+            requestId: input.requestId,
+            runId: handle.runId,
+            durationMs: Date.now() - runStartedAt,
+            errorKind: error instanceof CsapiError ? error.kind : "internal_error",
+            statusCode: error instanceof CsapiError ? error.status : 500
+          },
+          "csapi run failed"
+        );
+        throw error;
+      }
     };
 
     // Same session -> serial; stateless -> unique key so it runs in parallel.
@@ -269,16 +347,42 @@ export function createCsapi(deps: CsapiDeps) {
     reply.raw.write(serializeSse(frame));
   }
 
-  function writeHeartbeat(reply: FastifyReply): void {
-    reply.raw.write(": keepalive\n\n");
+  function writeHeartbeat(
+    reply: FastifyReply,
+    wire: "anthropic" | "openai",
+    model: string
+  ): void {
+    if (wire === "anthropic") {
+      writeFrame(reply, { event: "ping", data: { type: "ping" } });
+      return;
+    }
+    writeFrame(reply, {
+      data: {
+        id: "chatcmpl-heartbeat",
+        object: "chat.completion.chunk",
+        created: Math.floor(Date.now() / 1000),
+        model,
+        choices: [{ index: 0, delta: {}, finish_reason: null }]
+      }
+    });
   }
 
-  /** Run `execute` while emitting SSE heartbeats to keep the connection warm. */
+  /**
+   * Run `execute` while emitting protocol-valid no-op frames. SSE comments keep
+   * the socket open, but OpenAI clients intentionally hide comments from their
+   * stream iterator and can still declare the model stream stale.
+   */
   async function executeWithHeartbeat(
     reply: FastifyReply,
-    input: ExecuteInput
+    input: ExecuteInput,
+    wire: "anthropic" | "openai",
+    model: string
   ): Promise<CompletedRun> {
-    const heartbeat = setInterval(() => writeHeartbeat(reply), 10_000);
+    writeHeartbeat(reply, wire, model);
+    const heartbeat = setInterval(
+      () => writeHeartbeat(reply, wire, model),
+      heartbeatIntervalMs
+    );
     try {
       return await execute(input);
     } finally {
@@ -321,12 +425,16 @@ export function createCsapi(deps: CsapiDeps) {
       const body = (request.body ?? {}) as Record<string, unknown>;
       const stream = wantsStream(body);
       const controller = makeAbortSignal(request, reply);
+      const idempotencyKey = idempotencyKeyFor(request, keyId);
       const input: ExecuteInput = {
         keyId,
         system: extractSystem(body.system),
         messages: normalizeMessages(body.messages),
         requestedModel: typeof body.model === "string" ? body.model : config.defaultModel,
         sessionKey: resolveSessionKey({ headers: request.headers as Record<string, unknown>, body }),
+        ...(idempotencyKey ? { idempotencyKey } : {}),
+        requestId: String(request.id),
+        log: request.log,
         signal: controller.signal
       };
       const responseModel = typeof body.model === "string" && body.model ? body.model : config.defaultModel;
@@ -353,7 +461,7 @@ export function createCsapi(deps: CsapiDeps) {
 
       beginStream(reply);
       try {
-        const result = await executeWithHeartbeat(reply, input);
+        const result = await executeWithHeartbeat(reply, input, "anthropic", responseModel);
         const frames = buildAnthropicStreamFrames({
           id: anthropicMessageId(),
           model: responseModel,
@@ -387,6 +495,7 @@ export function createCsapi(deps: CsapiDeps) {
       const body = (request.body ?? {}) as Record<string, unknown>;
       const stream = wantsStream(body);
       const controller = makeAbortSignal(request, reply);
+      const idempotencyKey = idempotencyKeyFor(request, keyId);
       // OpenAI carries system as a message; Anthropic uses a top-level field.
       const input: ExecuteInput = {
         keyId,
@@ -394,6 +503,9 @@ export function createCsapi(deps: CsapiDeps) {
         messages: normalizeMessages(body.messages),
         requestedModel: typeof body.model === "string" ? body.model : config.defaultModel,
         sessionKey: resolveSessionKey({ headers: request.headers as Record<string, unknown>, body }),
+        ...(idempotencyKey ? { idempotencyKey } : {}),
+        requestId: String(request.id),
+        log: request.log,
         signal: controller.signal
       };
       const responseModel = typeof body.model === "string" && body.model ? body.model : config.defaultModel;
@@ -419,7 +531,7 @@ export function createCsapi(deps: CsapiDeps) {
 
       beginStream(reply);
       try {
-        const result = await executeWithHeartbeat(reply, input);
+        const result = await executeWithHeartbeat(reply, input, "openai", responseModel);
         const frames = buildOpenAiStreamFrames({
           id: openaiCompletionId(),
           model: responseModel,

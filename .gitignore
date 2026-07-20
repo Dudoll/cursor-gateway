@@ -5,6 +5,8 @@ dist-types/
 .vite/
 coverage/
 *.tsbuildinfo
+__pycache__/
+*.py[cod]
 
 # TypeScript output emitted beside Vite configuration sources
 apps/*/vite.config.js

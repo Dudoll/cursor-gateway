@@ -15,6 +15,7 @@ import {
   lastUserText,
   matchApiKey,
   normalizeMessages,
+  PROMPT_TRUNCATION_MARKER,
   resolveSessionKey,
   serializeSse,
   timingSafeEqualStr,
@@ -84,10 +85,40 @@ test("buildPrompt honors stateless / session-first / session-continued", () => {
   const first = buildPrompt({ system: "SYS", messages, mode: "session-first" });
   assert.ok(first.includes("SYS"));
   assert.ok(first.includes("second"));
-  assert.ok(!first.includes("first"));
+  assert.ok(first.includes("first"));
 
   const cont = buildPrompt({ system: "SYS", messages, mode: "session-continued" });
   assert.equal(cont, "second");
+});
+
+test("buildPrompt preserves OpenAI system messages", () => {
+  const prompt = buildPrompt({
+    system: "",
+    messages: normalizeMessages([
+      { role: "system", content: "SYSTEM-INSTRUCTION" },
+      { role: "user", content: "question" }
+    ]),
+    mode: "stateless"
+  });
+  assert.match(prompt, /SYSTEM-INSTRUCTION/);
+  assert.match(prompt, /User: question/);
+});
+
+test("buildPrompt bounds large context while preserving the latest turn", () => {
+  const messages = normalizeMessages([
+    { role: "user", content: `old-${"x".repeat(4_000)}` },
+    { role: "assistant", content: `reply-${"y".repeat(4_000)}` },
+    { role: "user", content: "LATEST-USER-TURN" }
+  ]);
+  const prompt = buildPrompt({
+    system: `SYSTEM-${"s".repeat(2_000)}`,
+    messages,
+    mode: "session-first",
+    maxChars: 1_024
+  });
+  assert.ok(prompt.length <= 1_024);
+  assert.match(prompt, new RegExp(PROMPT_TRUNCATION_MARKER));
+  assert.match(prompt, /LATEST-USER-TURN/);
 });
 
 test("resolveSessionKey resolves from header/body/metadata", () => {
