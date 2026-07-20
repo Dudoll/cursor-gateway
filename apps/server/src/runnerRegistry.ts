@@ -9,6 +9,7 @@ export type RunnerHeartbeat = {
 };
 
 const runners = new Map<string, RunnerHeartbeat>();
+const RUNNER_ONLINE_WINDOW_MS = 3 * 60_000;
 
 export async function registerRunner(input: {
   runnerId: string;
@@ -29,7 +30,12 @@ export async function registerRunner(input: {
   return heartbeat;
 }
 
-export function listRunnerHeartbeats() {
+export function listRunnerHeartbeats(now = Date.now()) {
+  for (const [runnerId, runner] of runners) {
+    if (now - Date.parse(runner.lastSeenAt) >= RUNNER_ONLINE_WINDOW_MS) {
+      runners.delete(runnerId);
+    }
+  }
   return [...runners.values()].sort((a, b) => a.runnerId.localeCompare(b.runnerId));
 }
 

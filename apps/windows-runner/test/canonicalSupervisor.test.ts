@@ -18,7 +18,7 @@ test("canonical WSL supervisor is single-instance and waits safely for unseal", 
   assert.doesNotMatch(shell, />\s*.*\.env/);
 });
 
-test("canonical task is idempotent and disables all legacy launchers", () => {
+test("canonical task is idempotent and removes all legacy launchers", () => {
   const powershell = readFileSync(
     join(scripts, "install-wsl-e2ee-supervisor.ps1"),
     "utf8"
@@ -33,5 +33,7 @@ test("canonical task is idempotent and disables all legacy launchers", () => {
   ]) {
     assert.match(powershell, new RegExp(legacy));
   }
+  assert.match(powershell, /Unregister-ScheduledTask.*-Confirm:\$false/);
+  assert.doesNotMatch(powershell, /Disable-ScheduledTask/);
   assert.doesNotMatch(powershell, /Set-Content.*\.env|Out-File.*\.env/i);
 });

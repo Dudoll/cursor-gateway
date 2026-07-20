@@ -36,7 +36,8 @@ $task = New-ScheduledTask `
 
 Register-ScheduledTask -TaskName $TaskName -InputObject $task -Force | Out-Null
 
-# Keep legacy launchers disabled so they cannot create duplicate runner IDs.
+# Remove legacy launchers entirely. The Windows-native runner is retired; this
+# canonical task only starts the WSL supervisor.
 foreach ($legacy in @(
   "CursorGatewayWslRunner",
   "CursorGatewayWindowsRunner",
@@ -44,7 +45,8 @@ foreach ($legacy in @(
 )) {
   $existing = Get-ScheduledTask -TaskName $legacy -ErrorAction SilentlyContinue
   if ($existing) {
-    Disable-ScheduledTask -InputObject $existing | Out-Null
+    Stop-ScheduledTask -InputObject $existing -ErrorAction SilentlyContinue
+    Unregister-ScheduledTask -TaskName $legacy -Confirm:$false
   }
 }
 

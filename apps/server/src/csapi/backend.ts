@@ -50,7 +50,7 @@ export interface CsapiBackend {
   }): Promise<CsapiRunHandle>;
   /** Fetch the current run state for polling. Undefined if not found. */
   getRun(runId: string, principalId: string): Promise<CsapiRunSnapshot | undefined>;
-  /** Best-effort cancel of a run that is still queued/waiting_approval. */
+  /** Best-effort cancel of a queued or running plaintext run. */
   cancelRun(runId: string, principalId: string): Promise<void>;
   /** Structured audit hook (no secrets / no prompt content). */
   audit(input: { actorUserId?: string; eventType: string; details?: unknown }): Promise<void>;
@@ -130,7 +130,7 @@ export async function createDbBackend(): Promise<CsapiBackend> {
       };
     },
     async cancelRun(runId, principalId) {
-      await db.cancelQueuedRun(runId, principalId);
+      await db.cancelRun(runId, principalId);
     },
     async audit(input) {
       await db.appendAudit(input);

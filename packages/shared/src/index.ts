@@ -425,6 +425,24 @@ export const e2eeResultSubmissionSchema = z
   .strict();
 export type E2eeResultSubmission = z.infer<typeof e2eeResultSubmissionSchema>;
 
+export const e2eeRunRejectionCodeSchema = z.enum([
+  "client_not_paired",
+  "invalid_request",
+  "runner_state_mismatch",
+  "processor_failed"
+]);
+export type E2eeRunRejectionCode = z.infer<typeof e2eeRunRejectionCodeSchema>;
+
+export const e2eeRunRejectionSchema = z
+  .object({
+    runnerId: z.string().trim().min(1).max(128),
+    runnerKeyId: z.string().trim().min(8).max(128),
+    leaseId: z.string().uuid(),
+    code: e2eeRunRejectionCodeSchema
+  })
+  .strict();
+export type E2eeRunRejection = z.infer<typeof e2eeRunRejectionSchema>;
+
 export const e2eeRunRecordSchema = z
   .object({
     id: z.string().uuid(),

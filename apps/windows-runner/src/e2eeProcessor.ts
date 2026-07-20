@@ -53,7 +53,8 @@ export class E2eeJobProcessor {
 
   async process(
     job: E2eeRunnerJob,
-    reportEncryptedProgress: EncryptedProgressReporter
+    reportEncryptedProgress: EncryptedProgressReporter,
+    signal?: AbortSignal
   ): Promise<E2eeResultEnvelope> {
     const request = job.request;
     if (
@@ -270,7 +271,8 @@ export class E2eeJobProcessor {
             history: plaintext.history,
             allowWrites: plaintext.routing.allowWrites
           },
-          createProgress
+          createProgress,
+          signal
         );
         resultStatus = result.status;
         response = result.response;

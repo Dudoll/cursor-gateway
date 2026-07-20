@@ -5,7 +5,7 @@ import { config } from "./config.js";
 import { principalFromTelegramUserId } from "./auth.js";
 import {
   appendAudit,
-  cancelQueuedRun,
+  cancelRun,
   createConversation,
   createRun,
   getLatestConversation,
@@ -240,8 +240,8 @@ export async function registerTelegram(app: FastifyInstance) {
     const runId = ctx.message.text.replace(/^\/cancel(@\w+)?\s*/, "").trim();
     if (!runId) return ctx.reply("Usage: /cancel <runId>");
 
-    const run = await cancelQueuedRun(runId, principal.id);
-    if (!run) return ctx.reply("Run could not be cancelled. It may already be running or finished.");
+    const run = await cancelRun(runId, principal.id);
+    if (!run) return ctx.reply("Run could not be cancelled. It may already be finished.");
     await appendAudit({
       actorUserId: principal.id,
       eventType: "telegram.run.cancelled",

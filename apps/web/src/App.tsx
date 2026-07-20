@@ -1304,6 +1304,13 @@ function GatewayDashboard() {
                         </div>
                         {run.result?.response ? <Markdown>{run.result.response}</Markdown> : null}
                         {run.result?.error ? <pre className="error-pre">{run.result.error}</pre> : null}
+                        {!run.result &&
+                        (run.record.status === "error" ||
+                          run.record.status === "cancelled") ? (
+                          <pre className="error-pre">
+                            请求已由执行端安全终止。请确认设备仍已配对后重试。
+                          </pre>
+                        ) : null}
                         <E2eeRunProgressPanel run={run} />
                         <MessageMetrics
                           startedAt={run.record.startedAt ?? run.record.createdAt}

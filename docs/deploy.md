@@ -51,6 +51,8 @@ PUBLIC_ORIGIN=https://gateway.example.com
 JWT_SECRET=<至少 32 字节随机串>
 RUNNER_SHARED_SECRET=<另一段至少 32 字节随机串，且与 JWT_SECRET 不同>
 RUNNER_MAX_CONCURRENT_JOBS=3
+RUNNER_STALE_AFTER_SECONDS=900
+RUNNER_MAX_ATTEMPTS=3
 E2EE_REQUIRED_FOR_WEB=false
 E2EE_EXTENSION_ORIGINS=chrome-extension://oicmfijjdbjkjhnljcjhnojpeiobhefe
 POSTGRES_USER=cursor_gateway
@@ -97,34 +99,39 @@ curl "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/setWebhook" \
 /cancel <runId>
 ```
 
-## 4. Local Runner
+## 4. WSL Runner
 
-在 Windows 上安装 Node.js 22，克隆本仓库后配置 Runner 环境变量：
+生产拓扑只运行 WSL runner；Windows 原生 Node runner 已停用。配置
+`apps/windows-runner/.env` 后在 WSL 内构建：
 
-```powershell
-$env:GATEWAY_URL = "https://gateway.example.com"
-$env:CF_ACCESS_CLIENT_ID = "<Cloudflare Access service token client ID>"
-$env:CF_ACCESS_CLIENT_SECRET = "<Cloudflare Access service token client secret>"
-$env:RUNNER_ID = "local-runner"
-$env:RUNNER_SHARED_SECRET = "<与 VPS 相同的 RUNNER_SHARED_SECRET>"
-$env:RUNNER_MAX_CONCURRENT_JOBS = "3"
-$env:RUNNER_E2EE_ENABLED = "true"
-$env:RUNNER_LEGACY_ENABLED = "false"
-$env:RUNNER_WORKSPACES = "C:\Workspaces\project1;D:\Workspaces\project2"
-$env:CURSOR_API_KEY = "<你的 Cursor API Key>"
-$env:DEFAULT_MODEL = "auto"
-npm install
-npm run build -w @cursor-gateway/shared
-npm run build -w @cursor-gateway/e2ee
-npm run build -w @cursor-gateway/windows-runner
-npm run start -w @cursor-gateway/windows-runner
+```bash
+./apps/windows-runner/scripts/setup-runner.sh
 ```
 
-生产环境请用非管理员 Windows 账户运行，并只给该账户允许目录的 NTFS 权限——这是文件访问的硬边界。
+同时启用 E2EE 与 legacy/csapi 时，至少配置两个并发槽；一个槽固定留给
+E2EE，其他槽处理 legacy 请求，避免任一队列饿死另一队列：
 
-`RUNNER_MAX_CONCURRENT_JOBS` 在 VPS 与 Local Runner 上保持相同正整数（默认 `3`）。不同会话可并行，同一会话内任务仍串行领取。
+```dotenv
+RUNNER_MAX_CONCURRENT_JOBS=4
+RUNNER_JOB_TIMEOUT_MS=1800000
+RUNNER_CANCEL_GRACE_MS=10000
+RUNNER_E2EE_ENABLED=true
+RUNNER_LEGACY_ENABLED=true
+```
 
-更简单的启动方式见 `docs/runner.md` 与 `docs/快速开始.md`。
+从 PowerShell 注册唯一的 WSL 启动任务；脚本会删除旧 WSL 和 Windows
+原生 runner/watchdog 任务：
+
+```powershell
+powershell -ExecutionPolicy Bypass `
+  -File apps\windows-runner\scripts\install-wsl-e2ee-supervisor.ps1 -Start
+```
+
+运行中的任务每 30 秒续租。客户端取消或租约失效会取消 Cursor SDK run；
+超时任务会被本地取消，runner 中断任务最多自动重试
+`RUNNER_MAX_ATTEMPTS` 次。
+
+更多启动方式见 `docs/runner.md` 与 `docs/快速开始.md`。
 
 Runner 启动后按 [e2ee.md](e2ee.md) 完成扩展签名分发、双向离线配对和密钥备份。验证 E2EE 后再将 VPS 的 `E2EE_REQUIRED_FOR_WEB` 改为 `true`；不要先开启强制开关。
 

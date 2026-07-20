@@ -29,6 +29,8 @@ const envSchema = z.object({
   HERMES_RUNNER_SHARED_SECRET: z.string().default(""),
   RUNNER_REQUIRE_APPROVAL: booleanEnv(false),
   RUNNER_MAX_CONCURRENT_JOBS: z.coerce.number().int().positive().default(3),
+  RUNNER_STALE_AFTER_SECONDS: z.coerce.number().int().positive().default(900),
+  RUNNER_MAX_ATTEMPTS: z.coerce.number().int().positive().max(10).default(3),
   E2EE_REQUIRED_FOR_WEB: booleanEnv(false),
   E2EE_EXTENSION_ORIGINS: z.string().default(""),
   SECURE_CLIENT_ORIGIN: z.string().default(""),
@@ -123,6 +125,8 @@ export const config = {
   hermesRunnerSharedSecret: parsed.HERMES_RUNNER_SHARED_SECRET,
   runnerRequireApproval: parsed.RUNNER_REQUIRE_APPROVAL,
   runnerMaxConcurrentJobs: parsed.RUNNER_MAX_CONCURRENT_JOBS,
+  runnerStaleAfterSeconds: parsed.RUNNER_STALE_AFTER_SECONDS,
+  runnerMaxAttempts: parsed.RUNNER_MAX_ATTEMPTS,
   e2eeRequiredForWeb: parsed.E2EE_REQUIRED_FOR_WEB,
   e2eeExtensionOrigins: new Set(splitCsv(parsed.E2EE_EXTENSION_ORIGINS)),
   // SECURE_CLIENT_ORIGIN accepts a comma-separated allowlist so the same

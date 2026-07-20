@@ -1,5 +1,5 @@
 import { Agent, AgentNotFoundError, Cursor, CursorAgentError, configureCursorSdk } from "@cursor/sdk";
-import type { SDKMessage } from "@cursor/sdk";
+import type { Run, SDKMessage } from "@cursor/sdk";
 
 // This WSL host is region-blocked and reaches Cursor only via the local HTTP
 // proxy. The SDK's agent RPC uses @connectrpc/connect-node; its HTTP/2 path
@@ -17,10 +17,81 @@ import type {
 import { config } from "./config.js";
 import { toLocalPath } from "./pathTranslation.js";
 
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
 export type ProgressReporter = (progress: {
   kind: RunProgressKind;
   message: string;
 }) => Promise<void>;
+
+type CancellableRun = Pick<Run, "supports" | "cancel">;
+
+export async function waitForRunWithControls<T>(
+  run: CancellableRun,
+  operation: () => Promise<T>,
+  options: {
+    timeoutMs: number;
+    cancelGraceMs: number;
+    signal?: AbortSignal;
+  }
+): Promise<T> {
+  let settled = false;
+  let cancelling = false;
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  let rejectControl: ((reason: Error) => void) | undefined;
+
+  const cancel = async (code: "runner_job_timeout" | "runner_job_cancelled") => {
+    if (settled || cancelling) return;
+    cancelling = true;
+    if (run.supports("cancel")) {
+      await Promise.race([
+        run.cancel().catch(() => undefined),
+        sleep(options.cancelGraceMs)
+      ]);
+    }
+    rejectControl?.(new Error(code));
+  };
+  const onAbort = () => void cancel("runner_job_cancelled");
+  const control = new Promise<never>((_resolve, reject) => {
+    rejectControl = reject;
+  });
+
+  timeout = setTimeout(() => void cancel("runner_job_timeout"), options.timeoutMs);
+  options.signal?.addEventListener("abort", onAbort, { once: true });
+  if (options.signal?.aborted) onAbort();
+
+  try {
+    return await Promise.race([operation(), control]);
+  } finally {
+    settled = true;
+    if (timeout) clearTimeout(timeout);
+    options.signal?.removeEventListener("abort", onAbort);
+  }
+}
+
+async function disposeAgent(
+  agent:
+    | Awaited<ReturnType<typeof Agent.create>>
+    | Awaited<ReturnType<typeof Agent.resume>>
+    | undefined
+) {
+  const disposable = agent as
+    | {
+        [Symbol.asyncDispose]?: () => Promise<void>;
+        close?: () => Promise<void>;
+      }
+    | undefined;
+  const dispose = disposable?.[Symbol.asyncDispose]
+    ? () => disposable[Symbol.asyncDispose]!.call(disposable)
+    : disposable?.close
+      ? () => disposable.close!.call(disposable)
+      : undefined;
+  if (!dispose) return;
+  await Promise.race([
+    dispose().catch(() => undefined),
+    sleep(config.cancelGraceMs)
+  ]);
+}
 
 function buildPrompt(job: RunnerJob, includeHistory: boolean) {
   const identityBlock = job.userIdentity
@@ -180,9 +251,22 @@ export async function listCursorModels(): Promise<ModelInfo[]> {
 
 export async function runCursorJob(
   job: RunnerJob,
-  reportProgress?: ProgressReporter
+  reportProgress?: ProgressReporter,
+  signal?: AbortSignal
 ): Promise<RunnerJobResult> {
   let agent: Awaited<ReturnType<typeof Agent.create>> | Awaited<ReturnType<typeof Agent.resume>> | undefined;
+
+  if (signal?.aborted) {
+    return {
+      runId: job.runId,
+      status: "cancelled",
+      response: null,
+      error: "runner_job_cancelled",
+      agentId: null,
+      inputTokens: null,
+      outputTokens: null
+    };
+  }
 
   try {
     let includeHistory = !job.agentId;
@@ -206,18 +290,29 @@ export async function runCursorJob(
     }
 
     const run = await agent.send(buildPrompt(job, includeHistory));
+    console.log(`Cursor run ${run.id} started for gateway run ${job.runId} (agent ${run.agentId})`);
     let lastAssistantText = "";
-    if (reportProgress && run.supports("stream")) {
-      for await (const message of run.stream()) {
-        if (message.type === "assistant") {
-          const text = assistantTextFromMessage(message);
-          if (text.trim()) lastAssistantText = text;
+    const result = await waitForRunWithControls(
+      run,
+      async () => {
+        if (reportProgress && run.supports("stream")) {
+          for await (const message of run.stream()) {
+            if (message.type === "assistant") {
+              const text = assistantTextFromMessage(message);
+              if (text.trim()) lastAssistantText = text;
+            }
+            const progress = progressFromMessage(message);
+            if (progress) await reportProgress(progress);
+          }
         }
-        const progress = progressFromMessage(message);
-        if (progress) await reportProgress(progress);
+        return run.wait();
+      },
+      {
+        timeoutMs: config.jobTimeoutMs,
+        cancelGraceMs: config.cancelGraceMs,
+        ...(signal ? { signal } : {})
       }
-    }
-    const result = await run.wait();
+    );
     const status = (result as { status?: string }).status;
     const usage = result.usage ?? run.usage;
     const inputTokens = usage?.inputTokens ?? null;
@@ -263,9 +358,10 @@ export async function runCursorJob(
         : error instanceof Error
           ? error.message
           : String(error);
+    const cancelled = message === "runner_job_cancelled";
     return {
       runId: job.runId,
-      status: "error",
+      status: cancelled ? "cancelled" : "error",
       response: null,
       error: message,
       agentId: agent && "agentId" in agent ? String(agent.agentId) : null,
@@ -273,9 +369,6 @@ export async function runCursorJob(
       outputTokens: null
     };
   } finally {
-    const disposable = agent as { [Symbol.asyncDispose]?: () => Promise<void>; close?: () => Promise<void> } | undefined;
-    const dispose = disposable?.[Symbol.asyncDispose];
-    if (dispose) await dispose.call(disposable);
-    else if (disposable?.close) await disposable.close();
+    await disposeAgent(agent);
   }
 }

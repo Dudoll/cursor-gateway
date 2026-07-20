@@ -27,6 +27,7 @@ import {
   e2eeCsAuthIntentRequestSchema,
   e2eeProgressSubmissionSchema,
   e2eeResultSubmissionSchema,
+  e2eeRunRejectionSchema,
   e2eeRunnerClaimRequestSchema,
   e2eeRunnerHeartbeatSchema,
   e2eePasskeyPairingStartRequestSchema,
@@ -97,7 +98,8 @@ import {
   listRuns,
   listTrash,
   listWorkspaces,
-  requeueStaleRuns,
+  recoverStaleRuns,
+  renewRunLease,
   restoreConversation,
   restoreRun,
   softDeleteConversation,
@@ -117,6 +119,7 @@ import {
   listE2eeConversations,
   listE2eeMemory,
   listE2eeRunners,
+  rejectE2eeRun,
   renewE2eeLease,
   scrubLegacyData,
   submitE2eeApproval,
@@ -242,8 +245,8 @@ function looksLikeMissingAgent(error: string | null): boolean {
   );
 }
 
-async function claimJobFor(executor: RunExecutor) {
-  const run = await claimNextRun(executor);
+async function claimJobFor(executor: RunExecutor, runnerId: string) {
+  const run = await claimNextRun(executor, runnerId);
   if (!run) return undefined;
 
   const row = await getRunWithConversation(run.id);
@@ -1594,21 +1597,43 @@ export async function registerRoutes(app: FastifyInstance) {
 
     runner.post("/heartbeat", async (request) => {
       const body = heartbeatSchema.parse(request.body);
+      const recovery = await recoverStaleRuns(
+        "windows",
+        config.runnerStaleAfterSeconds,
+        config.runnerMaxAttempts
+      );
       const heartbeat = await registerRunner(body);
       await appendAudit({
         eventType: "runner.heartbeat",
         details: {
           runnerId: body.runnerId,
           modelCount: body.models.length,
-          workspaceCount: body.workspaces.length
+          workspaceCount: body.workspaces.length,
+          recovery
         }
       });
       return { heartbeat };
     });
 
     runner.post("/jobs/claim", async (request, reply) => {
-      const job = await claimJobFor("windows");
+      const body = z
+        .object({ runnerId: z.string().trim().min(1).max(128).default("windows-legacy") })
+        .strict()
+        .parse(request.body ?? {});
+      const job = await claimJobFor("windows", body.runnerId);
       return job ? { job } : reply.code(204).send();
+    });
+
+    runner.post("/jobs/:runId/lease", async (request, reply) => {
+      const params = z.object({ runId: z.string().uuid() }).parse(request.params);
+      const body = z
+        .object({ runnerId: z.string().trim().min(1).max(128) })
+        .strict()
+        .parse(request.body);
+      const renewed = await renewRunLease(params.runId, body.runnerId);
+      return renewed
+        ? reply.code(204).send()
+        : reply.code(409).send({ error: "run_lease_invalid" });
     });
 
     runner.post("/jobs/:runId/result", async (request, reply) => {
@@ -1688,7 +1713,8 @@ export async function registerRoutes(app: FastifyInstance) {
       }
       const job = await claimNextE2eeRun({
         runnerId: body.runnerId,
-        runnerKeyId: body.runnerKeyId
+        runnerKeyId: body.runnerKeyId,
+        maxAttempts: config.runnerMaxAttempts
       });
       return job ? { job } : reply.code(204).send();
     });
@@ -1765,6 +1791,34 @@ export async function registerRoutes(app: FastifyInstance) {
           status: body.envelope.status,
           resultMessageId: body.envelope.messageId,
           ciphertextBytes: body.envelope.payload.ciphertext.length
+        }
+      });
+      return { run };
+    });
+
+    runner.post("/e2ee/v1/jobs/:runId/reject", async (request, reply) => {
+      const params = z.object({ runId: z.string().uuid() }).parse(request.params);
+      const body = e2eeRunRejectionSchema.parse(request.body);
+      const registered = await getE2eeRunner(body.runnerId);
+      if (
+        !registered ||
+        registered.e2ee.encryptionKey.keyId !== body.runnerKeyId
+      ) {
+        return reply.code(409).send({ error: "runner_e2ee_identity_mismatch" });
+      }
+      const run = await rejectE2eeRun({
+        runId: params.runId,
+        runnerId: body.runnerId,
+        runnerKeyId: body.runnerKeyId,
+        leaseId: body.leaseId
+      });
+      if (!run) return reply.code(409).send({ error: "run_lease_invalid" });
+      await appendAudit({
+        eventType: "e2ee.run.rejected",
+        details: {
+          runId: params.runId,
+          runnerId: body.runnerId,
+          code: body.code
         }
       });
       return { run };
@@ -2273,21 +2327,25 @@ export async function registerRoutes(app: FastifyInstance) {
 
     hermesRunner.post("/heartbeat", async (request) => {
       const body = heartbeatSchema.parse(request.body);
-      const requeued = await requeueStaleRuns("hermes");
+      const recovery = await recoverStaleRuns(
+        "hermes",
+        config.runnerStaleAfterSeconds,
+        config.runnerMaxAttempts
+      );
       const heartbeat = await registerRunner(body);
       await appendAudit({
         eventType: "hermes_runner.heartbeat",
         details: {
           runnerId: body.runnerId,
           modelCount: body.models.length,
-          requeued
+          recovery
         }
       });
       return { heartbeat };
     });
 
     hermesRunner.post("/jobs/claim", async (request, reply) => {
-      const job = await claimJobFor("hermes");
+      const job = await claimJobFor("hermes", "hermes");
       return job ? { job } : reply.code(204).send();
     });
 

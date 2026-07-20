@@ -85,6 +85,6 @@ Start it now (foreground, Ctrl+C to stop):
 
 Keep it running automatically:
   Linux (systemd):   ./apps/windows-runner/scripts/install-runner-service.sh
-  WSL on Windows:    run from an elevated PowerShell:
-                     powershell -ExecutionPolicy Bypass -File apps\\windows-runner\\scripts\\install-wsl-runner-daemon.ps1
+  WSL on Windows:    run from PowerShell (the native Windows runner is retired):
+                     powershell -ExecutionPolicy Bypass -File apps\\windows-runner\\scripts\\install-wsl-e2ee-supervisor.ps1 -Start
 EOF

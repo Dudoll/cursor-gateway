@@ -89,6 +89,7 @@ export async function migrate() {
       idempotency_key text,
       input_tokens bigint,
       output_tokens bigint,
+      claim_attempts integer not null default 0,
       started_at timestamptz,
       finished_at timestamptz,
       deleted_at timestamptz,
@@ -121,6 +122,7 @@ export async function migrate() {
     alter table runs add column if not exists idempotency_key text;
     alter table runs add column if not exists input_tokens bigint;
     alter table runs add column if not exists output_tokens bigint;
+    alter table runs add column if not exists claim_attempts integer not null default 0;
     alter table runs add column if not exists started_at timestamptz;
     alter table runs add column if not exists finished_at timestamptz;
     alter table runs add column if not exists deleted_at timestamptz;
@@ -921,11 +923,15 @@ export async function createRun(input: {
 
 export type RunExecutor = "windows" | "hermes";
 
-export async function claimNextRun(executor: RunExecutor) {
+export async function claimNextRun(executor: RunExecutor, runnerId: string) {
   const result = await pool.query(
     `
       update runs
-      set status = 'running', started_at = now(), updated_at = now()
+      set status = 'running',
+          started_at = now(),
+          updated_at = now(),
+          claimed_by = $2,
+          claim_attempts = claim_attempts + 1
       where id = (
         select r.id
         from runs r
@@ -946,33 +952,92 @@ export async function claimNextRun(executor: RunExecutor) {
       )
       returning *
     `,
-    [executor]
+    [executor, runnerId]
   );
   return result.rows[0] ? mapRun(result.rows[0]) : undefined;
 }
 
-export async function requeueStaleRuns(executor: RunExecutor, staleAfterSeconds = 900) {
+export type StaleRunRecovery = {
+  requeued: number;
+  failed: number;
+};
+
+export async function recoverStaleRuns(
+  executor: RunExecutor,
+  staleAfterSeconds = 900,
+  maxAttempts = 3
+): Promise<StaleRunRecovery> {
+  return inTransaction(async (client) => {
+    const failed = await client.query(
+      `
+        update runs
+        set status = 'error',
+            error = 'runner interrupted too many times',
+            progress = null,
+            progress_kind = null,
+            claimed_by = null,
+            finished_at = now(),
+            updated_at = now()
+        where status = 'running'
+          and content_mode = 'plaintext'
+          and deleted_at is null
+          and updated_at < now() - make_interval(secs => $2)
+          and claim_attempts >= $3
+          and (
+            ($1 = 'hermes' and model like 'hermes:%')
+            or
+            ($1 = 'windows' and model not like 'hermes:%')
+          )
+        returning id
+      `,
+      [executor, staleAfterSeconds, maxAttempts]
+    );
+    const requeued = await client.query(
+      `
+        update runs
+        set status = 'queued',
+            error = 'requeued after runner interruption',
+            progress = null,
+            progress_kind = null,
+            claimed_by = null,
+            started_at = null,
+            updated_at = now()
+        where status = 'running'
+          and content_mode = 'plaintext'
+          and deleted_at is null
+          and updated_at < now() - make_interval(secs => $2)
+          and claim_attempts < $3
+          and (
+            ($1 = 'hermes' and model like 'hermes:%')
+            or
+            ($1 = 'windows' and model not like 'hermes:%')
+          )
+        returning id
+      `,
+      [executor, staleAfterSeconds, maxAttempts]
+    );
+    return {
+      requeued: requeued.rowCount ?? 0,
+      failed: failed.rowCount ?? 0
+    };
+  });
+}
+
+export async function renewRunLease(runId: string, runnerId: string) {
   const result = await pool.query(
     `
       update runs
-      set
-        status = 'queued',
-        error = 'requeued after runner interruption',
-        updated_at = now()
-      where status = 'running'
+      set updated_at = now()
+      where id = $1
+        and claimed_by = $2
+        and status = 'running'
         and content_mode = 'plaintext'
         and deleted_at is null
-        and updated_at < now() - make_interval(secs => $2)
-        and (
-          ($1 = 'hermes' and model like 'hermes:%')
-          or
-          ($1 = 'windows' and model not like 'hermes:%')
-        )
       returning id
     `,
-    [executor, staleAfterSeconds]
+    [runId, runnerId]
   );
-  return result.rowCount ?? 0;
+  return (result.rowCount ?? 0) > 0;
 }
 
 export async function finishRun(input: {
@@ -993,6 +1058,7 @@ export async function finishRun(input: {
           output_tokens = $6,
           progress = null,
           progress_kind = null,
+          claimed_by = null,
           finished_at = now(),
           updated_at = now()
       where id = $1
@@ -1488,12 +1554,21 @@ export async function restoreConversation(conversationId: string, userId: string
   });
 }
 
-export async function cancelQueuedRun(runId: string, userId: string) {
+export async function cancelRun(runId: string, userId: string) {
   const result = await pool.query(
     `
       update runs
-      set status = 'cancelled', finished_at = now(), updated_at = now()
-      where id = $1 and user_id = $2 and status in ('queued', 'waiting_approval')
+      set status = 'cancelled',
+          error = 'cancelled by caller',
+          progress = null,
+          progress_kind = null,
+          claimed_by = null,
+          finished_at = now(),
+          updated_at = now()
+      where id = $1
+        and user_id = $2
+        and content_mode = 'plaintext'
+        and status in ('queued', 'waiting_approval', 'running')
       returning *
     `,
     [runId, userId]

@@ -636,12 +636,31 @@ export async function scrubLegacyData(input: {
 export async function claimNextE2eeRun(input: {
   runnerId: string;
   runnerKeyId: string;
+  maxAttempts?: number;
 }): Promise<E2eeRunnerJob | undefined> {
   const result = await pool.query(
     `
-      with expired as (
+      with expired_failed as (
+        update runs
+        set status = 'error',
+            progress_envelope = null,
+            progress_sequence = null,
+            claim_lease_id = null,
+            claimed_by = null,
+            lease_expires_at = null,
+            finished_at = now(),
+            updated_at = now()
+        where content_mode = $1
+          and status = 'running'
+          and deleted_at is null
+          and lease_expires_at < now()
+          and claim_attempts >= $4
+      ),
+      expired_requeued as (
         update runs
         set status = 'queued',
+            progress_envelope = null,
+            progress_sequence = null,
             claim_lease_id = null,
             claimed_by = null,
             lease_expires_at = null,
@@ -649,7 +668,9 @@ export async function claimNextE2eeRun(input: {
             updated_at = now()
         where content_mode = $1
           and status = 'running'
+          and deleted_at is null
           and lease_expires_at < now()
+          and claim_attempts < $4
       ),
       candidate as (
         select r.id
@@ -676,14 +697,21 @@ export async function claimNextE2eeRun(input: {
       set status = 'running',
           started_at = now(),
           updated_at = now(),
+          claim_attempts = claimed.claim_attempts + 1,
           claim_lease_id = gen_random_uuid(),
           claimed_by = $2,
-          lease_expires_at = now() + make_interval(mins => $4)
+          lease_expires_at = now() + make_interval(mins => $5)
       from candidate
       where claimed.id = candidate.id
       returning claimed.*
     `,
-    [CONTENT_MODE, input.runnerId, input.runnerKeyId, LEASE_MINUTES]
+    [
+      CONTENT_MODE,
+      input.runnerId,
+      input.runnerKeyId,
+      input.maxAttempts ?? 3,
+      LEASE_MINUTES
+    ]
   );
   const row = result.rows[0];
   if (!row) return undefined;
@@ -781,6 +809,7 @@ export async function finishE2eeRun(input: {
           progress_envelope = null,
           progress_sequence = null,
           claim_lease_id = null,
+          claimed_by = null,
           lease_expires_at = null,
           finished_at = now(),
           updated_at = now()
@@ -815,6 +844,61 @@ export async function finishE2eeRun(input: {
         and result_envelope ->> 'messageId' = $4
     `,
     [envelope.runId, input.runnerId, CONTENT_MODE, envelope.messageId]
+  );
+  return existing.rows[0] ? mapRun(existing.rows[0]) : undefined;
+}
+
+export async function rejectE2eeRun(input: {
+  runId: string;
+  runnerId: string;
+  runnerKeyId: string;
+  leaseId: string;
+}) {
+  const result = await pool.query(
+    `
+      update runs
+      set status = 'error',
+          progress_envelope = null,
+          progress_sequence = null,
+          claim_lease_id = null,
+          claimed_by = null,
+          lease_expires_at = null,
+          finished_at = now(),
+          updated_at = now()
+      where id = $1
+        and target_runner_id = $2
+        and runner_key_id = $3
+        and claimed_by = $2
+        and claim_lease_id = $4
+        and status = 'running'
+        and content_mode = $5
+      returning *
+    `,
+    [
+      input.runId,
+      input.runnerId,
+      input.runnerKeyId,
+      input.leaseId,
+      CONTENT_MODE
+    ]
+  );
+  if (result.rows[0]) return mapRun(result.rows[0]);
+
+  // A lost HTTP response must not cause the runner to retry a terminally
+  // rejected job forever. Treat an already-terminal, envelope-free rejection
+  // for the same runner identity as an idempotent success.
+  const existing = await pool.query(
+    `
+      select *
+      from runs
+      where id = $1
+        and target_runner_id = $2
+        and runner_key_id = $3
+        and status = 'error'
+        and content_mode = $4
+        and result_envelope is null
+    `,
+    [input.runId, input.runnerId, input.runnerKeyId, CONTENT_MODE]
   );
   return existing.rows[0] ? mapRun(existing.rows[0]) : undefined;
 }
