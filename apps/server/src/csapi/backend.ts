@@ -5,6 +5,13 @@
 // database required). Everything here is plaintext (方案 B); there is no E2EE.
 import { createHash } from "node:crypto";
 import type { RunStatus } from "@cursor-gateway/shared";
+import {
+  applicationStatusCodeForRun,
+  isTerminalRunStatus,
+  providerForModel,
+  type CsapiCancelReason,
+  type CsapiProvider
+} from "./runTimeouts.js";
 
 export interface CsapiRunHandle {
   runId: string;
@@ -19,6 +26,33 @@ export interface CsapiRunSnapshot {
   progress: string | null;
   inputTokens: number | null;
   outputTokens: number | null;
+  queuedAt: string;
+  startedAt: string | null;
+  finishedAt: string | null;
+  lastActivityAt: string | null;
+  cancelReason: string | null;
+  model: string;
+  provider: CsapiProvider;
+}
+
+export interface CsapiRunObservation {
+  runId: string;
+  status: RunStatus;
+  queuedAt: string;
+  startedAt: string | null;
+  finishedAt: string | null;
+  lastActivityAt: string | null;
+  terminal: boolean;
+  cancelReason: string | null;
+  claimAttempts: number;
+  provider: CsapiProvider;
+  model: string;
+  applicationStatusCode: string | null;
+}
+
+export interface CsapiCapacitySummary {
+  runnerIdentities: number;
+  totalRunnerSlots: number;
 }
 
 export interface CsapiBackend {
@@ -26,6 +60,8 @@ export interface CsapiBackend {
   listModelIds(): string[];
   /** Number of runners that have sent a heartbeat recently. */
   runnersOnline(): number;
+  /** Aggregate advertised worker capacity, without exposing runner identities. */
+  capacitySummary?(): CsapiCapacitySummary;
   /** Whether a model id is routable ("auto" is always routable). */
   modelIsKnown(model: string): boolean;
   /** Resolve a usable workspace id, preferring `preferred`. Undefined if none. */
@@ -55,14 +91,87 @@ export interface CsapiBackend {
     workspaceId: string;
     prompt: string;
     allowWrites: boolean;
+    keyId: string;
     idempotencyKey?: string;
   }): Promise<CsapiRunHandle>;
   /** Fetch the current run state for polling. Undefined if not found. */
   getRun(runId: string, principalId: string): Promise<CsapiRunSnapshot | undefined>;
-  /** Best-effort cancel of a queued or running plaintext run. */
-  cancelRun(runId: string, principalId: string): Promise<void>;
+  /** Read-only, API-key-scoped evidence lookup for acceptance validation. */
+  observeByIdempotencyKey(
+    idempotencyKey: string,
+    principalId: string,
+    keyId: string
+  ): Promise<CsapiRunObservation[]>;
+  /** Read-only, API-key-scoped evidence lookup by opaque run UUID. */
+  observeByRunId(
+    runId: string,
+    principalId: string,
+    keyId: string
+  ): Promise<CsapiRunObservation | undefined>;
+  /** Conditionally cancel an active plaintext run and return its terminal snapshot. */
+  cancelRun(
+    runId: string,
+    principalId: string,
+    reason: CsapiCancelReason,
+    timeoutMs?: number
+  ): Promise<CsapiRunSnapshot | undefined>;
   /** Structured audit hook (no secrets / no prompt content). */
   audit(input: { actorUserId?: string; eventType: string; details?: unknown }): Promise<void>;
+}
+
+type EvidenceRun = {
+  id: string;
+  status: RunStatus;
+  response: string | null;
+  error: string | null;
+  progress: string | null;
+  inputTokens: number | null;
+  outputTokens: number | null;
+  queuedAt: string;
+  startedAt: string | null;
+  finishedAt: string | null;
+  lastActivityAt: string | null;
+  cancelReason: string | null;
+  claimAttempts: number;
+  model: string;
+};
+
+function snapshotFromRun(run: EvidenceRun): CsapiRunSnapshot {
+  return {
+    status: run.status,
+    response: run.response,
+    error: run.error,
+    progress: run.progress,
+    inputTokens: run.inputTokens,
+    outputTokens: run.outputTokens,
+    queuedAt: run.queuedAt,
+    startedAt: run.startedAt,
+    finishedAt: run.finishedAt,
+    lastActivityAt: run.lastActivityAt,
+    cancelReason: run.cancelReason,
+    model: run.model,
+    provider: providerForModel(run.model)
+  };
+}
+
+function observationFromRun(run: EvidenceRun): CsapiRunObservation {
+  return {
+    runId: run.id,
+    status: run.status,
+    queuedAt: run.queuedAt,
+    startedAt: run.startedAt,
+    finishedAt: run.finishedAt,
+    lastActivityAt: run.lastActivityAt,
+    terminal: isTerminalRunStatus(run.status),
+    cancelReason: run.cancelReason,
+    claimAttempts: run.claimAttempts,
+    provider: providerForModel(run.model),
+    model: run.model,
+    applicationStatusCode: applicationStatusCodeForRun(
+      run.status,
+      run.cancelReason
+    )
+  };
 }
 
 /**
@@ -82,6 +191,16 @@ export async function createDbBackend(): Promise<CsapiBackend> {
     },
     runnersOnline() {
       return registry.listRunnerHeartbeats().length;
+    },
+    capacitySummary() {
+      const runners = registry.listRunnerHeartbeats();
+      return {
+        runnerIdentities: runners.length,
+        totalRunnerSlots: runners.reduce(
+          (total, runner) => total + runner.maxConcurrentJobs,
+          0
+        )
+      };
     },
     modelIsKnown(model: string) {
       return registry.modelIsKnown(model);
@@ -141,6 +260,7 @@ export async function createDbBackend(): Promise<CsapiBackend> {
           prompt: input.prompt,
           allowWrites: input.allowWrites,
           memoryEnabled: false,
+          csapiKeyId: input.keyId,
           ...(input.idempotencyKey ? { idempotencyKey: input.idempotencyKey } : {})
         });
       } catch (error) {
@@ -161,17 +281,25 @@ export async function createDbBackend(): Promise<CsapiBackend> {
     async getRun(runId, principalId) {
       const run = await db.getRunForUser(runId, principalId);
       if (!run) return undefined;
-      return {
-        status: run.status,
-        response: run.response,
-        error: run.error,
-        progress: run.progress,
-        inputTokens: run.inputTokens,
-        outputTokens: run.outputTokens
-      };
+      return snapshotFromRun(run);
     },
-    async cancelRun(runId, principalId) {
-      await db.cancelRun(runId, principalId);
+    async observeByIdempotencyKey(idempotencyKey, principalId, keyId) {
+      const run = await db.getRunByIdempotencyKey(
+        principalId,
+        idempotencyKey
+      );
+      if (!run || run.csapiKeyId !== keyId) return [];
+      return [observationFromRun(run)];
+    },
+    async observeByRunId(runId, principalId, keyId) {
+      const run = await db.getRunForUser(runId, principalId);
+      if (!run || run.csapiKeyId !== keyId) return undefined;
+      return observationFromRun(run);
+    },
+    async cancelRun(runId, principalId, reason, timeoutMs) {
+      const run = await db.cancelRun(runId, principalId, reason, timeoutMs);
+      if (!run) return undefined;
+      return snapshotFromRun(run);
     },
     async audit(input) {
       await db.appendAudit(input);

@@ -60,7 +60,7 @@ const envSchema = z.object({
   RUNNER_SHARED_SECRET: z.string().min(32),
   RUNNER_WORKSPACES: z.string().min(1),
   RUNNER_POLL_INTERVAL_MS: z.coerce.number().int().positive().default(2000),
-  RUNNER_MAX_CONCURRENT_JOBS: z.coerce.number().int().positive().default(3),
+  RUNNER_MAX_CONCURRENT_JOBS: z.coerce.number().int().positive().default(6),
   RUNNER_JOB_TIMEOUT_MS: z.coerce.number().int().positive().default(1_800_000),
   RUNNER_CANCEL_GRACE_MS: z.coerce.number().int().positive().default(10_000),
   RUNNER_VERSION: z.string().min(1).default("0.1.0"),
@@ -149,16 +149,6 @@ if (Boolean(parsed.CF_ACCESS_CLIENT_ID) !== Boolean(parsed.CF_ACCESS_CLIENT_SECR
 if (!parsed.RUNNER_E2EE_ENABLED && !parsed.RUNNER_LEGACY_ENABLED) {
   throw new Error("At least one of RUNNER_E2EE_ENABLED or RUNNER_LEGACY_ENABLED must be enabled");
 }
-if (
-  parsed.RUNNER_E2EE_ENABLED &&
-  parsed.RUNNER_LEGACY_ENABLED &&
-  parsed.RUNNER_MAX_CONCURRENT_JOBS < 2
-) {
-  throw new Error(
-    "RUNNER_MAX_CONCURRENT_JOBS must be at least 2 when E2EE and legacy queues are both enabled"
-  );
-}
-
 if (parsed.RUNNER_WEBAUTHN_ENABLED && (!parsed.CF_ACCESS_TEAM_DOMAIN || !parsed.CF_ACCESS_AUD)) {
   throw new Error(
     "RUNNER_WEBAUTHN_ENABLED=true requires CF_ACCESS_TEAM_DOMAIN and CF_ACCESS_AUD " +
@@ -193,16 +183,6 @@ export const config = {
     .filter(Boolean),
   pollIntervalMs: parsed.RUNNER_POLL_INTERVAL_MS,
   maxConcurrentJobs: parsed.RUNNER_MAX_CONCURRENT_JOBS,
-  e2eeConcurrentJobs: parsed.RUNNER_E2EE_ENABLED
-    ? parsed.RUNNER_LEGACY_ENABLED
-      ? 1
-      : parsed.RUNNER_MAX_CONCURRENT_JOBS
-    : 0,
-  legacyConcurrentJobs: parsed.RUNNER_LEGACY_ENABLED
-    ? parsed.RUNNER_E2EE_ENABLED
-      ? parsed.RUNNER_MAX_CONCURRENT_JOBS - 1
-      : parsed.RUNNER_MAX_CONCURRENT_JOBS
-    : 0,
   jobTimeoutMs: parsed.RUNNER_JOB_TIMEOUT_MS,
   cancelGraceMs: parsed.RUNNER_CANCEL_GRACE_MS,
   runnerVersion: parsed.RUNNER_VERSION,

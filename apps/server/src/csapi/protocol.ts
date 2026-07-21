@@ -60,13 +60,27 @@ export function matchApiKey(presented: string | undefined, allowed: Iterable<str
 
 /** A short, non-reversible id for a key, safe to log / use as a map key. */
 export function apiKeyId(key: string): string {
-  // FNV-1a over the key → 8 hex chars. Not for security, only for bucketing.
+  // Keep this legacy identifier stable because it is part of the durable
+  // session mapping. Startup rejects any configured-key collision below.
   let hash = 0x811c9dc5;
   for (let i = 0; i < key.length; i += 1) {
     hash ^= key.charCodeAt(i);
     hash = Math.imul(hash, 0x01000193);
   }
   return `k_${(hash >>> 0).toString(16).padStart(8, "0")}`;
+}
+
+/** Fail closed before colliding key ids can share sessions or idempotency. */
+export function assertUniqueApiKeyIds(keys: Iterable<string>): void {
+  const seen = new Set<string>();
+  for (const key of keys) {
+    if (!key) continue;
+    const id = apiKeyId(key);
+    if (seen.has(id)) {
+      throw new Error("CSAPI_API_KEYS contain colliding key identifiers");
+    }
+    seen.add(id);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -372,9 +386,30 @@ export function buildAnthropicStreamFrames(input: {
   return frames;
 }
 
+export interface CsapiErrorDetails {
+  applicationStatusCode: string;
+  cancelReason?: string;
+  provider?: string;
+  model?: string;
+}
+
+function errorDetails(details: CsapiErrorDetails | undefined): Record<string, unknown> {
+  if (!details) return {};
+  return {
+    applicationStatusCode: details.applicationStatusCode,
+    ...(details.cancelReason ? { cancelReason: details.cancelReason } : {}),
+    ...(details.provider ? { provider: details.provider } : {}),
+    ...(details.model ? { model: details.model } : {})
+  };
+}
+
 /** Anthropic-style error object (also usable as an SSE `error` event payload). */
-export function anthropicError(type: string, message: string): Record<string, unknown> {
-  return { type: "error", error: { type, message } };
+export function anthropicError(
+  type: string,
+  message: string,
+  details?: CsapiErrorDetails
+): Record<string, unknown> {
+  return { type: "error", error: { type, message, ...errorDetails(details) } };
 }
 
 // ---------------------------------------------------------------------------
@@ -441,8 +476,21 @@ export function buildOpenAiStreamFrames(input: {
 export const OPENAI_STREAM_DONE: SseFrame = { data: "[DONE]" };
 
 /** OpenAI-style error object. */
-export function openaiError(message: string, type: string, code?: string): Record<string, unknown> {
-  return { error: { message, type, code: code ?? null, param: null } };
+export function openaiError(
+  message: string,
+  type: string,
+  code?: string,
+  details?: CsapiErrorDetails
+): Record<string, unknown> {
+  return {
+    error: {
+      message,
+      type,
+      code: code ?? details?.applicationStatusCode ?? null,
+      param: null,
+      ...errorDetails(details)
+    }
+  };
 }
 
 // ---------------------------------------------------------------------------

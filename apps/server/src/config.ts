@@ -1,5 +1,11 @@
 import { z } from "zod";
 import { readFileSync } from "node:fs";
+import {
+  CSAPI_DEFAULT_ABSOLUTE_TIMEOUT_MS,
+  CSAPI_DEFAULT_CALLER_WAIT_TIMEOUT_MS,
+  CSAPI_DEFAULT_IDLE_TIMEOUT_MS,
+  CSAPI_DEFAULT_QUEUE_TIMEOUT_MS
+} from "./csapi/runTimeouts.js";
 
 const booleanEnv = (defaultValue: boolean) =>
   z.preprocess((value) => {
@@ -29,7 +35,7 @@ const envSchema = z.object({
   AUTOMATION_SHARED_SECRET: z.string().default(""),
   HERMES_RUNNER_SHARED_SECRET: z.string().default(""),
   RUNNER_REQUIRE_APPROVAL: booleanEnv(false),
-  RUNNER_MAX_CONCURRENT_JOBS: z.coerce.number().int().positive().default(3),
+  RUNNER_MAX_CONCURRENT_JOBS: z.coerce.number().int().positive().default(6),
   RUNNER_STALE_AFTER_SECONDS: z.coerce.number().int().positive().default(900),
   RUNNER_MAX_ATTEMPTS: z.coerce.number().int().positive().max(10).default(3),
   SSH_WRITE_HOSTS: z.string().default(""),
@@ -67,8 +73,26 @@ const envSchema = z.object({
   CSAPI_API_KEYS: z.string().default(""),
   CSAPI_DEFAULT_MODEL: z.string().default("auto"),
   CSAPI_DEFAULT_WORKSPACE_ID: z.string().default(""),
-  CSAPI_MAX_CONCURRENCY_PER_KEY: z.coerce.number().int().positive().default(4),
-  CSAPI_RUN_TIMEOUT_MS: z.coerce.number().int().positive().default(300_000),
+  CSAPI_MAX_CONCURRENCY_PER_KEY: z.coerce.number().int().positive().default(6),
+  // A caller may detach after this wait without making a healthy run terminal.
+  // CSAPI_RUN_TIMEOUT_MS remains a deprecated compatibility alias.
+  CSAPI_CALLER_WAIT_TIMEOUT_MS: z.coerce.number().int().positive().optional(),
+  CSAPI_RUN_TIMEOUT_MS: z.coerce.number().int().positive().optional(),
+  CSAPI_QUEUE_TIMEOUT_MS: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(CSAPI_DEFAULT_QUEUE_TIMEOUT_MS),
+  CSAPI_IDLE_TIMEOUT_MS: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(CSAPI_DEFAULT_IDLE_TIMEOUT_MS),
+  CSAPI_ABSOLUTE_TIMEOUT_MS: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(CSAPI_DEFAULT_ABSOLUTE_TIMEOUT_MS),
   CSAPI_MAX_PROMPT_CHARS: z.coerce.number().int().min(1_024).default(96_000),
   CSAPI_ALLOW_WRITES: booleanEnv(false),
   // --- cg-mitm/1 secure csapi channel (application-layer anti-MITM). ---
@@ -175,7 +199,13 @@ export const config = {
     defaultModel: parsed.CSAPI_DEFAULT_MODEL.trim() || "auto",
     defaultWorkspaceId: parsed.CSAPI_DEFAULT_WORKSPACE_ID.trim(),
     maxConcurrencyPerKey: parsed.CSAPI_MAX_CONCURRENCY_PER_KEY,
-    runTimeoutMs: parsed.CSAPI_RUN_TIMEOUT_MS,
+    callerWaitTimeoutMs:
+      parsed.CSAPI_CALLER_WAIT_TIMEOUT_MS ??
+      parsed.CSAPI_RUN_TIMEOUT_MS ??
+      CSAPI_DEFAULT_CALLER_WAIT_TIMEOUT_MS,
+    queueTimeoutMs: parsed.CSAPI_QUEUE_TIMEOUT_MS,
+    idleTimeoutMs: parsed.CSAPI_IDLE_TIMEOUT_MS,
+    absoluteTimeoutMs: parsed.CSAPI_ABSOLUTE_TIMEOUT_MS,
     maxPromptChars: parsed.CSAPI_MAX_PROMPT_CHARS,
     allowWrites: parsed.CSAPI_ALLOW_WRITES
   },

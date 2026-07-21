@@ -12,7 +12,7 @@ HTTP 门面，目的是让标准 CLI（OpenCode / Claude Code 等）只需要「
 
 - **方案 B（兼容优先）。** 在 `csapi.joelzt.org` 暴露标准兼容端点，安全模型是
   **TLS + API key + 最小日志**。**不是** Gateway-blind 端到端加密（E2EE）。
-- **方案 A（本机 Secure Adapter + `cg-mitm/1`）已落地**：客户端一键脚本见 §7.1（**推荐**），
+- **方案 A（本机 Secure Adapter + `cg-mitm/1`）已落地**：客户端一键脚本见 §8.1（**推荐**），
   抗中间人、明文不出本机。代码与文档在边界上保持清晰，不得把方案 B 表述为 E2EE。
 - 现有 E2EE 通道（`cs.joelzt.org` Web + 签名扩展 + `/api/e2ee/v1`）不受影响，也不复用
   它的密文保证来给 csapi 背书。
@@ -27,7 +27,7 @@ HTTP 门面，目的是让标准 CLI（OpenCode / Claude Code 等）只需要「
   这一路也都是明文。
 - **这不是 E2EE。** 抓包和服务器日志侧「看得到明文」是方案 B 的预期行为，不得写成
   「端到端加密 / Gateway-blind」。
-- 想要 Gateway-blind 明文不出本机，走**方案 A**（本机 Secure Adapter，见 §7.1，已可用）。
+- 想要 Gateway-blind 明文不出本机，走**方案 A**（本机 Secure Adapter，见 §8.1，已可用）。
 
 **OpenCode / Claude Code 的文件读写发生在 CLI 本机**，而不是远程 Runner 工作区：CLI 在
 你自己的电脑上读写你的项目文件，只是把「模型补全」这一步通过 csapi 转给远程 Runner/模型。
@@ -82,10 +82,16 @@ Base URL: `https://csapi.joelzt.org`
 
 - **跨会话并行**：不同 session → 不同 conversation → 天然并行。
 - **同会话串行**：同一 session 的请求在 csapi 层用 keyed-mutex 串行，前一次 run 结束前不入队下一条。
-- **取消 / Abort**：客户端断开或 csapi 超时时会取消 `queued/waiting_approval/running` run；
-  lease fencing 会让 Runner 中止对应 SDK run、释放 agent/session/worker。
+- **调用方等待与任务生命周期分离**：调用方等待默认 300 秒；等待到期返回 `504`，但**不会取消仍健康的
+  run**。带相同 `Idempotency-Key` 的重试会重新附着同一 active/terminal run，数据库仍只有一条。
+- **生命周期超时**：首次或中断恢复后的当前排队周期默认 30 秒；`running` 后 120 秒没有 lease/progress 才判 idle；
+  首次启动后约 29 分钟达到绝对上限。持续 lease/progress 的任务可跨过 300 秒等待边界继续执行。
+- **取消 / Abort**：明确的客户端断开仍会取消 active run；lease fencing 会让 Runner 中止对应
+  SDK run、释放 agent/session/worker。生命周期取消原因持久化为 `queue_timeout`、
+  `idle_timeout` 或 `absolute_timeout`。
 - **背压**：每个 API key 有并发上限（`CSAPI_MAX_CONCURRENCY_PER_KEY`）；超限返回
-  `429` + `Retry-After`。
+  `429` + `Retry-After`。API key 限流与单 Runner 的 PostgreSQL claim 容量默认都为 6；
+  claim 使用 runner 级事务锁，避免并发领取穿透上限。
 
 > 注意：本阶段 SSE 为「协议心跳 + 完成后分块下发」，而不是模型 token 级实时流。
 > OpenAI/Anthropic 心跳是协议合法的 no-op/ping 帧，可被 SDK 观察到，避免只有 SSE 注释时被
@@ -99,21 +105,56 @@ Base URL: `https://csapi.joelzt.org`
 | `CSAPI_API_KEYS` | 空 | 逗号分隔的合法 API key 列表（发行/校验用） |
 | `CSAPI_DEFAULT_MODEL` | `auto` | 请求模型未知时回退的模型。注意：`auto` 由 Local Runner 领取；若线上只有 Hermes，会自动改写为第一个 `hermes:*`，也可直接设为 `hermes:default` |
 | `CSAPI_DEFAULT_WORKSPACE_ID` | 空 | 默认 workspace；留空则自动取第一个可用 workspace |
-| `CSAPI_MAX_CONCURRENCY_PER_KEY` | `4` | 每 key 并发上限；超限 429 |
-| `CSAPI_RUN_TIMEOUT_MS` | `300000` | 单次 run 等待超时（毫秒） |
+| `CSAPI_MAX_CONCURRENCY_PER_KEY` | `6` | 每 key 并发上限；超限 429 |
+| `CSAPI_CALLER_WAIT_TIMEOUT_MS` | `300000` | 调用方等待预算；到期不取消健康 run；旧 `CSAPI_RUN_TIMEOUT_MS` 仅作兼容别名 |
+| `CSAPI_QUEUE_TIMEOUT_MS` | `30000` | run 当前排队周期（含中断后重排）的上限 |
+| `CSAPI_IDLE_TIMEOUT_MS` | `120000` | `running` run 距最后 lease/progress 的无活动上限 |
+| `CSAPI_ABSOLUTE_TIMEOUT_MS` | `1740000` | 从首次 `startedAt` 起约 29 分钟的绝对执行上限 |
+| `RUNNER_MAX_CONCURRENT_JOBS` | `6` | 整个部署链路的 DB claim 上限；跨 runner identity 且与 E2EE 共用预算 |
 | `CSAPI_MAX_PROMPT_CHARS` | `96000` | 首次/无状态 prompt 的字符上限；保留 system 与最近消息 |
 | `CSAPI_ALLOW_WRITES` | `false` | 是否允许写文件（默认只读，安全） |
 
 密钥生成建议：`openssl rand -hex 32`。**只写入 `.env`（`0600`），不进 git。**
 
-## 6. 已知取舍 / 非目标（本阶段）
+Runner 侧对应设置 `RUNNER_MAX_CONCURRENT_JOBS=6`。数据库持久化 `queued_at`、
+`started_at`、`last_activity_at`、`cancel_reason`；lease 只刷新 `last_activity_at`，不会借用
+无关的 `updated_at` 来伪造活动。流式终态错误包含 `applicationStatusCode`、`cancelReason`、
+`provider`、`model`，结构化日志同样只记录这些关联元数据，不记录 prompt、token 或 auth。
+
+要让端到端有效并发实际达到 6，本地 WSL Runner 必须是一个包含 6 个 worker
+的共享池。服务端 claim 使用部署级 advisory lock，并把所有 runner identity
+及 E2EE 的 active run 一并计数，避免双 identity 形成 6+6。Runner heartbeat
+必须报告与服务端一致的容量；`/health` 只公开聚合后的 identity 数、总槽数和
+有效容量，不公开 runner ID。Hermes profile 若配置了更低的
+`gateway.max_concurrent_sessions`，它仍会成为更早的背压点，
+应在内存预算允许时调到 6。服务端的两个上限只是硬上限，不会凭空增加外部 worker/session。
+
+## 6. 安全只读验收接口
+
+Gateway 提供：
+
+```text
+GET /validation/v1/runs/by-idempotency/{idempotencyKey}
+GET /validation/v1/runs/{runId}
+```
+
+两者复用 CSAPI API-key 鉴权并按创建 run 的 key scope 隔离。按幂等键查询时，
+服务端先使用已认证 key 的非秘密 ID 做 SHA-256 namespace；按 run ID 查询还
+要求持久化的 `csapi_key_id` 精确匹配。跨 key 只能得到空结果或 404。
+
+响应设置 `Cache-Control: no-store`，且只返回 `runId`、status、queued/started/
+finished/last-activity 时间、terminal、cancel reason、claim attempts 和
+provider/model/application status。不会返回 workspace、prompt、response、
+progress 文本、token、Authorization 或消息内容。
+
+## 7. 已知取舍 / 非目标（本阶段）
 
 - 非 E2EE：明文对网关/Runner/模型可见（见 §2）。
 - SSE 含协议心跳，但最终文本仍为完成后分块，不是 token 级实时（见 §4.2）。
 - 工具调用 / function calling / 图片输入未做完整映射（文本为主；图片以占位符处理）。
-- 方案 A（本机 Secure Adapter，cg-mitm/1）**已实现**，客户端一键脚本见 §7.1。
+- 方案 A（本机 Secure Adapter，cg-mitm/1）**已实现**，客户端一键脚本见 §8.1。
 
-## 7. CLI 配置示例
+## 8. CLI 配置示例
 
 Claude Code / Anthropic 兼容：
 
@@ -144,7 +185,7 @@ curl -sS https://csapi.joelzt.org/v1/chat/completions \
   -d '{"model":"auto","stream":true,"messages":[{"role":"user","content":"ping"}]}'
 ```
 
-## 7.1 抗 MITM 懒人安装（Secure Adapter，方案 A，推荐）
+## 8.1 抗 MITM 懒人安装（Secure Adapter，方案 A，推荐）
 
 **一键（复制即用）**：自动探测根指纹 → clone → npm install → 写配置 → 启动 Adapter → curl `/health` 验证。
 
@@ -185,8 +226,8 @@ Windows：`powershell -ExecutionPolicy Bypass -File .\install-csapi-secure.ps1`
   **仅公钥**）。服务端下发的身份证书必须由该根签发，否则 **fail-closed，绝不回退明文**。
 - **fail-closed 探测**：探到 `/cg/v1/server-keys` 为 `404/426` → 说明服务端尚未开启安全通道，脚本**友好报错**
   并打印运维前置（见下）；探到根指纹不匹配 → 疑似 MITM，拒绝写任何配置。
-- **与 §7.2 明文安装器的关系**：两者写**不同的**受管块；本脚本的块在 rc 中靠后，会覆盖明文安装器的
-  `ANTHROPIC_*/OPENAI_*`（后写生效）。二选一即可：要抗 MITM 用本脚本，要最省事的明文兼容用 §7.2。
+- **与 §8.2 明文安装器的关系**：两者写**不同的**受管块；本脚本的块在 rc 中靠后，会覆盖明文安装器的
+  `ANTHROPIC_*/OPENAI_*`（后写生效）。二选一即可：要抗 MITM 用本脚本，要最省事的明文兼容用 §8.2。
 - **真·一键收尾**：启动 Adapter 需仓库源码（`apps/secure-adapter`，node≥22）。脚本会**自动**：找不到仓库时
   `git clone` 公开仓库到 `~/.cursor-gateway/cursor-gateway`（`--no-clone` 关闭、`--yes` 免确认）、缺依赖时
   在仓库根 `npm install`（`--no-install` 关闭），然后**自动启动并 curl `/health` 验证**；失败则有限次自愈
@@ -211,10 +252,10 @@ scripts/csapi/dev-cg-mitm-setup.sh https://csapi.joelzt.org
 未开启前，`/cg/v1/server-keys` 为 404，安装器只会**报错并说明前置**，不写坏配置。协议与威胁模型详见
 `docs/cg-mitm.md`。
 
-## 7.2 明文兼容懒人安装（install-csapi.sh，方案 B）
+## 8.2 明文兼容懒人安装（install-csapi.sh，方案 B）
 
 > ⚠️ 这是 **plaintext 兼容通道（TLS + API key），非 E2EE**：prompt/response 在门面 / 网关 / Runner /
-> 模型侧明文可见。只在信任链路或快速试用时用；要抗中间人请用上面 §7.1 的方案 A。
+> 模型侧明文可见。只在信任链路或快速试用时用；要抗中间人请用上面 §8.1 的方案 A。
 
 不想手动 export、也不需要抗 MITM？用 `scripts/csapi/install-csapi.sh`（POSIX，单文件可分发）一键配好
 Claude Code / OpenCode 的环境变量（直连门面），并自动探测连通性：
@@ -233,7 +274,7 @@ CSAPI_API_KEY=sk-xxxx sh scripts/csapi/install-csapi.sh
 
 用法与分发方式、方案 A vs 方案 B 对比详见 `scripts/csapi/README.md`。
 
-## 8. 验收 checklist
+## 9. 验收 checklist
 
 > 实测结果在交付汇报里逐项勾选；日志/抓包侧会看到明文（符合方案 B，不得写 E2EE）。
 
@@ -248,5 +289,7 @@ CSAPI_API_KEY=sk-xxxx sh scripts/csapi/install-csapi.sh
 - [ ] 同会话串行：同 session 的两个请求不重叠
 - [ ] 跨会话并行：不同 session 的请求可并行
 - [ ] 取消：客户端断开时 `queued` run 被取消
+- [ ] 等待超时：健康 run 不取消；同幂等 key 重试附着同一 run
+- [ ] 生命周期：30s queue、120s idle、29m absolute；持续活动可跨 300s
 - [ ] 背压：超过每 key 并发上限返回 `429 + Retry-After`
 - [ ] 单元 + 集成测试全绿（`npm run test -w @cursor-gateway/server`）

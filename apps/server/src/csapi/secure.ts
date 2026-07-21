@@ -668,7 +668,7 @@ export function createCsapiSecure(deps: CsapiSecureDeps) {
         csSigningKeyId: cfg.signingKeyId,
         allowWrites: deps.config.allowWrites,
         signal,
-        timeoutMs: deps.config.runTimeoutMs
+        timeoutMs: deps.config.absoluteTimeoutMs
       });
       return {
         text: sealed.text,

@@ -17,6 +17,10 @@ import type {
   Workspace
 } from "@cursor-gateway/shared";
 import { config } from "./config.js";
+import {
+  isCsapiTimeoutCancelReason,
+  type CsapiCancelReason
+} from "./csapi/runTimeouts.js";
 
 export const pool = new Pool({
   connectionString: config.databaseUrl,
@@ -94,10 +98,14 @@ export async function migrate() {
       allow_writes boolean not null default false,
       memory_enabled boolean not null default true,
       idempotency_key text,
+      csapi_key_id text,
       input_tokens bigint,
       output_tokens bigint,
       claim_attempts integer not null default 0,
+      queued_at timestamptz not null default now(),
       started_at timestamptz,
+      last_activity_at timestamptz,
+      cancel_reason text,
       finished_at timestamptz,
       deleted_at timestamptz,
       deleted_with_conversation boolean not null default false,
@@ -127,10 +135,14 @@ export async function migrate() {
     alter table app_users add column if not exists service_name text;
     alter table runs add column if not exists memory_enabled boolean not null default true;
     alter table runs add column if not exists idempotency_key text;
+    alter table runs add column if not exists csapi_key_id text;
     alter table runs add column if not exists input_tokens bigint;
     alter table runs add column if not exists output_tokens bigint;
     alter table runs add column if not exists claim_attempts integer not null default 0;
+    alter table runs add column if not exists queued_at timestamptz;
     alter table runs add column if not exists started_at timestamptz;
+    alter table runs add column if not exists last_activity_at timestamptz;
+    alter table runs add column if not exists cancel_reason text;
     alter table runs add column if not exists finished_at timestamptz;
     alter table runs add column if not exists deleted_at timestamptz;
     alter table runs add column if not exists deleted_with_conversation boolean not null default false;
@@ -162,6 +174,22 @@ export async function migrate() {
     alter table runs add column if not exists claim_lease_id uuid;
     alter table runs add column if not exists claimed_by text;
     alter table runs add column if not exists lease_expires_at timestamptz;
+
+    update runs
+    set queued_at = created_at
+    where queued_at is null;
+    alter table runs alter column queued_at set default now();
+    alter table runs alter column queued_at set not null;
+
+    update runs
+    set last_activity_at = coalesce(updated_at, started_at, queued_at)
+    where status = 'running' and last_activity_at is null;
+
+    update runs
+    set cancel_reason = 'caller_cancelled'
+    where status = 'cancelled'
+      and cancel_reason is null
+      and error = 'cancelled by caller';
 
     alter table memory_facts alter column content drop not null;
     alter table memory_facts add column if not exists content_mode text not null default 'plaintext';
@@ -339,6 +367,9 @@ export async function migrate() {
     create unique index if not exists runs_user_idempotency_active_unique
       on runs(user_id, idempotency_key)
       where idempotency_key is not null and deleted_at is null;
+    create index if not exists runs_csapi_key_lookup_idx
+      on runs(user_id, csapi_key_id, id)
+      where csapi_key_id is not null and deleted_at is null;
     create unique index if not exists app_users_service_name_unique
       on app_users(service_name)
       where service_name is not null;
@@ -693,7 +724,16 @@ export async function seedWorkspaces() {
   }
 }
 
-function mapRun(row: QueryResultRow): RunRecord {
+export type PlaintextRunRecord = RunRecord & {
+  queuedAt: string;
+  lastActivityAt: string | null;
+  cancelReason: string | null;
+  claimedBy: string | null;
+  csapiKeyId: string | null;
+  claimAttempts: number;
+};
+
+function mapRun(row: QueryResultRow): PlaintextRunRecord {
   return {
     id: row.id,
     conversationId: row.conversation_id,
@@ -711,7 +751,13 @@ function mapRun(row: QueryResultRow): RunRecord {
     inputTokens: row.input_tokens === null || row.input_tokens === undefined ? null : Number(row.input_tokens),
     outputTokens: row.output_tokens === null || row.output_tokens === undefined ? null : Number(row.output_tokens),
     createdAt: row.created_at.toISOString(),
+    queuedAt: (row.queued_at ?? row.created_at).toISOString(),
     startedAt: row.started_at?.toISOString() ?? null,
+    lastActivityAt: row.last_activity_at?.toISOString() ?? null,
+    cancelReason: row.cancel_reason ?? null,
+    claimedBy: row.claimed_by ?? null,
+    csapiKeyId: row.csapi_key_id ?? null,
+    claimAttempts: Number(row.claim_attempts ?? 0),
     finishedAt: row.finished_at?.toISOString() ?? null,
     updatedAt: row.updated_at.toISOString()
   };
@@ -985,6 +1031,7 @@ export async function createRun(input: {
   prompt: string;
   allowWrites: boolean;
   memoryEnabled: boolean;
+  csapiKeyId?: string;
   idempotencyKey?: string;
 }) {
   const result = await pool.query(
@@ -1004,9 +1051,10 @@ export async function createRun(input: {
         prompt,
         allow_writes,
         memory_enabled,
+        csapi_key_id,
         idempotency_key
       )
-      values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+      values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
       returning *
     `,
     [
@@ -1019,6 +1067,7 @@ export async function createRun(input: {
       input.prompt,
       input.allowWrites,
       input.memoryEnabled,
+      input.csapiKeyId ?? null,
       input.idempotencyKey ?? null
     ]
   );
@@ -1027,44 +1076,68 @@ export async function createRun(input: {
 
 export type RunExecutor = "windows" | "hermes";
 
-export async function claimNextRun(executor: RunExecutor, runnerId: string) {
-  const result = await pool.query(
-    `
-      update runs
-      set status = 'running',
-          started_at = now(),
-          updated_at = now(),
-          claimed_by = $2,
-          claim_lease_id = gen_random_uuid(),
-          claim_attempts = claim_attempts + 1
-      where id = (
-        select r.id
-        from runs r
-        join conversations c on c.id = r.conversation_id
-        where r.status = 'queued'
-          and r.content_mode = 'plaintext'
-          and r.deleted_at is null
-          and c.content_mode = 'plaintext'
-          and c.deleted_at is null
-          and (
-            ($1 = 'hermes' and r.model like 'hermes:%')
-            or
-            ($1 = 'windows' and r.model not like 'hermes:%')
-          )
-        order by r.created_at asc
-        for update skip locked
-        limit 1
-      )
-      returning *
-    `,
-    [executor, runnerId]
-  );
-  return result.rows[0]
-    ? {
-        run: mapRun(result.rows[0]),
-        leaseId: String(result.rows[0].claim_lease_id)
-      }
-    : undefined;
+export async function claimNextRun(
+  executor: RunExecutor,
+  runnerId: string,
+  maxConcurrentJobs = config.runnerMaxConcurrentJobs
+) {
+  return inTransaction(async (client) => {
+    // Serialize the deployment-wide execution budget. The active count spans
+    // runner identities and includes E2EE so duplicate identities or legacy
+    // processes cannot turn a six-slot target into 6+6 capacity.
+    await client.query("select pg_advisory_xact_lock(hashtext($1))", [
+      "cursor-gateway-execution-capacity"
+    ]);
+    const active = await client.query(
+      `
+        select count(*)::integer as count
+        from runs
+        where status = 'running'
+          and deleted_at is null
+          and claimed_by is not null
+      `
+    );
+    if (Number(active.rows[0]?.count ?? 0) >= maxConcurrentJobs) return undefined;
+
+    const result = await client.query(
+      `
+        update runs
+        set status = 'running',
+            started_at = coalesce(started_at, now()),
+            last_activity_at = now(),
+            updated_at = now(),
+            claimed_by = $2,
+            claim_lease_id = gen_random_uuid(),
+            claim_attempts = claim_attempts + 1
+        where id = (
+          select r.id
+          from runs r
+          join conversations c on c.id = r.conversation_id
+          where r.status = 'queued'
+            and r.content_mode = 'plaintext'
+            and r.deleted_at is null
+            and c.content_mode = 'plaintext'
+            and c.deleted_at is null
+            and (
+              ($1 = 'hermes' and r.model like 'hermes:%')
+              or
+              ($1 = 'windows' and r.model not like 'hermes:%')
+            )
+          order by r.queued_at asc, r.created_at asc
+          for update of r skip locked
+          limit 1
+        )
+        returning *
+      `,
+      [executor, runnerId]
+    );
+    return result.rows[0]
+      ? {
+          run: mapRun(result.rows[0]),
+          leaseId: String(result.rows[0].claim_lease_id)
+        }
+      : undefined;
+  });
 }
 
 export type StaleRunRecovery = {
@@ -1093,7 +1166,8 @@ export async function recoverStaleRuns(
         where status = 'running'
           and content_mode = 'plaintext'
           and deleted_at is null
-          and updated_at < now() - make_interval(secs => $2)
+          and coalesce(last_activity_at, started_at, updated_at)
+            < now() - make_interval(secs => $2)
           and claim_attempts >= $3
           and (
             ($1 = 'hermes' and model like 'hermes:%')
@@ -1114,12 +1188,14 @@ export async function recoverStaleRuns(
             claim_lease_id = null,
             claimed_by = null,
             lease_expires_at = null,
-            started_at = null,
+            queued_at = now(),
+            last_activity_at = null,
             updated_at = now()
         where status = 'running'
           and content_mode = 'plaintext'
           and deleted_at is null
-          and updated_at < now() - make_interval(secs => $2)
+          and coalesce(last_activity_at, started_at, updated_at)
+            < now() - make_interval(secs => $2)
           and claim_attempts < $3
           and (
             ($1 = 'hermes' and model like 'hermes:%')
@@ -1145,7 +1221,7 @@ export async function renewRunLease(input: {
   const result = await pool.query(
     `
       update runs
-      set updated_at = now()
+      set last_activity_at = now()
       where id = $1
         and claimed_by = $2
         and claim_lease_id = $3
@@ -1179,6 +1255,11 @@ export async function finishRun(input: {
           output_tokens = $6,
           progress = null,
           progress_kind = null,
+          last_activity_at = now(),
+          cancel_reason = case
+            when $2 = 'cancelled' then coalesce(cancel_reason, 'runner_cancelled')
+            else null
+          end,
           finished_at = now(),
           updated_at = now()
       where id = $1
@@ -1244,6 +1325,7 @@ export async function updateRunProgress(input: {
       update runs
       set progress = $2,
           progress_kind = $3,
+          last_activity_at = now(),
           updated_at = now()
       where id = $1
         and content_mode = 'plaintext'
@@ -1261,7 +1343,10 @@ export async function approveRun(runId: string, userId: string) {
   const result = await pool.query(
     `
       update runs
-      set status = 'queued', updated_at = now()
+      set status = 'queued',
+          queued_at = now(),
+          last_activity_at = null,
+          updated_at = now()
       where id = $1
         and user_id = $2
         and content_mode = 'plaintext'
@@ -1519,6 +1604,14 @@ export async function softDeleteRun(runId: string, userId: string): Promise<Soft
             then coalesce(error, 'deleted by user')
           else error
         end,
+        cancel_reason = case
+          when status in ('queued', 'waiting_approval') then 'caller_cancelled'
+          else cancel_reason
+        end,
+        last_activity_at = case
+          when status in ('queued', 'waiting_approval') then now()
+          else last_activity_at
+        end,
         deleted_at = now(),
         deleted_with_conversation = false,
         updated_at = now()
@@ -1591,6 +1684,14 @@ export async function softDeleteConversation(
             when status in ('queued', 'waiting_approval')
               then coalesce(error, 'conversation deleted by user')
             else error
+          end,
+          cancel_reason = case
+            when status in ('queued', 'waiting_approval') then 'caller_cancelled'
+            else cancel_reason
+          end,
+          last_activity_at = case
+            when status in ('queued', 'waiting_approval') then now()
+            else last_activity_at
           end,
           deleted_at = now(),
           deleted_with_conversation = true,
@@ -1756,28 +1857,159 @@ export async function restoreConversation(conversationId: string, userId: string
   });
 }
 
-export async function cancelRun(runId: string, userId: string) {
+export async function cancelRun(
+  runId: string,
+  userId: string,
+  reason: CsapiCancelReason = "caller_cancelled",
+  timeoutMs?: number
+) {
+  if (
+    isCsapiTimeoutCancelReason(reason) &&
+    (timeoutMs === undefined || !Number.isFinite(timeoutMs) || timeoutMs <= 0)
+  ) {
+    throw new Error("csapi_timeout_guard_required");
+  }
   const result = await pool.query(
     `
       update runs
       set status = 'cancelled',
-          error = 'cancelled by caller',
+          error = case $3
+            when 'queue_timeout' then 'run queue timeout'
+            when 'idle_timeout' then 'run idle timeout'
+            when 'absolute_timeout' then 'run execution deadline exceeded'
+            when 'client_aborted' then 'client disconnected'
+            when 'runner_cancelled' then 'cancelled by runner'
+            else 'cancelled by caller'
+          end,
+          cancel_reason = $3,
           progress = null,
           progress_kind = null,
           claim_lease_id = null,
           claimed_by = null,
           lease_expires_at = null,
+          last_activity_at = now(),
           finished_at = now(),
           updated_at = now()
       where id = $1
         and user_id = $2
         and content_mode = 'plaintext'
         and status in ('queued', 'waiting_approval', 'running')
+        and (
+          $3::text not in ('queue_timeout', 'idle_timeout', 'absolute_timeout')
+          or (
+            $3 = 'queue_timeout'
+            and status in ('queued', 'waiting_approval')
+            and queued_at <= now() - make_interval(secs => $4::double precision / 1000)
+          )
+          or (
+            $3 = 'idle_timeout'
+            and status = 'running'
+            and started_at is not null
+            and coalesce(last_activity_at, started_at)
+              <= now() - make_interval(secs => $4::double precision / 1000)
+          )
+          or (
+            $3 = 'absolute_timeout'
+            and started_at is not null
+            and started_at <= now() - make_interval(secs => $4::double precision / 1000)
+          )
+        )
       returning *
     `,
-    [runId, userId]
+    [runId, userId, reason, timeoutMs ?? null]
   );
   return result.rows[0] ? mapRun(result.rows[0]) : undefined;
+}
+
+export type CsapiTimeoutSweep = {
+  queueTimeout: number;
+  idleTimeout: number;
+  absoluteTimeout: number;
+};
+
+/**
+ * Expire detached csapi work as well as runs with an attached HTTP waiter.
+ * The service-principal join keeps these policy deadlines isolated from other
+ * plaintext automation and interactive runs.
+ */
+export async function expireCsapiRuns(input: {
+  queueTimeoutMs: number;
+  idleTimeoutMs: number;
+  absoluteTimeoutMs: number;
+}): Promise<CsapiTimeoutSweep> {
+  const result = await pool.query(
+    `
+      with candidates as (
+        select
+          r.id,
+          case
+            when r.status in ('queued', 'waiting_approval', 'running')
+              and r.started_at is not null
+              and r.started_at <= now() - make_interval(secs => $3::double precision / 1000)
+              then 'absolute_timeout'
+            when r.status = 'running'
+              and coalesce(r.last_activity_at, r.started_at)
+                <= now() - make_interval(secs => $2::double precision / 1000)
+              then 'idle_timeout'
+            else 'queue_timeout'
+          end as reason
+        from runs r
+        join app_users u on u.id = r.user_id
+        where u.service_name = 'csapi'
+          and r.content_mode = 'plaintext'
+          and r.deleted_at is null
+          and (
+            (
+              r.status in ('queued', 'waiting_approval')
+              and r.queued_at <= now() - make_interval(secs => $1::double precision / 1000)
+            )
+            or (
+              r.status in ('queued', 'waiting_approval', 'running')
+              and r.started_at is not null
+              and r.started_at <= now() - make_interval(secs => $3::double precision / 1000)
+            )
+            or (
+              r.status = 'running'
+              and coalesce(r.last_activity_at, r.started_at)
+                <= now() - make_interval(secs => $2::double precision / 1000)
+            )
+          )
+        for update of r skip locked
+      ),
+      expired as (
+        update runs r
+        set
+          status = 'cancelled',
+          error = case candidates.reason
+            when 'absolute_timeout' then 'run execution deadline exceeded'
+            when 'idle_timeout' then 'run idle timeout'
+            else 'run queue timeout'
+          end,
+          cancel_reason = candidates.reason,
+          progress = null,
+          progress_kind = null,
+          claim_lease_id = null,
+          claimed_by = null,
+          lease_expires_at = null,
+          last_activity_at = now(),
+          finished_at = now(),
+          updated_at = now()
+        from candidates
+        where r.id = candidates.id
+        returning candidates.reason
+      )
+      select reason, count(*)::integer as count
+      from expired
+      group by reason
+    `,
+    [input.queueTimeoutMs, input.idleTimeoutMs, input.absoluteTimeoutMs]
+  );
+  const counts = new Map(result.rows.map((row) => [String(row.reason), Number(row.count)]));
+  return {
+    queueTimeout: counts.get("queue_timeout") ?? 0,
+    idleTimeout: counts.get("idle_timeout") ?? 0,
+    absoluteTimeout: counts.get("absolute_timeout") ?? 0
+  };
 }
 
 export async function getRunWithConversation(runId: string) {
