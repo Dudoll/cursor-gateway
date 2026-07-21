@@ -1390,6 +1390,8 @@ export async function createAutomationThreadRun(input: {
   prompt: string;
   idempotencyKey: string;
   allowWrites: boolean;
+  response?: string | null;
+  error?: string | null;
 }): Promise<{ run: RunRecord; created: boolean }> {
   return inTransaction(async (client) => {
     await client.query("select pg_advisory_xact_lock(hashtext($1))", [
@@ -1425,9 +1427,15 @@ export async function createAutomationThreadRun(input: {
           workspace_id,
           prompt,
           allow_writes,
-          idempotency_key
+          idempotency_key,
+          response,
+          error,
+          finished_at
         )
-        values ($1, $2, 'automation', $3, $4, $5, $6, $7, $8)
+        values (
+          $1, $2, 'automation', $3, $4, $5, $6, $7, $8, $9, $10,
+          case when $3 in ('finished', 'error', 'cancelled') then now() else null end
+        )
         returning *
       `,
       [
@@ -1438,7 +1446,9 @@ export async function createAutomationThreadRun(input: {
         input.workspaceId,
         input.prompt,
         input.allowWrites,
-        input.idempotencyKey
+        input.idempotencyKey,
+        input.response ?? null,
+        input.error ?? null
       ]
     );
     return { run: mapRun(runResult.rows[0]), created: true };

@@ -256,6 +256,7 @@ import {
 import {
   listModels,
   listRunnerHeartbeats,
+  modelIsHermes,
   modelIsKnown,
   registerRunner
 } from "./runnerRegistry.js";
@@ -2071,13 +2072,8 @@ export async function registerRoutes(app: FastifyInstance) {
         workspaceId: RELEASE_REPORT_WORKSPACE_ID,
         prompt: `Imported release edition ${body.sourceRunId ?? body.date}`,
         idempotencyKey: `${report.threadKey}:${body.date}`,
-        allowWrites: false
-      });
-      const run = await finishRun({
-        runId: result.run.id,
-        status: "finished",
-        response: body.content,
-        error: null
+        allowWrites: false,
+        response: body.content
       });
       await appendAudit({
         actorUserId: request.principal!.id,
@@ -2091,7 +2087,7 @@ export async function registerRoutes(app: FastifyInstance) {
         }
       });
       return reply.code(result.created ? 201 : 200).send({
-        run,
+        run: result.run,
         idempotent: !result.created
       });
     });
