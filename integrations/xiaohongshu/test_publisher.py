@@ -3,6 +3,7 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import publisher
 
@@ -84,7 +85,13 @@ class XiaohongshuPublisherTests(unittest.TestCase):
             previous = publisher.os.environ.get("XHS_OUTBOX_DIR")
             publisher.os.environ["XHS_OUTBOX_DIR"] = temp
             try:
-                target = publisher.export_manual(publication)
+                def fake_render_png(card, index, total, path):
+                    path.write_bytes(b"\x89PNG\r\n\x1a\n")
+                    _, overflow = publisher.render_svg(card, index, total)
+                    return True, overflow
+
+                with mock.patch.object(publisher, "render_png", side_effect=fake_render_png):
+                    target = publisher.export_manual(publication)
             finally:
                 if previous is None:
                     publisher.os.environ.pop("XHS_OUTBOX_DIR", None)
@@ -115,7 +122,13 @@ class XiaohongshuPublisherTests(unittest.TestCase):
             previous = publisher.os.environ.get("XHS_OUTBOX_DIR")
             publisher.os.environ["XHS_OUTBOX_DIR"] = temp
             try:
-                target = publisher.export_manual(publication)
+                def fake_render_png(card, index, total, path):
+                    path.write_bytes(b"\x89PNG\r\n\x1a\n")
+                    _, overflow = publisher.render_svg(card, index, total)
+                    return True, overflow
+
+                with mock.patch.object(publisher, "render_png", side_effect=fake_render_png):
+                    target = publisher.export_manual(publication)
             finally:
                 if previous is None:
                     publisher.os.environ.pop("XHS_OUTBOX_DIR", None)

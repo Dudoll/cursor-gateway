@@ -20,15 +20,39 @@
     "sampleCount": 9,
     "finished": {
       "count": 3,
-      "queueMs": { "p50": 841.1, "p95": 1377.0, "max": 1436.6 },
-      "executionMs": { "p50": 267612.7, "p95": 268544.0, "max": 268647.5 },
-      "totalMs": { "p50": 268453.7, "p95": 269921.0, "max": 270084.0 }
+      "queueMs": {
+        "p50": 841.1,
+        "p95": 1377.0,
+        "max": 1436.6
+      },
+      "executionMs": {
+        "p50": 267612.7,
+        "p95": 268544.0,
+        "max": 268647.5
+      },
+      "totalMs": {
+        "p50": 268453.7,
+        "p95": 269921.0,
+        "max": 270084.0
+      }
     },
     "cancelledAtTimeout": {
       "count": 6,
-      "queueMs": { "p50": 111.2, "p95": 972.9, "max": 1071.5 },
-      "executionMs": { "p50": 299969.8, "p95": 300113.2, "max": 300116.5 },
-      "totalMs": { "p50": 300115.9, "p95": 300210.6, "max": 300210.7 }
+      "queueMs": {
+        "p50": 111.2,
+        "p95": 972.9,
+        "max": 1071.5
+      },
+      "executionMs": {
+        "p50": 299969.8,
+        "p95": 300113.2,
+        "max": 300116.5
+      },
+      "totalMs": {
+        "p50": 300115.9,
+        "p95": 300210.6,
+        "max": 300210.7
+      }
     }
   },
   "correlatedSamples": {
@@ -43,7 +67,11 @@
     },
     "tripleTimeout": {
       "telegramIngressUtc": "2026-07-20T12:43:08Z",
-      "attemptTotalsMs": [300108, 300211, 300210],
+      "attemptTotalsMs": [
+        300108,
+        300211,
+        300210
+      ],
       "hermesFinalErrorUtc": "2026-07-20T12:58:21.495363Z",
       "endToEndFailureMs": 913495,
       "hermesLogContext": {
@@ -56,16 +84,80 @@
   "gatewayRunnerLadder": {
     "model": "gpt-5.4-nano",
     "before": [
-      { "concurrency": 1, "http200": 1, "http429": 0, "p50Ms": 12261.8, "p95Ms": 12261.8, "maxMs": 12261.8, "throughputRps": 0.082 },
-      { "concurrency": 2, "http200": 2, "http429": 0, "p50Ms": 6049.1, "p95Ms": 7254.6, "maxMs": 7254.6, "throughputRps": 0.276 },
-      { "concurrency": 4, "http200": 4, "http429": 0, "p50Ms": 5242.8, "p95Ms": 9281.7, "maxMs": 9281.7, "throughputRps": 0.431 },
-      { "concurrency": 8, "http200": 4, "http429": 4, "p50Ms": 24.3, "p95Ms": 8486.4, "maxMs": 8486.4, "throughputRps": 0.471 }
+      {
+        "concurrency": 1,
+        "http200": 1,
+        "http429": 0,
+        "p50Ms": 12261.8,
+        "p95Ms": 12261.8,
+        "maxMs": 12261.8,
+        "throughputRps": 0.082
+      },
+      {
+        "concurrency": 2,
+        "http200": 2,
+        "http429": 0,
+        "p50Ms": 6049.1,
+        "p95Ms": 7254.6,
+        "maxMs": 7254.6,
+        "throughputRps": 0.276
+      },
+      {
+        "concurrency": 4,
+        "http200": 4,
+        "http429": 0,
+        "p50Ms": 5242.8,
+        "p95Ms": 9281.7,
+        "maxMs": 9281.7,
+        "throughputRps": 0.431
+      },
+      {
+        "concurrency": 8,
+        "http200": 4,
+        "http429": 4,
+        "p50Ms": 24.3,
+        "p95Ms": 8486.4,
+        "maxMs": 8486.4,
+        "throughputRps": 0.471
+      }
     ],
     "after": [
-      { "concurrency": 1, "http200": 1, "http429": 0, "p50Ms": 5366.9, "p95Ms": 5366.9, "maxMs": 5366.9, "throughputRps": 0.186 },
-      { "concurrency": 2, "http200": 2, "http429": 0, "p50Ms": 4838.9, "p95Ms": 5267.9, "maxMs": 5267.9, "throughputRps": 0.38 },
-      { "concurrency": 4, "http200": 4, "http429": 0, "p50Ms": 6456.7, "p95Ms": 11294.0, "maxMs": 11294.0, "throughputRps": 0.354 },
-      { "concurrency": 8, "http200": 4, "http429": 4, "p50Ms": 25.4, "p95Ms": 9292.0, "maxMs": 9292.0, "throughputRps": 0.43 }
+      {
+        "concurrency": 1,
+        "http200": 1,
+        "http429": 0,
+        "p50Ms": 5366.9,
+        "p95Ms": 5366.9,
+        "maxMs": 5366.9,
+        "throughputRps": 0.186
+      },
+      {
+        "concurrency": 2,
+        "http200": 2,
+        "http429": 0,
+        "p50Ms": 4838.9,
+        "p95Ms": 5267.9,
+        "maxMs": 5267.9,
+        "throughputRps": 0.38
+      },
+      {
+        "concurrency": 4,
+        "http200": 4,
+        "http429": 0,
+        "p50Ms": 6456.7,
+        "p95Ms": 11294.0,
+        "maxMs": 11294.0,
+        "throughputRps": 0.354
+      },
+      {
+        "concurrency": 8,
+        "http200": 4,
+        "http429": 4,
+        "p50Ms": 25.4,
+        "p95Ms": 9292.0,
+        "maxMs": 9292.0,
+        "throughputRps": 0.43
+      }
     ]
   },
   "postFixChecks": {
@@ -165,5 +257,28 @@
     "nodeBuild": "pass",
     "hermesProviderUnitTestsPassed": 2,
     "lintDiagnostics": 0
+  },
+  "codeConsolidation": {
+    "capturedAtUtc": "2026-07-21T04:57:36Z",
+    "localBranch": "fix/telegram-hermes-gateway-latency",
+    "preConsolidationLocalHead": "873a6a13c686d045e03316e5f8d7a8b7110e3739",
+    "originMainPrePush": "8849c2a2857f2bae8ab04b181dd3c3f405009d19",
+    "vpsHeadPreSync": "56fec7e0b2d44ee714fba708ac1a827c1b52f877",
+    "vpsBackup": "backups/pre-sync-inventory-20260721T044510Z",
+    "mergeStrategy": "local-superset-ff-only-no-hard-reset",
+    "vpsOnlyPortRequired": false,
+    "productionRegressionNoted": "running infra-app image missing csapi; requires rebuild after sync",
+    "gates": {
+      "typecheck": "pass",
+      "npmTestAggregated": {
+        "pass": 207,
+        "fail": 0,
+        "skipped": 7
+      },
+      "build": "pass",
+      "hermesProviderUnittest": 2,
+      "hermesRunnerClip": "pass",
+      "xiaohongshuPublisher": 11
+    }
   }
 }

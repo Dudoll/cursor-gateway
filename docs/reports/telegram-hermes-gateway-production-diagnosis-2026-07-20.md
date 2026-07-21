@@ -438,3 +438,68 @@ Gateway、环境文件、Hermes plugin/config 的部署前备份位于：
 
 回滚时应先确认 Gateway DB 与两个 Hermes profile 均无 active/in-flight work，再恢复备份并
 顺序重启 Gateway、Hermes main、Hermes telegram2；Runner 不需要重启。
+
+## 13. 代码汇总与上库
+
+日期：2026-07-21（UTC+8）  
+执行：接管既有代理进度，以本地/VPS 真实状态完成功能汇总、门禁与上库。
+
+### 13.1 无损盘点
+
+| 位置 | HEAD / 状态 |
+|------|-------------|
+| 本地 `fix/telegram-hermes-gateway-latency` | 汇总前 `873a6a1`；已含 `origin/main`（`8849c2a`）全部提交，并超前含 Hermes 延迟修复 `d147d04`、release/interview/xhs 等 |
+| `origin/main`（汇总前） | `8849c2a`（desktop 0.1.11 + WSL resilience merge） |
+| VPS `~/cursor-gateway` | `main` @ `56fec7e`（desktop 0.1.10 时代），相对 HEAD 有大量 **未提交** WT 改动 |
+| VPS 脱敏备份 | `~/cursor-gateway/backups/pre-sync-inventory-20260721T044510Z/`（sanitized tracked diff + hashes + Hermes runtime 元数据；未保留 raw secrets diff） |
+| VPS Hermes | `systemd --user`：`hermes-gateway` / `hermes-gateway-telegram2` active；MemoryHigh/Max 隔离仍在 |
+| 运行中 `infra-app-1`（汇总前） | **回归**：镜像内 **无** `apps/server/src/csapi`；`/v1/models` 落到 Cloudflare Access → `403 email_not_allowed`。`.env` 仍有 `CSAPI_ENABLED=true`、`CSAPI_MAX_PROMPT_CHARS=96000`，但进程未加载 csapi。需在入库后用完整源码 **重建 app 镜像** 恢复 |
+
+合并方式：本地分支已是 `origin/main` 的严格超集（无分叉），采用 **保留本地超集 + ff-only 上库**；不对 VPS 做 hard reset/clean。VPS tracked WT 与本地关键路径（csapi/fencing/runPolling 等）哈希一致或仅为「本地多出的 interview/xhs/release」；**无额外 VPS-only 业务逻辑需回移植**。
+
+### 13.2 功能保留矩阵
+
+| 功能 | 生产证据 | 代码/提交 | 汇总结论 |
+|------|----------|-----------|----------|
+| WSL resilience / fencing / cancel | 诊断报告 §1/§5：abort 1.922s 清 lease；runner `stopped after lease loss` | `21389e2`、`bcde191`、`d67e565`；`db.ts` lease fence、`cursorAgent.ts`、`concurrency.ts` | **保留**（已在 `origin/main` + 分支） |
+| E2EE | VPS WT/本地同哈希：`e2eeDb.ts`、`e2eeProcessor.ts`、`e2eeRunnerSignature.ts` | `agent/e2ee` 合入线 + `21389e2` | **保留** |
+| 客户端轮询 auto-refresh | secure-web/web + shared | `3918283` / `13affc3`；`packages/shared/src/runPolling.ts` | **保留** |
+| desktop 0.1.11 | `apps/desktop/package.json` / `desktop-version.json` = 0.1.11 | `95e5783`、`8849c2a` | **保留** |
+| 96k prompt cap | 生产 `.env` `CSAPI_MAX_PROMPT_CHARS=96000`；after 样本裁到 96,000 | `d147d04`；`config.ts` / `csapi/server.ts` / `protocol.ts` | **保留**（镜像重建后生效） |
+| session mapping | after：同 session continued prompt 126 字符；automation_threads 持久化 | `d147d04`；`csapi/backend.ts` `resolveConversation` + Hermes `x-session-id` | **保留** |
+| Hermes idempotency / heartbeat / logging / concurrency / memory | plugin headers；SSE no-op/ping；429 背压；cgroup Memory*；max_concurrent_sessions 2/1 | `integrations/hermes/cursor-gateway/`；`csapi/server.ts`；Hermes unit drop-ins | **保留**（plugin 已在诊断期部署；Gateway 侧随镜像恢复） |
+| Interview / XHS / public release | 本地超集相对 VPS WT 多出的产品线 | `d2fe387`…`873a6a1` | **保留**（上库后 VPS 将获得；不回退） |
+
+### 13.3 门禁
+
+```text
+export PATH="$HOME/.node22/bin:$PATH"
+npm run typecheck   # pass
+npm test            # aggregated pass=207 fail=0 skipped=7
+npm run build       # pass
+python3 -m unittest discover integrations/hermes/cursor-gateway -p 'test_*.py'  # 2 pass
+hermes_cursor_runner prompt clip test  # pass
+xiaohongshu publisher tests            # 11 pass（PNG 依赖在无系统字体环境用 mock）
+```
+
+性能低扰动（单元/契约，相对报告 after 语义不劣化）：
+
+- prompt 裁剪 / session-first vs continued：`csapi-protocol` + routes
+- session 复用跨实例、同 session 串行、跨 session 并行
+- OpenAI streaming heartbeat
+- cancel/abort 释放、timeout→504
+- idempotency 复用、429 背压
+
+未在汇总窗口对生产做破坏性加压；上库后以重建镜像 + `/v1` 鉴权探针恢复生产能力。
+
+### 13.4 上库与 VPS 同步
+
+- Feature branch push：`fix/telegram-hermes-gateway-latency`
+- 若 `main` 可安全 fast-forward 则 ff；否则 PR compare URL
+- VPS：`git fetch` + **ff-only** 更新 `~/cursor-gateway`（先 stash 仅 tracked WT；保留脱敏备份）；确认无在途 queued/running 后滚动重建 `infra-app`；**不重启** WSL runner；Hermes unit 仅在确认需要时再动
+
+### 13.5 Rollback
+
+- Git：回退到汇总前 tip `873a6a1`（本提交之前）或 `origin/main` 旧 tip `8849c2a`
+- VPS 应用镜像：诊断期备份 `/home/joel/backups/cursor-gateway/telegram-latency-20260720T144801Z`；本次盘点备份 `~/cursor-gateway/backups/pre-sync-inventory-20260721T044510Z`
+- 禁止 force push `main`
