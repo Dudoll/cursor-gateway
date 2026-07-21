@@ -1,11 +1,17 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
-import Fastify, { type FastifyInstance } from "fastify";
+import Fastify, { type FastifyInstance, type FastifyRequest } from "fastify";
 import type { RunStatus } from "@cursor-gateway/shared";
-import type { CsapiBackend, CsapiRunHandle, CsapiRunSnapshot } from "../src/csapi/backend.js";
+import type {
+  CsapiBackend,
+  CsapiRunHandle,
+  CsapiRunObservation,
+  CsapiRunSnapshot
+} from "../src/csapi/backend.js";
 import { SessionSerializer } from "../src/csapi/concurrency.js";
 import { createCsapi, registerCsapi } from "../src/csapi/server.js";
+import { providerForModel, type CsapiCancelReason } from "../src/csapi/runTimeouts.js";
 
 // In-memory backend that simulates a runner: a run created at T becomes
 // "finished" after `finishDelayMs`. Tracks per-conversation concurrency so we
@@ -14,7 +20,17 @@ class FakeBackend implements CsapiBackend {
   finishDelayMs = 120;
   private runs = new Map<
     string,
-    { createdAt: number; prompt: string; conversationId: string; model: string; cancelledAt?: number }
+    {
+      createdAt: number;
+      prompt: string;
+      conversationId: string;
+      model: string;
+      keyId: string;
+      idempotencyKey?: string;
+      cancelledAt?: number;
+      cancelReason?: CsapiCancelReason;
+      lastActivityAt?: number;
+    }
   >();
   private conversations = new Set<string>();
   private idempotencyRuns = new Map<string, string>();
@@ -28,6 +44,8 @@ class FakeBackend implements CsapiBackend {
   advertisedModels: string[] = ["cursor-fast", "cursor-smart"];
   lastRunModel: string | null = null;
   lastRunPrompt: string | null = null;
+  lastCancelTimeoutMs: number | undefined;
+  refreshActivityOnNextTimeoutCancel = false;
 
   listModelIds() {
     return this.advertisedModels;
@@ -66,6 +84,7 @@ class FakeBackend implements CsapiBackend {
     conversationId: string;
     prompt: string;
     model: string;
+    keyId: string;
     idempotencyKey?: string;
   }): Promise<CsapiRunHandle> {
     if (input.idempotencyKey) {
@@ -84,7 +103,11 @@ class FakeBackend implements CsapiBackend {
       createdAt: Date.now(),
       prompt: input.prompt,
       conversationId: input.conversationId,
-      model: input.model
+      model: input.model,
+      keyId: input.keyId,
+      ...(input.idempotencyKey
+        ? { idempotencyKey: input.idempotencyKey }
+        : {})
     });
     this.createRunCount += 1;
     this.lastRunModel = input.model;
@@ -117,23 +140,139 @@ class FakeBackend implements CsapiBackend {
     if (!run) return undefined;
     this.trackConcurrency();
     const status = this.statusOf(runId);
+    const lifecycle = {
+      queuedAt: new Date(run.createdAt).toISOString(),
+      startedAt: new Date(run.createdAt).toISOString(),
+      finishedAt:
+        status === "finished" || status === "error" || status === "cancelled"
+          ? new Date(
+              run.cancelledAt ?? run.createdAt + this.finishDelayMs
+            ).toISOString()
+          : null,
+      lastActivityAt: new Date(run.lastActivityAt ?? run.createdAt).toISOString(),
+      cancelReason: run.cancelReason ?? null,
+      model: run.model,
+      provider: providerForModel(run.model)
+    };
     if (status === "finished") {
-      return { status, response: `echo:${run.prompt}`, error: null, progress: null, inputTokens: 7, outputTokens: 5 };
+      return {
+        status,
+        response: `echo:${run.prompt}`,
+        error: null,
+        progress: null,
+        inputTokens: 7,
+        outputTokens: 5,
+        ...lifecycle
+      };
     }
     if (status === "error") {
-      return { status, response: null, error: "upstream boom", progress: null, inputTokens: null, outputTokens: null };
+      return {
+        status,
+        response: null,
+        error: "upstream boom",
+        progress: null,
+        inputTokens: null,
+        outputTokens: null,
+        ...lifecycle
+      };
     }
     if (status === "cancelled") {
-      return { status, response: null, error: "cancelled", progress: null, inputTokens: null, outputTokens: null };
+      return {
+        status,
+        response: null,
+        error: "cancelled",
+        progress: null,
+        inputTokens: null,
+        outputTokens: null,
+        ...lifecycle
+      };
     }
-    return { status, response: null, error: null, progress: "working", inputTokens: null, outputTokens: null };
+    return {
+      status,
+      response: null,
+      error: null,
+      progress: "working",
+      inputTokens: null,
+      outputTokens: null,
+      ...lifecycle
+    };
   }
-  async cancelRun(runId: string) {
+  private observation(
+    runId: string,
+    run: CsapiRunSnapshot
+  ): CsapiRunObservation {
+    return {
+      runId,
+      status: run.status,
+      queuedAt: run.queuedAt,
+      startedAt: run.startedAt,
+      finishedAt: run.finishedAt,
+      lastActivityAt: run.lastActivityAt,
+      terminal:
+        run.status === "finished" ||
+        run.status === "error" ||
+        run.status === "cancelled",
+      cancelReason: run.cancelReason,
+      claimAttempts: 1,
+      provider: run.provider,
+      model: run.model,
+      applicationStatusCode:
+        run.status === "finished"
+          ? "CSAPI_COMPLETED"
+          : run.status === "error"
+            ? "CSAPI_RUN_ERROR"
+            : run.status === "cancelled"
+              ? "CSAPI_RUN_CANCELLED"
+              : null
+    };
+  }
+  async observeByIdempotencyKey(
+    idempotencyKey: string,
+    _principalId: string,
+    keyId: string
+  ): Promise<CsapiRunObservation[]> {
+    const runId = this.idempotencyRuns.get(idempotencyKey);
+    if (!runId) return [];
+    const stored = this.runs.get(runId);
+    const run = await this.getRun(runId);
+    if (!stored || stored.keyId !== keyId || !run) return [];
+    return [this.observation(runId, run)];
+  }
+  async observeByRunId(
+    runId: string,
+    _principalId: string,
+    keyId: string
+  ): Promise<CsapiRunObservation | undefined> {
+    const stored = this.runs.get(runId);
+    const run = await this.getRun(runId);
+    if (!stored || stored.keyId !== keyId || !run) return undefined;
+    return this.observation(runId, run);
+  }
+  async cancelRun(
+    runId: string,
+    _principalId: string,
+    reason: CsapiCancelReason,
+    timeoutMs?: number
+  ): Promise<CsapiRunSnapshot | undefined> {
     const run = this.runs.get(runId);
+    this.lastCancelTimeoutMs = timeoutMs;
+    if (
+      run &&
+      this.refreshActivityOnNextTimeoutCancel &&
+      (reason === "queue_timeout" ||
+        reason === "idle_timeout" ||
+        reason === "absolute_timeout")
+    ) {
+      this.refreshActivityOnNextTimeoutCancel = false;
+      run.lastActivityAt = Date.now();
+      return undefined;
+    }
     if (run && !run.cancelledAt) {
       run.cancelledAt = Date.now();
+      run.cancelReason = reason;
       this.cancelCount += 1;
     }
+    return this.getRun(runId);
   }
   async audit() {
     /* no-op */
@@ -141,10 +280,15 @@ class FakeBackend implements CsapiBackend {
 }
 
 const KEY = "test-csapi-key-1";
+const SECOND_KEY = "test-csapi-key-2";
 
 function buildApp(options?: {
+  apiKeys?: Set<string>;
   maxConc?: number;
-  runTimeoutMs?: number;
+  callerWaitTimeoutMs?: number;
+  queueTimeoutMs?: number;
+  idleTimeoutMs?: number;
+  absoluteTimeoutMs?: number;
   finishDelayMs?: number;
   maxPromptChars?: number;
   heartbeatIntervalMs?: number;
@@ -157,11 +301,14 @@ function buildApp(options?: {
     backend,
     config: {
       enabled: true,
-      apiKeys: new Set([KEY]),
+      apiKeys: options?.apiKeys ?? new Set([KEY]),
       defaultModel: "auto",
       defaultWorkspaceId: "",
-      maxConcurrencyPerKey: options?.maxConc ?? 8,
-      runTimeoutMs: options?.runTimeoutMs ?? 5_000,
+      maxConcurrencyPerKey: options?.maxConc ?? 6,
+      callerWaitTimeoutMs: options?.callerWaitTimeoutMs ?? 5_000,
+      queueTimeoutMs: options?.queueTimeoutMs ?? 5_000,
+      idleTimeoutMs: options?.idleTimeoutMs ?? 5_000,
+      absoluteTimeoutMs: options?.absoluteTimeoutMs ?? 10_000,
       maxPromptChars: options?.maxPromptChars ?? 96_000,
       allowWrites: false
     },
@@ -174,6 +321,32 @@ function buildApp(options?: {
 async function closeApp(app: FastifyInstance) {
   await app.close();
 }
+
+test("configured API-key namespace collisions fail closed", () => {
+  assert.throws(
+    () =>
+      createCsapi({
+        backend: new FakeBackend(),
+        config: {
+          enabled: true,
+          apiKeys: new Set([
+            "vsKR5K1ThKuf4UY6r4fr",
+            "NrGsVZVBNbgPGroQVqAQ"
+          ]),
+          defaultModel: "auto",
+          defaultWorkspaceId: "",
+          maxConcurrencyPerKey: 6,
+          callerWaitTimeoutMs: 5_000,
+          queueTimeoutMs: 5_000,
+          idleTimeoutMs: 5_000,
+          absoluteTimeoutMs: 10_000,
+          maxPromptChars: 96_000,
+          allowWrites: false
+        }
+      }),
+    /colliding key identifiers/
+  );
+});
 
 test("auth: missing or wrong key → 401", async () => {
   const { app } = buildApp();
@@ -197,6 +370,12 @@ test("health is open and reports plaintext (not e2ee)", async () => {
   assert.equal(body.ok, true);
   assert.equal(body.e2ee, false);
   assert.equal(body.runnersOnline, 1);
+  assert.deepEqual(body.capacity, {
+    maxConcurrencyPerKey: 6,
+    runnerIdentities: 1,
+    totalRunnerSlots: 6,
+    effectiveTotal: 6
+  });
   await closeApp(app);
 });
 
@@ -208,6 +387,98 @@ test("models requires auth and lists auto + registered models", async () => {
   assert.equal(res.statusCode, 200);
   const ids = (res.json().data as Array<{ id: string }>).map((m) => m.id);
   assert.deepEqual(ids, ["auto", "cursor-fast", "cursor-smart"]);
+  await closeApp(app);
+});
+
+test("run observation is read-only, redacted, authenticated, and API-key scoped", async () => {
+  const { app } = buildApp({
+    apiKeys: new Set([KEY, SECOND_KEY]),
+    finishDelayMs: 20
+  });
+  const rawIdempotencyKey = "observe-safe-run";
+  const promptSecret = "PROMPT-MUST-NOT-BE-OBSERVED";
+  const completed = await app.inject({
+    method: "POST",
+    url: "/v1/chat/completions",
+    headers: {
+      authorization: `Bearer ${KEY}`,
+      "idempotency-key": rawIdempotencyKey
+    },
+    payload: {
+      model: "auto",
+      messages: [{ role: "user", content: promptSecret }]
+    }
+  });
+  assert.equal(completed.statusCode, 200);
+
+  const unauthenticated = await app.inject({
+    method: "GET",
+    url: `/validation/v1/runs/by-idempotency/${rawIdempotencyKey}`
+  });
+  assert.equal(unauthenticated.statusCode, 401);
+
+  const byKey = await app.inject({
+    method: "GET",
+    url: `/validation/v1/runs/by-idempotency/${rawIdempotencyKey}`,
+    headers: { authorization: `Bearer ${KEY}` }
+  });
+  assert.equal(byKey.statusCode, 200);
+  assert.equal(byKey.headers["cache-control"], "no-store");
+  const runs = byKey.json().runs as Array<Record<string, unknown>>;
+  assert.equal(runs.length, 1);
+  const run = runs[0]!;
+  assert.deepEqual(
+    Object.keys(run).sort(),
+    [
+      "applicationStatusCode",
+      "cancelReason",
+      "claimAttempts",
+      "finishedAt",
+      "lastActivityAt",
+      "model",
+      "provider",
+      "queuedAt",
+      "runId",
+      "startedAt",
+      "status",
+      "terminal"
+    ]
+  );
+  assert.equal(run.status, "finished");
+  assert.equal(run.terminal, true);
+  assert.equal(run.cancelReason, null);
+  assert.equal(run.applicationStatusCode, "CSAPI_COMPLETED");
+  assert.equal(run.provider, "cursor-gateway");
+  assert.equal(run.model, "auto");
+  assert.doesNotMatch(byKey.payload, new RegExp(promptSecret, "u"));
+  assert.doesNotMatch(byKey.payload, /response|authorization|token/iu);
+
+  const byRun = await app.inject({
+    method: "GET",
+    url: `/validation/v1/runs/${String(run.runId)}`,
+    headers: { "x-api-key": KEY }
+  });
+  assert.equal(byRun.statusCode, 200);
+  assert.deepEqual(byRun.json().run, run);
+
+  const foreignByKey = await app.inject({
+    method: "GET",
+    url: `/validation/v1/runs/by-idempotency/${rawIdempotencyKey}`,
+    headers: { "x-api-key": SECOND_KEY }
+  });
+  assert.equal(foreignByKey.statusCode, 200);
+  assert.deepEqual(foreignByKey.json(), { runs: [] });
+
+  const foreignByRun = await app.inject({
+    method: "GET",
+    url: `/validation/v1/runs/${String(run.runId)}`,
+    headers: { "x-api-key": SECOND_KEY }
+  });
+  assert.equal(foreignByRun.statusCode, 404);
+  assert.equal(
+    foreignByRun.json().error.applicationStatusCode,
+    "CSAPI_RUN_NOT_FOUND"
+  );
   await closeApp(app);
 });
 
@@ -413,6 +684,78 @@ test("upstream run error maps to 502", async () => {
   await closeApp(app);
 });
 
+test("idempotent retries return the same real terminal error", async () => {
+  const { app, backend } = buildApp({ finishDelayMs: 20 });
+  const fire = () =>
+    app.inject({
+      method: "POST",
+      url: "/v1/chat/completions",
+      headers: {
+        authorization: `Bearer ${KEY}`,
+        "idempotency-key": "stable-terminal-error"
+      },
+      payload: {
+        model: "auto",
+        messages: [{ role: "user", content: "FORCE_ERROR stable" }]
+      }
+    });
+  const first = await fire();
+  const retry = await fire();
+  assert.equal(first.statusCode, 502);
+  assert.equal(retry.statusCode, 502);
+  assert.deepEqual(retry.json().error, first.json().error);
+  assert.equal(first.json().error.applicationStatusCode, "CSAPI_RUN_ERROR");
+  assert.equal(backend.createRunCount, 1);
+  await closeApp(app);
+});
+
+test("structured failure logs omit prompt, token and auth data", async () => {
+  const backend = new FakeBackend();
+  backend.finishDelayMs = 20;
+  const records: unknown[] = [];
+  const log = {
+    info(bindings: unknown) {
+      records.push(bindings);
+    },
+    warn(bindings: unknown) {
+      records.push(bindings);
+    }
+  } as unknown as FastifyRequest["log"];
+  const csapi = createCsapi({
+    backend,
+    config: {
+      enabled: true,
+      apiKeys: new Set([KEY]),
+      defaultModel: "auto",
+      defaultWorkspaceId: "",
+      maxConcurrencyPerKey: 6,
+      callerWaitTimeoutMs: 5_000,
+      queueTimeoutMs: 5_000,
+      idleTimeoutMs: 5_000,
+      absoluteTimeoutMs: 10_000,
+      maxPromptChars: 96_000,
+      allowWrites: false
+    },
+    pollIntervalMs: 10
+  });
+  await assert.rejects(
+    csapi.execute({
+      keyId: "k_safe",
+      system: "",
+      messages: [{ role: "user", text: "FORCE_ERROR PROMPT_SECRET_123" }],
+      requestedModel: "auto",
+      sessionKey: null,
+      requestId: "request-safe",
+      log
+    })
+  );
+  const serialized = JSON.stringify(records);
+  assert.doesNotMatch(serialized, /PROMPT_SECRET_123|inputTokens|outputTokens|authorization|apiKey/);
+  assert.match(serialized, /CSAPI_RUN_ERROR/);
+  assert.match(serialized, /"provider":"cursor-gateway"/);
+  assert.match(serialized, /"model":"auto"/);
+});
+
 test("same-session requests serialize; only one conversation is created", async () => {
   const { app, backend } = buildApp({ finishDelayMs: 80 });
   const fire = () =>
@@ -535,8 +878,30 @@ test("backpressure: per-key concurrency limit returns 429 + Retry-After", async 
   await closeApp(app);
 });
 
-test("run timeout maps to 504 and cancels the run", async () => {
-  const { app, backend } = buildApp({ runTimeoutMs: 40, finishDelayMs: 10_000 });
+test("per-key concurrency admits six runs and rejects the seventh", async () => {
+  const { app } = buildApp({ maxConc: 6, finishDelayMs: 150 });
+  const results = await Promise.all(
+    Array.from({ length: 7 }, (_, index) =>
+      app.inject({
+        method: "POST",
+        url: "/v1/chat/completions",
+        headers: {
+          authorization: `Bearer ${KEY}`,
+          "x-session-id": `capacity-${index}`
+        },
+        payload: { model: "auto", messages: [{ role: "user", content: "hold" }] }
+      })
+    )
+  );
+  assert.deepEqual(
+    results.map((result) => result.statusCode).sort((a, b) => a - b),
+    [200, 200, 200, 200, 200, 200, 429]
+  );
+  await closeApp(app);
+});
+
+test("idle timeout maps to a stable 504 and cancels the run", async () => {
+  const { app, backend } = buildApp({ idleTimeoutMs: 40, finishDelayMs: 10_000 });
   const res = await app.inject({
     method: "POST",
     url: "/v1/messages",
@@ -544,7 +909,61 @@ test("run timeout maps to 504 and cancels the run", async () => {
     payload: { model: "auto", messages: [{ role: "user", content: "slow" }] }
   });
   assert.equal(res.statusCode, 504);
+  assert.equal(res.json().error.applicationStatusCode, "CSAPI_IDLE_TIMEOUT");
+  assert.equal(res.json().error.cancelReason, "idle_timeout");
+  assert.equal(backend.lastCancelTimeoutMs, 40);
   assert.ok(backend.cancelCount >= 1);
+  await closeApp(app);
+});
+
+test("fresh activity racing an idle timeout prevents false cancellation", async () => {
+  const backend = new FakeBackend();
+  backend.finishDelayMs = 35;
+  backend.refreshActivityOnNextTimeoutCancel = true;
+  const { app } = buildApp({
+    backend,
+    callerWaitTimeoutMs: 500,
+    idleTimeoutMs: 20,
+    absoluteTimeoutMs: 1_000
+  });
+  const res = await app.inject({
+    method: "POST",
+    url: "/v1/chat/completions",
+    headers: { authorization: `Bearer ${KEY}` },
+    payload: {
+      model: "auto",
+      messages: [{ role: "user", content: "activity race" }]
+    }
+  });
+  assert.equal(res.statusCode, 200);
+  assert.equal(backend.lastCancelTimeoutMs, 20);
+  assert.equal(backend.cancelCount, 0);
+  await closeApp(app);
+});
+
+test("stream errors expose status code, cancel reason, provider and model", async () => {
+  const { app } = buildApp({ idleTimeoutMs: 35, finishDelayMs: 10_000 });
+  const res = await app.inject({
+    method: "POST",
+    url: "/v1/chat/completions",
+    headers: { authorization: `Bearer ${KEY}` },
+    payload: {
+      model: "auto",
+      stream: true,
+      messages: [{ role: "user", content: "slow stream" }]
+    }
+  });
+  assert.equal(res.statusCode, 200);
+  const errorLine = res.payload
+    .split("\n")
+    .find((line) => line.startsWith("data: ") && line.includes("applicationStatusCode"));
+  assert.ok(errorLine);
+  const payload = JSON.parse(errorLine.slice(6));
+  assert.equal(payload.error.applicationStatusCode, "CSAPI_IDLE_TIMEOUT");
+  assert.equal(payload.error.cancelReason, "idle_timeout");
+  assert.equal(payload.error.provider, "cursor-gateway");
+  assert.equal(payload.error.model, "auto");
+  assert.doesNotMatch(res.payload, /slow stream|test-csapi-key-1/);
   await closeApp(app);
 });
 
@@ -569,8 +988,13 @@ test("idempotency key reuses a completed run", async () => {
   await closeApp(app);
 });
 
-test("idempotency key prevents a timed-out retry from creating another run", async () => {
-  const { app, backend } = buildApp({ runTimeoutMs: 30, finishDelayMs: 10_000 });
+test("caller timeout leaves a healthy idempotent run active and retry reattaches", async () => {
+  const { app, backend } = buildApp({
+    callerWaitTimeoutMs: 30,
+    idleTimeoutMs: 1_000,
+    absoluteTimeoutMs: 2_000,
+    finishDelayMs: 50
+  });
   const fire = () =>
     app.inject({
       method: "POST",
@@ -585,9 +1009,10 @@ test("idempotency key prevents a timed-out retry from creating another run", asy
   const first = await fire();
   const second = await fire();
   assert.equal(first.statusCode, 504);
-  assert.equal(second.statusCode, 502);
+  assert.equal(first.json().error.applicationStatusCode, "CSAPI_CALLER_WAIT_TIMEOUT");
+  assert.equal(second.statusCode, 200);
   assert.equal(backend.createRunCount, 1);
-  assert.equal(backend.cancelCount, 1);
+  assert.equal(backend.cancelCount, 0);
   await closeApp(app);
 });
 
@@ -627,8 +1052,11 @@ test("abort during execute cancels the queued run", async () => {
       apiKeys: new Set([KEY]),
       defaultModel: "auto",
       defaultWorkspaceId: "",
-      maxConcurrencyPerKey: 8,
-      runTimeoutMs: 10_000,
+      maxConcurrencyPerKey: 6,
+      callerWaitTimeoutMs: 10_000,
+      queueTimeoutMs: 5_000,
+      idleTimeoutMs: 5_000,
+      absoluteTimeoutMs: 10_000,
       maxPromptChars: 96_000,
       allowWrites: false
     },

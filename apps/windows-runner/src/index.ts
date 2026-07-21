@@ -32,6 +32,7 @@ import { processRecoveryPairingCycle } from "./recoveryPairing.js";
 import { processRunnerCodePairingCycle } from "./runnerCodePairing.js";
 import { trustRootSas } from "@cursor-gateway/e2ee";
 import { loadTrustRoots as loadRunnerTrustRoots } from "./runnerCert.js";
+import { SinglePermit, workerQueueOrder } from "./workerPool.js";
 
 const GATEWAY_REQUEST_TIMEOUT_MS = 30_000;
 const HEARTBEAT_INTERVAL_MS = 60_000;
@@ -151,6 +152,7 @@ async function heartbeat(state?: RunnerE2eeState) {
       method: "POST",
       body: JSON.stringify({
         runnerId: config.runnerId,
+        maxConcurrentJobs: config.maxConcurrentJobs,
         models,
         workspaces
       })
@@ -497,87 +499,107 @@ async function runLegacyJob(
   }
 }
 
-async function e2eeJobLoop(
+async function runE2eeJob(
   workerId: number,
+  encryptedJob: E2eeRunnerJob,
   state: RunnerE2eeState,
   processor: E2eeJobProcessor
 ) {
+  console.log(
+    `Worker ${workerId} running encrypted job ${encryptedJob.request.runId}`
+  );
+  let lastProgressAt = 0;
+  const abortController = new AbortController();
+  const stopLeaseRenewal = startE2eeLeaseRenewal(
+    encryptedJob,
+    state,
+    abortController
+  );
+  try {
+    const encryptedResult = await processor.process(
+      encryptedJob,
+      async (envelope) => {
+        const now = Date.now();
+        if (now - lastProgressAt < PROGRESS_THROTTLE_MS) return;
+        lastProgressAt = now;
+        const accepted = await submitE2eeProgress(
+          encryptedJob.leaseId,
+          envelope
+        );
+        if (!accepted) abortController.abort();
+      },
+      abortController.signal
+    );
+    if (abortController.signal.aborted) {
+      console.warn(
+        `Worker ${workerId} stopped encrypted run ${encryptedJob.request.runId} after lease loss`
+      );
+      return;
+    }
+    await submitE2eeResultWithRetry(encryptedJob.leaseId, encryptedResult);
+    console.log(
+      `Worker ${workerId} completed encrypted run ${encryptedJob.request.runId} with ${encryptedResult.status}`
+    );
+  } catch (error) {
+    if (!abortController.signal.aborted) {
+      const rejection = e2eeRejectionCode(error);
+      console.error(
+        `Worker ${workerId} rejected encrypted run ${encryptedJob.request.runId}: ${rejection}`
+      );
+      await submitE2eeRejectionWithRetry(encryptedJob, state, rejection);
+    }
+  } finally {
+    stopLeaseRenewal();
+  }
+}
+
+async function sharedJobLoop(
+  workerId: number,
+  state: RunnerE2eeState | undefined,
+  processor: E2eeJobProcessor | undefined,
+  e2eePermit: SinglePermit
+) {
+  let iteration = 0;
   for (;;) {
     try {
-      const encryptedJob = await claimE2eeJob(state);
-      if (!encryptedJob) {
-        await sleep(config.pollIntervalMs);
-        continue;
-      }
-
-      console.log(
-        `Worker ${workerId} running encrypted job ${encryptedJob.request.runId}`
-      );
-      let lastProgressAt = 0;
-      const abortController = new AbortController();
-      const stopLeaseRenewal = startE2eeLeaseRenewal(
-        encryptedJob,
-        state,
-        abortController
-      );
-      try {
-        const encryptedResult = await processor.process(
-          encryptedJob,
-          async (envelope) => {
-            const now = Date.now();
-            if (now - lastProgressAt < PROGRESS_THROTTLE_MS) return;
-            lastProgressAt = now;
-            const accepted = await submitE2eeProgress(
-              encryptedJob.leaseId,
-              envelope
-            );
-            if (!accepted) abortController.abort();
-          },
-          abortController.signal
-        );
-        if (abortController.signal.aborted) {
-          console.warn(
-            `Worker ${workerId} stopped encrypted run ${encryptedJob.request.runId} after lease loss`
-          );
-          continue;
+      let claimed = false;
+      const order = workerQueueOrder({
+        workerId,
+        iteration,
+        e2eeEnabled: Boolean(state && processor),
+        legacyEnabled: config.legacyEnabled
+      });
+      iteration += 1;
+      for (const queue of order) {
+        if (queue === "e2ee" && state && processor) {
+          const release = e2eePermit.tryAcquire();
+          if (!release) continue;
+          try {
+            const encryptedJob = await claimE2eeJob(state);
+            if (encryptedJob) {
+              await runE2eeJob(workerId, encryptedJob, state, processor);
+              claimed = true;
+            }
+          } finally {
+            release();
+          }
+          if (claimed) break;
+        } else if (queue === "legacy") {
+          const legacyJob = await claimJob();
+          if (legacyJob) {
+            await runLegacyJob(workerId, legacyJob);
+            claimed = true;
+            break;
+          }
         }
-        await submitE2eeResultWithRetry(encryptedJob.leaseId, encryptedResult);
-        console.log(
-          `Worker ${workerId} completed encrypted run ${encryptedJob.request.runId} with ${encryptedResult.status}`
-        );
-      } catch (error) {
-        if (!abortController.signal.aborted) {
-          const rejection = e2eeRejectionCode(error);
-          console.error(
-            `Worker ${workerId} rejected encrypted run ${encryptedJob.request.runId}: ${rejection}`
-          );
-          await submitE2eeRejectionWithRetry(encryptedJob, state, rejection);
-        }
-      } finally {
-        stopLeaseRenewal();
       }
+      if (!claimed) await sleep(config.pollIntervalMs);
     } catch (error) {
       const code =
         error instanceof Error && /^e2ee_[a-z0-9_]+$/.test(error.message)
           ? error.message
           : "runner_job_failed";
-      console.error(`E2EE worker ${workerId} loop failure: ${code}`);
-      await sleep(ERROR_BACKOFF_MS);
-    }
-  }
-}
-
-async function legacyJobLoop(workerId: number) {
-  for (;;) {
-    try {
-      const legacyJob = await claimJob();
-      if (!legacyJob) {
-        await sleep(config.pollIntervalMs);
-        continue;
-      }
-      await runLegacyJob(workerId, legacyJob);
-    } catch {
-      console.error(`Legacy worker ${workerId} loop failure`);
+      console.error(`Shared worker ${workerId} loop failure: ${code}`);
       await sleep(ERROR_BACKOFF_MS);
     }
   }
@@ -716,23 +738,18 @@ async function main() {
     }
   }
 
-  const e2eeWorkers =
-    state && processor
-      ? Array.from({ length: config.e2eeConcurrentJobs }, (_, index) =>
-          e2eeJobLoop(index + 1, state, processor)
-        )
-      : [];
-  const legacyWorkers = Array.from(
-    { length: config.legacyConcurrentJobs },
-    (_, index) => legacyJobLoop(index + 1)
+  const e2eePermit = new SinglePermit();
+  const workers = Array.from(
+    { length: config.maxConcurrentJobs },
+    (_, index) => sharedJobLoop(index + 1, state, processor, e2eePermit)
   );
   console.log(
-    `Starting isolated worker pools (e2ee=${e2eeWorkers.length}, legacy=${legacyWorkers.length})`
+    `Starting shared worker pool (slots=${workers.length}, ` +
+      `e2ee=${config.e2eeEnabled}, legacy=${config.legacyEnabled})`
   );
   const loops: Array<Promise<void>> = [
     heartbeatLoop(state),
-    ...e2eeWorkers,
-    ...legacyWorkers
+    ...workers
   ];
   if (state) {
     console.log(

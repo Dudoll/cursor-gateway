@@ -119,6 +119,7 @@ import {
   createAutomationThreadRun,
   createConversation,
   createRun,
+  expireCsapiRuns,
   finishRun,
   updateRunProgress,
   getConversation,
@@ -264,6 +265,7 @@ import { buildXiaohongshuDraft } from "./social.js";
 
 const heartbeatSchema = z.object({
   runnerId: z.string().min(1),
+  maxConcurrentJobs: z.number().int().positive().max(64).optional(),
   models: z.array(modelSchema),
   workspaces: z.array(workspaceSchema)
 });
@@ -421,8 +423,21 @@ function looksLikeMissingAgent(error: string | null): boolean {
   );
 }
 
+function sweepCsapiRunTimeouts() {
+  return expireCsapiRuns({
+    queueTimeoutMs: config.csapi.queueTimeoutMs,
+    idleTimeoutMs: config.csapi.idleTimeoutMs,
+    absoluteTimeoutMs: config.csapi.absoluteTimeoutMs
+  });
+}
+
 async function claimJobFor(executor: RunExecutor, runnerId: string) {
-  const claimed = await claimNextRun(executor, runnerId);
+  await sweepCsapiRunTimeouts();
+  const claimed = await claimNextRun(
+    executor,
+    runnerId,
+    config.runnerMaxConcurrentJobs
+  );
   if (!claimed) return undefined;
   const { run, leaseId } = claimed;
 
@@ -2158,20 +2173,33 @@ export async function registerRoutes(app: FastifyInstance) {
   app.register(async (runner) => {
     runner.addHook("preHandler", requireRunner);
 
-    runner.post("/heartbeat", async (request) => {
+    runner.post("/heartbeat", async (request, reply) => {
       const body = heartbeatSchema.parse(request.body);
+      const reportedCapacity =
+        body.maxConcurrentJobs ?? config.runnerMaxConcurrentJobs;
+      if (reportedCapacity !== config.runnerMaxConcurrentJobs) {
+        return reply.code(409).send({
+          error: "runner_capacity_mismatch",
+          expected: config.runnerMaxConcurrentJobs
+        });
+      }
+      const csapiTimeouts = await sweepCsapiRunTimeouts();
       const recovery = await recoverStaleRuns(
         "windows",
         config.runnerStaleAfterSeconds,
         config.runnerMaxAttempts
       );
-      const heartbeat = await registerRunner(body);
+      const heartbeat = await registerRunner({
+        ...body,
+        maxConcurrentJobs: reportedCapacity
+      });
       await appendAudit({
         eventType: "runner.heartbeat",
         details: {
           runnerId: body.runnerId,
           modelCount: body.models.length,
           workspaceCount: body.workspaces.length,
+          csapiTimeouts,
           recovery
         }
       });
@@ -2190,6 +2218,7 @@ export async function registerRoutes(app: FastifyInstance) {
     runner.post("/jobs/:runId/lease", async (request, reply) => {
       const params = z.object({ runId: z.string().uuid() }).parse(request.params);
       const body = runnerLeaseIdentitySchema.parse(request.body);
+      await sweepCsapiRunTimeouts();
       const renewed = await renewRunLease({
         runId: params.runId,
         runnerId: body.runnerId,
@@ -2247,6 +2276,7 @@ export async function registerRoutes(app: FastifyInstance) {
         ...(request.body as object),
         runId: params.runId
       });
+      await sweepCsapiRunTimeouts();
       const updated = await updateRunProgress({
         runId: body.runId,
         runnerId: body.runnerId,
@@ -2288,7 +2318,8 @@ export async function registerRoutes(app: FastifyInstance) {
       const job = await claimNextE2eeRun({
         runnerId: body.runnerId,
         runnerKeyId: body.runnerKeyId,
-        maxAttempts: config.runnerMaxAttempts
+        maxAttempts: config.runnerMaxAttempts,
+        maxConcurrentJobs: config.runnerMaxConcurrentJobs
       });
       return job ? { job } : reply.code(204).send();
     });
@@ -2913,19 +2944,32 @@ export async function registerRoutes(app: FastifyInstance) {
   app.register(async (hermesRunner) => {
     hermesRunner.addHook("preHandler", requireHermesRunner);
 
-    hermesRunner.post("/heartbeat", async (request) => {
+    hermesRunner.post("/heartbeat", async (request, reply) => {
       const body = heartbeatSchema.parse(request.body);
+      const reportedCapacity =
+        body.maxConcurrentJobs ?? config.runnerMaxConcurrentJobs;
+      if (reportedCapacity !== config.runnerMaxConcurrentJobs) {
+        return reply.code(409).send({
+          error: "runner_capacity_mismatch",
+          expected: config.runnerMaxConcurrentJobs
+        });
+      }
+      const csapiTimeouts = await sweepCsapiRunTimeouts();
       const recovery = await recoverStaleRuns(
         "hermes",
         config.runnerStaleAfterSeconds,
         config.runnerMaxAttempts
       );
-      const heartbeat = await registerRunner(body);
+      const heartbeat = await registerRunner({
+        ...body,
+        maxConcurrentJobs: reportedCapacity
+      });
       await appendAudit({
         eventType: "hermes_runner.heartbeat",
         details: {
           runnerId: body.runnerId,
           modelCount: body.models.length,
+          csapiTimeouts,
           recovery
         }
       });
@@ -2976,6 +3020,7 @@ export async function registerRoutes(app: FastifyInstance) {
         ...(request.body as object),
         runId: params.runId
       });
+      await sweepCsapiRunTimeouts();
       const updated = await updateRunProgress({
         runId: body.runId,
         runnerId: "hermes",

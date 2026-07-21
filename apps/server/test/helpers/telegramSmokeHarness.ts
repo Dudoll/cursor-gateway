@@ -7,6 +7,10 @@ import Fastify, { type FastifyInstance, type LightMyRequestResponse } from "fast
 import type { RunStatus } from "@cursor-gateway/shared";
 import type { CsapiBackend, CsapiRunHandle, CsapiRunSnapshot } from "../../src/csapi/backend.js";
 import { registerCsapi } from "../../src/csapi/server.js";
+import {
+  providerForModel,
+  type CsapiCancelReason
+} from "../../src/csapi/runTimeouts.js";
 
 export const SMOKE_API_KEY = "telegram-smoke-csapi-key";
 export const TELEGRAM_MESSAGE_LIMIT = 4_096;
@@ -63,7 +67,14 @@ export class FakeRunnerBackend implements CsapiBackend {
   busyReject = false;
   private runs = new Map<
     string,
-    { createdAt: number; prompt: string; conversationId: string; model: string; cancelledAt?: number }
+    {
+      createdAt: number;
+      prompt: string;
+      conversationId: string;
+      model: string;
+      cancelledAt?: number;
+      cancelReason?: CsapiCancelReason;
+    }
   >();
   private conversations = new Set<string>();
   private idempotencyRuns = new Map<string, string>();
@@ -175,6 +186,14 @@ export class FakeRunnerBackend implements CsapiBackend {
     if (!run) return undefined;
     this.trackConcurrency();
     const status = this.statusOf(runId);
+    const lifecycle = {
+      queuedAt: new Date(run.createdAt).toISOString(),
+      startedAt: new Date(run.createdAt).toISOString(),
+      lastActivityAt: new Date(run.createdAt).toISOString(),
+      cancelReason: run.cancelReason ?? null,
+      model: run.model,
+      provider: providerForModel(run.model)
+    };
     if (status === "finished") {
       return {
         status,
@@ -182,7 +201,8 @@ export class FakeRunnerBackend implements CsapiBackend {
         error: null,
         progress: null,
         inputTokens: 7,
-        outputTokens: 5
+        outputTokens: 5,
+        ...lifecycle
       };
     }
     if (status === "error") {
@@ -192,7 +212,8 @@ export class FakeRunnerBackend implements CsapiBackend {
         error: "upstream boom",
         progress: null,
         inputTokens: null,
-        outputTokens: null
+        outputTokens: null,
+        ...lifecycle
       };
     }
     if (status === "cancelled") {
@@ -202,7 +223,8 @@ export class FakeRunnerBackend implements CsapiBackend {
         error: "cancelled",
         progress: null,
         inputTokens: null,
-        outputTokens: null
+        outputTokens: null,
+        ...lifecycle
       };
     }
     return {
@@ -211,15 +233,22 @@ export class FakeRunnerBackend implements CsapiBackend {
       error: null,
       progress: "working",
       inputTokens: null,
-      outputTokens: null
+      outputTokens: null,
+      ...lifecycle
     };
   }
-  async cancelRun(runId: string) {
+  async cancelRun(
+    runId: string,
+    _principalId: string,
+    reason: CsapiCancelReason
+  ): Promise<CsapiRunSnapshot | undefined> {
     const run = this.runs.get(runId);
     if (run && !run.cancelledAt) {
       run.cancelledAt = Date.now();
+      run.cancelReason = reason;
       this.cancelCount += 1;
     }
+    return this.getRun(runId);
   }
   async audit() {
     /* no-op */
@@ -232,7 +261,7 @@ export type ChatTurn = { role: "system" | "user" | "assistant"; content: string 
 export class HermesTelegramBridge {
   readonly histories = new Map<string, ChatTurn[]>();
   readonly activeSessions = new Set<string>();
-  maxConcurrentSessions = 8;
+  maxConcurrentSessions = 6;
 
   constructor(
     private readonly app: FastifyInstance,
@@ -405,7 +434,10 @@ export class HermesTelegramBridge {
 
 export function buildSmokeStack(options?: {
   maxConc?: number;
-  runTimeoutMs?: number;
+  callerWaitTimeoutMs?: number;
+  queueTimeoutMs?: number;
+  idleTimeoutMs?: number;
+  absoluteTimeoutMs?: number;
   finishDelayMs?: number;
   maxPromptChars?: number;
   heartbeatIntervalMs?: number;
@@ -422,8 +454,11 @@ export function buildSmokeStack(options?: {
       apiKeys: new Set([SMOKE_API_KEY]),
       defaultModel: "auto",
       defaultWorkspaceId: "",
-      maxConcurrencyPerKey: options?.maxConc ?? 8,
-      runTimeoutMs: options?.runTimeoutMs ?? 5_000,
+      maxConcurrencyPerKey: options?.maxConc ?? 6,
+      callerWaitTimeoutMs: options?.callerWaitTimeoutMs ?? 5_000,
+      queueTimeoutMs: options?.queueTimeoutMs ?? 5_000,
+      idleTimeoutMs: options?.idleTimeoutMs ?? 5_000,
+      absoluteTimeoutMs: options?.absoluteTimeoutMs ?? 10_000,
       maxPromptChars: options?.maxPromptChars ?? 96_000,
       allowWrites: false
     },

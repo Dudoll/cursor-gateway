@@ -1,0 +1,11 @@
+[Unit]
+Description=Timer — Hermes HA evaluate every 2 min (band)
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=2min
+Persistent=true
+Unit=hermes-ha-evaluate.service
+
+[Install]
+WantedBy=timers.target

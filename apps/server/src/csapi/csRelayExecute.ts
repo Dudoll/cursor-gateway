@@ -104,7 +104,7 @@ export async function executeCsRelayReencrypt(input: {
     request: envelope
   });
 
-  const timeoutMs = input.timeoutMs ?? appConfig.csapi.runTimeoutMs;
+  const timeoutMs = input.timeoutMs ?? appConfig.csapi.absoluteTimeoutMs;
   const pollMs = input.pollIntervalMs ?? 400;
   const deadline = Date.now() + timeoutMs;
   const runnerSigning = await importSigningPublicKey(runner.e2ee.signingKey.publicKey);

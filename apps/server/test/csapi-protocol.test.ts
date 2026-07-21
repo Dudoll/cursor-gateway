@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   apiKeyId,
+  assertUniqueApiKeyIds,
   buildAnthropicResponse,
   buildAnthropicStreamFrames,
   buildModelsResponse,
@@ -42,6 +43,20 @@ test("matchApiKey returns a stable non-secret id or undefined", () => {
   assert.ok(id && id.startsWith("k_"));
   assert.equal(id, apiKeyId("k1-super-secret"));
   assert.notEqual(id, apiKeyId("k2-other"));
+  // Known legacy FNV-1a collision: configuration must fail closed.
+  assert.equal(
+    apiKeyId("vsKR5K1ThKuf4UY6r4fr"),
+    apiKeyId("NrGsVZVBNbgPGroQVqAQ")
+  );
+  assert.throws(
+    () =>
+      assertUniqueApiKeyIds([
+        "vsKR5K1ThKuf4UY6r4fr",
+        "NrGsVZVBNbgPGroQVqAQ"
+      ]),
+    /colliding key identifiers/
+  );
+  assert.doesNotThrow(() => assertUniqueApiKeyIds(allow));
   assert.equal(matchApiKey("nope", allow), undefined);
   assert.equal(matchApiKey(undefined, allow), undefined);
   assert.equal(id?.includes("secret"), false);

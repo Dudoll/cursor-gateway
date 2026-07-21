@@ -5,7 +5,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { requireCloudflareUser } from "./auth.js";
 import { config } from "./config.js";
-import { migrate, seedWorkspaces } from "./db.js";
+import { expireCsapiRuns, migrate, seedWorkspaces } from "./db.js";
 import { registerHttpMiddleware } from "./httpMiddleware.js";
 import { registerRoutes } from "./routes.js";
 import { registerTelegram } from "./telegram.js";
@@ -65,6 +65,34 @@ async function main() {
     if (config.csapi.apiKeys.size === 0) {
       app.log.warn("CSAPI_ENABLED is true but CSAPI_API_KEYS is empty; csapi routes will reject all requests");
     }
+    const sweepCsapiTimeouts = async () => {
+      const expired = await expireCsapiRuns({
+        queueTimeoutMs: config.csapi.queueTimeoutMs,
+        idleTimeoutMs: config.csapi.idleTimeoutMs,
+        absoluteTimeoutMs: config.csapi.absoluteTimeoutMs
+      });
+      if (expired.queueTimeout + expired.idleTimeout + expired.absoluteTimeout > 0) {
+        app.log.warn(
+          { event: "csapi.runs.expired", ...expired },
+          "expired csapi runs"
+        );
+      }
+    };
+    await sweepCsapiTimeouts();
+    const timeoutSweep = setInterval(() => {
+      void sweepCsapiTimeouts().catch((error: unknown) => {
+        app.log.error(
+          {
+            event: "csapi.timeout_sweep.failed",
+            errorKind: error instanceof Error ? error.name : "unknown"
+          },
+          "csapi timeout sweep failed"
+        );
+      });
+    }, 5_000);
+    timeoutSweep.unref();
+    app.addHook("onClose", async () => clearInterval(timeoutSweep));
+
     const backend = await createDbBackend();
     const csapiDeps = {
       backend,
@@ -74,7 +102,10 @@ async function main() {
         defaultModel: config.csapi.defaultModel,
         defaultWorkspaceId: config.csapi.defaultWorkspaceId,
         maxConcurrencyPerKey: config.csapi.maxConcurrencyPerKey,
-        runTimeoutMs: config.csapi.runTimeoutMs,
+        callerWaitTimeoutMs: config.csapi.callerWaitTimeoutMs,
+        queueTimeoutMs: config.csapi.queueTimeoutMs,
+        idleTimeoutMs: config.csapi.idleTimeoutMs,
+        absoluteTimeoutMs: config.csapi.absoluteTimeoutMs,
         maxPromptChars: config.csapi.maxPromptChars,
         allowWrites: config.csapi.allowWrites
       }

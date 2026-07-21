@@ -92,7 +92,7 @@ test("S4 short ask stays small; controlled long context is truncated", async () 
 
 test("S5 timeout cancels run and surfaces a visible failure", async () => {
   const { app, backend, bot, bridge } = buildSmokeStack({
-    runTimeoutMs: 35,
+    idleTimeoutMs: 35,
     finishDelayMs: 10_000
   });
   // Non-stream so HTTP status reflects 504 (stream hijacks 200 before execute ends).
@@ -110,7 +110,7 @@ test("S5 timeout cancels run and surfaces a visible failure", async () => {
 test("S6 timeout/cancel path releases runner work (cancelCount >= 1)", async () => {
   const { app, backend, bot, bridge } = buildSmokeStack({
     finishDelayMs: 10_000,
-    runTimeoutMs: 30
+    idleTimeoutMs: 30
   });
   const timed = await bridge.handleUserMessage({
     chatId: "chat-abort",

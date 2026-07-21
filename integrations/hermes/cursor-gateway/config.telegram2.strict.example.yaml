@@ -1,0 +1,13 @@
+# Merge these non-secret values into telegram2's own config.yaml.
+# Never copy main's config.yaml or state.db into this profile.
+model:
+  provider: cursor-gateway
+  default: gpt-5.6-sol
+  base_url: http://127.0.0.1:18080/v1
+  api_mode: chat_completions
+
+# The legacy singular fallback_model key must be absent.
+fallback_providers: []
+
+gateway:
+  max_concurrent_sessions: 1

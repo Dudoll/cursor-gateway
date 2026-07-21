@@ -1,0 +1,12 @@
+[Unit]
+Description=Hermes HA gateway checkpoint freshness watchdog
+After=network-online.target
+
+[Service]
+Type=oneshot
+Environment=HERMES_HA_CONFIG=%h/.config/hermes-ha/config.json
+ExecStart=/usr/bin/python3 @HERMES_HA_ROOT@/agent/checkpoint_watchdog.py
+Nice=15
+MemoryAccounting=true
+MemoryMax=96M
+TasksMax=16

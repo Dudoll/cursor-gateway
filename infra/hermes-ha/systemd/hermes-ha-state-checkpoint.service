@@ -1,0 +1,12 @@
+[Unit]
+Description=Hermes HA state.db checkpoint
+After=network-online.target
+
+[Service]
+Type=oneshot
+Environment=HERMES_HA_CONFIG=%h/.config/hermes-ha/config.json
+ExecStart=@HERMES_HA_ROOT@/scripts/hermes-ha state-checkpoint create --if-leader
+Nice=10
+
+[Install]
+WantedBy=default.target

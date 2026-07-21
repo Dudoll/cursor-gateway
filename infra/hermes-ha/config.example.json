@@ -1,0 +1,204 @@
+{
+  "node_id": "vps-dmit",
+  "peer_id": "vps-band",
+  "icloud_root": "~/iCloudDrive/hermes-ha",
+  "hermes_link": "~/.hermes",
+  "runtime_dir": "~/.config/hermes-ha",
+  "age_identity": "~/.config/hermes-ha/age.key",
+  "age_recipients_file": "~/.config/hermes-ha/age.recipients",
+  "hosts": {
+    "vps-dmit": {
+      "ssh": "vps-dmit",
+      "public_ip": "179.253.228.125",
+      "public_url": "https://dmit.joelzt.org/"
+    },
+    "vps-band": {
+      "ssh": "vps-band",
+      "public_ip": "212.50.247.25",
+      "public_url": "https://band.joelzt.org/"
+    }
+  },
+  "dns": {
+    "cloudflare_token_env": "CF_DNS_API_TOKEN",
+    "cloudflare_token_file": "~/.config/hermes-ha/cf_dns_token",
+    "cloudflare_env_file": "~/.config/cloudflare/cloudflare.env",
+    "records": [
+      {
+        "zone": "joelzt.org",
+        "name": "cs",
+        "type": "A",
+        "proxied": true
+      },
+      {
+        "zone": "joelzt.org",
+        "name": "csapi",
+        "type": "A",
+        "proxied": true
+      },
+      {
+        "zone": "piallera.com",
+        "name": "ai",
+        "type": "A",
+        "proxied": true
+      }
+    ]
+  },
+  "stack_units": {
+    "user": [
+      "hermes-gateway.service",
+      "hermes-gateway-telegram2.service",
+      "report-outbox.timer"
+    ]
+  },
+  "execution_capacity": {
+    "total_slots": 6,
+    "topology": "wsl-e2ee shared worker pool",
+    "runner_id": "wsl-e2ee",
+    "managed_on": "local-wsl"
+  },
+  "probe": {
+    "unreachable_streak_required": 3,
+    "cooldown_seconds": 1800,
+    "failback_healthy_streak_required": 3
+  },
+  "gateway_checkpoint": {
+    "enabled": true,
+    "interval_seconds": 300,
+    "max_age_seconds": 600,
+    "retain": 12,
+    "compose_file": "~/cursor-gateway/infra/docker-compose.yml",
+    "pg_service": "postgres",
+    "pg_user": "cursor_gateway",
+    "pg_database": "cursor_gateway",
+    "transport": "rclone",
+    "remote": "icloud:hermes-ha/checkpoints/gateway"
+  },
+  "state_checkpoint": {
+    "enabled": true,
+    "interval_seconds": 900,
+    "chunk_size_bytes": 41943040,
+    "transport": "rclone",
+    "remote": "icloud:hermes-ha/checkpoints/hermes-state"
+  },
+  "secrets": [
+    {
+      "name": "env",
+      "source": ".env",
+      "encrypted": "secrets/env.age"
+    },
+    {
+      "name": "auth",
+      "source": "auth.json",
+      "encrypted": "secrets/auth.json.age"
+    }
+  ],
+  "local_only": [
+    ".env",
+    "auth.json",
+    "gateway.pid",
+    "gateway.lock",
+    "auth.lock",
+    ".report_delivery_state.lock",
+    "cron/.jobs.lock",
+    "cron/.tick.lock",
+    "kanban.db.dispatch.lock",
+    "kanban.db.init.lock"
+  ],
+  "local_trees": [
+    "hermes-agent",
+    "bin",
+    "lsp",
+    "backups",
+    "state-snapshots",
+    "xhs-chrome-profile",
+    "cache",
+    "logs",
+    "audio_cache",
+    "image_cache",
+    "skills",
+    "research",
+    "profiles"
+  ],
+  "shared_dirs": [
+    "cron",
+    "sessions",
+    "memories",
+    "report_outbox",
+    "scripts",
+    "plugins",
+    "plans",
+    "platforms",
+    "sandboxes",
+    "pairing",
+    "hooks",
+    "gateway"
+  ],
+  "shared_files": [
+    "SOUL.md",
+    "config.yaml",
+    "channel_directory.json",
+    "gateway_state.json",
+    "report_delivery_state.json",
+    "cursor_runner_pending_result.json",
+    ".restart_last_processed.json",
+    ".skills_prompt_snapshot.json",
+    ".hermes_history",
+    ".update_check",
+    "kanban.db",
+    "verification_evidence.db"
+  ],
+  "include_in_migrate": [
+    "SOUL.md",
+    "config.yaml",
+    "config.yaml.bak.*",
+    "channel_directory.json",
+    "gateway_state.json",
+    "report_delivery_state.json",
+    "cursor_runner_pending_result.json",
+    ".restart_last_processed.json",
+    ".skills_prompt_snapshot.json",
+    ".hermes_history",
+    ".update_check",
+    "kanban.db",
+    "verification_evidence.db",
+    "cron/**",
+    "sessions/**",
+    "memories/**",
+    "report_outbox/**",
+    "scripts/**",
+    "plugins/**",
+    "plans/**",
+    "platforms/**",
+    "sandboxes/**"
+  ],
+  "exclude_from_migrate": [
+    ".env",
+    "auth.json",
+    ".env.bak.*",
+    "gateway.pid",
+    "gateway.lock",
+    "*.lock",
+    "cache/",
+    "logs/",
+    "audio_cache/",
+    "image_cache/",
+    "hermes-agent/",
+    "xhs-chrome-profile/",
+    "bin/",
+    "lsp/",
+    "backups/",
+    "state-snapshots/",
+    "skills/",
+    "research/",
+    "profiles/",
+    "state.db",
+    "state.db-*",
+    "state.db-shm",
+    "state.db-wal",
+    "models_dev_cache.json"
+  ],
+  "alert": {
+    "telegram_enabled": true,
+    "command": "python3 \"$HOME/hermes-ha/scripts/hermes-ha-alert.py\""
+  }
+}

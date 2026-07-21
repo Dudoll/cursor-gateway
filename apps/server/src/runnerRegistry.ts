@@ -5,6 +5,7 @@ export type RunnerHeartbeat = {
   runnerId: string;
   models: ModelInfo[];
   workspaces: Workspace[];
+  maxConcurrentJobs: number;
   lastSeenAt: string;
 };
 
@@ -15,6 +16,7 @@ export async function registerRunner(input: {
   runnerId: string;
   models: ModelInfo[];
   workspaces: Workspace[];
+  maxConcurrentJobs: number;
 }) {
   for (const workspace of input.workspaces) {
     await upsertWorkspace(workspace);
@@ -24,6 +26,7 @@ export async function registerRunner(input: {
     runnerId: input.runnerId,
     models: input.models,
     workspaces: input.workspaces,
+    maxConcurrentJobs: input.maxConcurrentJobs,
     lastSeenAt: new Date().toISOString()
   };
   runners.set(input.runnerId, heartbeat);

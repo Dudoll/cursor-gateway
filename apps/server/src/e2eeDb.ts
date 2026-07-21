@@ -483,11 +483,13 @@ export async function cancelE2eeRun(runId: string, userId: string) {
     `
       update runs
       set status = 'cancelled',
+          cancel_reason = 'caller_cancelled',
           progress_envelope = null,
           progress_sequence = null,
           claim_lease_id = null,
           claimed_by = null,
           lease_expires_at = null,
+          last_activity_at = now(),
           finished_at = now(),
           updated_at = now()
       where id = $1
@@ -661,10 +663,16 @@ export async function claimNextE2eeRun(input: {
   runnerId: string;
   runnerKeyId: string;
   maxAttempts?: number;
+  maxConcurrentJobs?: number;
 }): Promise<E2eeRunnerJob | undefined> {
   const result = await pool.query(
     `
-      with expired_failed as (
+      with capacity_lock as (
+        select pg_advisory_xact_lock(
+          hashtext('cursor-gateway-execution-capacity')
+        )
+      ),
+      expired_failed as (
         update runs
         set status = 'error',
             progress_envelope = null,
@@ -696,6 +704,13 @@ export async function claimNextE2eeRun(input: {
           and lease_expires_at < now()
           and claim_attempts < $4
       ),
+      capacity as (
+        select count(*)::integer as count
+        from runs, capacity_lock
+        where status = 'running'
+          and deleted_at is null
+          and claimed_by is not null
+      ),
       candidate as (
         select r.id
         from runs r
@@ -706,6 +721,15 @@ export async function claimNextE2eeRun(input: {
           and r.runner_key_id = $3
           and r.deleted_at is null
           and c.deleted_at is null
+          and (select count from capacity) < $6
+          and not exists (
+            select 1
+            from runs runner_active
+            where runner_active.content_mode = $1
+              and runner_active.status = 'running'
+              and runner_active.claimed_by = $2
+              and runner_active.deleted_at is null
+          )
           and not exists (
             select 1
             from runs active
@@ -734,7 +758,8 @@ export async function claimNextE2eeRun(input: {
       input.runnerId,
       input.runnerKeyId,
       input.maxAttempts ?? 3,
-      LEASE_MINUTES
+      LEASE_MINUTES,
+      input.maxConcurrentJobs ?? 6
     ]
   );
   const row = result.rows[0];

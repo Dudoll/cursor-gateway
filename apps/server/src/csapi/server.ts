@@ -6,7 +6,7 @@
 // gateway queue, the runner and the model. See docs/csapi.md.
 import { createHash } from "node:crypto";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
-import type { CsapiBackend } from "./backend.js";
+import type { CsapiBackend, CsapiRunSnapshot } from "./backend.js";
 import {
   KeyConcurrencyLimiter,
   SessionSerializer,
@@ -17,6 +17,7 @@ import {
   anthropicError,
   anthropicMessageId,
   apiKeyId,
+  assertUniqueApiKeyIds,
   buildAnthropicResponse,
   buildAnthropicStreamFrames,
   buildModelsResponse,
@@ -34,8 +35,15 @@ import {
   resolveSessionKey,
   serializeSse,
   wantsStream,
+  type CsapiErrorDetails,
   type SseFrame
 } from "./protocol.js";
+import {
+  evaluateCsapiRunTimeout,
+  isCsapiTimeoutCancelReason,
+  providerForModel,
+  timeoutDecision
+} from "./runTimeouts.js";
 
 export interface CsapiConfig {
   enabled: boolean;
@@ -43,7 +51,10 @@ export interface CsapiConfig {
   defaultModel: string;
   defaultWorkspaceId: string;
   maxConcurrencyPerKey: number;
-  runTimeoutMs: number;
+  callerWaitTimeoutMs: number;
+  queueTimeoutMs: number;
+  idleTimeoutMs: number;
+  absoluteTimeoutMs: number;
   maxPromptChars?: number;
   allowWrites: boolean;
 }
@@ -55,13 +66,20 @@ export interface CsapiDeps {
   pollIntervalMs?: number;
   /** SSE heartbeat interval (ms); injectable for deterministic tests. */
   heartbeatIntervalMs?: number;
+  /** Injectable monotonic wall clock and sleeper for fake-clock tests. */
+  now?: () => number;
+  sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
 }
 
 class CsapiError extends Error {
   constructor(
     readonly status: number,
     readonly kind: string,
-    message: string
+    message: string,
+    readonly applicationStatusCode = "CSAPI_ERROR",
+    readonly cancelReason?: string,
+    readonly provider?: string,
+    readonly model?: string
   ) {
     super(message);
     this.name = "CsapiError";
@@ -92,6 +110,10 @@ const sleep = (ms: number, signal?: AbortSignal) =>
     signal?.addEventListener("abort", onAbort, { once: true });
   });
 
+const RUN_ID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
+const MAX_IDEMPOTENCY_KEY_CHARS = 512;
+
 interface CompletedRun {
   text: string;
   inputTokens: number;
@@ -114,8 +136,11 @@ interface ExecuteInput {
 
 export function createCsapi(deps: CsapiDeps) {
   const { backend, config } = deps;
+  assertUniqueApiKeyIds(config.apiKeys);
   const pollIntervalMs = deps.pollIntervalMs ?? 400;
   const heartbeatIntervalMs = deps.heartbeatIntervalMs ?? 10_000;
+  const now = deps.now ?? Date.now;
+  const wait = deps.sleep ?? sleep;
   const serializer = new SessionSerializer();
   const limiter = new KeyConcurrencyLimiter(config.maxConcurrencyPerKey);
   // sessionKey (namespaced by API key) -> conversationId
@@ -130,16 +155,29 @@ export function createCsapi(deps: CsapiDeps) {
     return keyId;
   }
 
+  function idempotencyDigest(keyId: string, value: string): string {
+    return createHash("sha256")
+      .update(keyId)
+      .update("\0")
+      .update(value)
+      .digest("hex");
+  }
+
   function idempotencyKeyFor(request: FastifyRequest, keyId: string): string | undefined {
     const headers = request.headers as Record<string, unknown>;
     const raw = headers["idempotency-key"] ?? headers["x-idempotency-key"];
     const value = Array.isArray(raw) ? raw[0] : raw;
     if (typeof value !== "string" || !value.trim()) return undefined;
-    return createHash("sha256")
-      .update(keyId)
-      .update("\0")
-      .update(value.trim())
-      .digest("hex");
+    const normalized = value.trim();
+    if (normalized.length > MAX_IDEMPOTENCY_KEY_CHARS) {
+      throw new CsapiError(
+        400,
+        "invalid_request_error",
+        "idempotency key is too long",
+        "CSAPI_IDEMPOTENCY_KEY_INVALID"
+      );
+    }
+    return idempotencyDigest(keyId, normalized);
   }
 
   async function resolveConversation(input: {
@@ -184,14 +222,63 @@ export function createCsapi(deps: CsapiDeps) {
     return { conversationId, mode: "session-first" };
   }
 
-  async function waitForRun(runId: string, principalId: string, signal?: AbortSignal): Promise<CompletedRun> {
-    const deadline = Date.now() + config.runTimeoutMs;
+  function terminalRunError(snapshot: CsapiRunSnapshot): CsapiError {
+    const cancelReason = snapshot.cancelReason ?? undefined;
+    if (isCsapiTimeoutCancelReason(cancelReason)) {
+      const decision = timeoutDecision(cancelReason);
+      return new CsapiError(
+        504,
+        "api_error",
+        decision.message,
+        decision.applicationStatusCode,
+        cancelReason,
+        snapshot.provider,
+        snapshot.model
+      );
+    }
+    if (snapshot.status === "cancelled") {
+      return new CsapiError(
+        502,
+        "api_error",
+        snapshot.error ?? "run cancelled",
+        "CSAPI_RUN_CANCELLED",
+        cancelReason,
+        snapshot.provider,
+        snapshot.model
+      );
+    }
+    return new CsapiError(
+      502,
+      "api_error",
+      snapshot.error ?? "run failed",
+      "CSAPI_RUN_ERROR",
+      undefined,
+      snapshot.provider,
+      snapshot.model
+    );
+  }
+
+  async function waitForRun(
+    runId: string,
+    principalId: string,
+    fallbackModel: string,
+    signal?: AbortSignal
+  ): Promise<CompletedRun> {
+    const callerDeadline = now() + config.callerWaitTimeoutMs;
     try {
       for (;;) {
         if (signal?.aborted) throw new AbortedError();
         const snapshot = await backend.getRun(runId, principalId);
         if (!snapshot) {
-          throw new CsapiError(502, "api_error", "run disappeared");
+          throw new CsapiError(
+            502,
+            "api_error",
+            "run disappeared",
+            "CSAPI_RUN_NOT_FOUND",
+            undefined,
+            providerForModel(fallbackModel),
+            fallbackModel
+          );
         }
         if (snapshot.status === "finished") {
           return {
@@ -203,19 +290,56 @@ export function createCsapi(deps: CsapiDeps) {
           };
         }
         if (snapshot.status === "error" || snapshot.status === "cancelled") {
-          throw new CsapiError(502, "api_error", snapshot.error ?? `run ${snapshot.status}`);
+          throw terminalRunError(snapshot);
         }
-        if (Date.now() > deadline) {
-          await backend.cancelRun(runId, principalId).catch(() => undefined);
-          throw new CsapiError(504, "api_error", "run timed out");
+
+        const lifecycleTimeout = evaluateCsapiRunTimeout(
+          snapshot,
+          {
+            queueTimeoutMs: config.queueTimeoutMs,
+            idleTimeoutMs: config.idleTimeoutMs,
+            absoluteTimeoutMs: config.absoluteTimeoutMs
+          },
+          now()
+        );
+        if (lifecycleTimeout) {
+          const timeoutMs =
+            lifecycleTimeout.reason === "queue_timeout"
+              ? config.queueTimeoutMs
+              : lifecycleTimeout.reason === "idle_timeout"
+                ? config.idleTimeoutMs
+                : config.absoluteTimeoutMs;
+          const cancelled = await backend.cancelRun(
+            runId,
+            principalId,
+            lifecycleTimeout.reason,
+            timeoutMs
+          );
+          // A result may have committed between the snapshot and conditional
+          // cancellation. Re-read on that race instead of returning a false
+          // timeout over the real terminal state.
+          if (!cancelled) continue;
+          throw terminalRunError(cancelled);
         }
-        await sleep(pollIntervalMs, signal);
+
+        if (now() >= callerDeadline) {
+          throw new CsapiError(
+            504,
+            "api_error",
+            "caller wait timeout; run remains active",
+            "CSAPI_CALLER_WAIT_TIMEOUT",
+            undefined,
+            snapshot.provider,
+            snapshot.model
+          );
+        }
+        await wait(pollIntervalMs, signal);
       }
     } catch (error) {
       // On client abort (top-of-loop check or an interrupted sleep), best-effort
       // cancel the run so it does not linger queued after the caller left.
       if (error instanceof AbortedError) {
-        await backend.cancelRun(runId, principalId).catch(() => undefined);
+        await backend.cancelRun(runId, principalId, "client_aborted").catch(() => undefined);
       }
       throw error;
     }
@@ -270,7 +394,8 @@ export function createCsapi(deps: CsapiDeps) {
       if (!prompt) {
         throw new CsapiError(400, "invalid_request_error", "empty prompt after rendering");
       }
-      const runStartedAt = Date.now();
+      const runStartedAt = now();
+      const provider = providerForModel(model);
       const handle = await backend.createRun({
         principalId,
         conversationId,
@@ -278,6 +403,7 @@ export function createCsapi(deps: CsapiDeps) {
         workspaceId,
         prompt,
         allowWrites: config.allowWrites,
+        keyId: input.keyId,
         ...(input.idempotencyKey ? { idempotencyKey: input.idempotencyKey } : {})
       });
       input.log?.info(
@@ -287,35 +413,49 @@ export function createCsapi(deps: CsapiDeps) {
           runId: handle.runId,
           conversationId: handle.conversationId,
           model,
+          provider,
           mode,
-          promptChars: prompt.length,
           initialStatus: handle.status,
           idempotent: Boolean(input.idempotencyKey)
         },
         "csapi run created"
       );
       try {
-        const completed = await waitForRun(handle.runId, principalId, input.signal);
+        const completed = await waitForRun(
+          handle.runId,
+          principalId,
+          model,
+          input.signal
+        );
         completed.conversationId = handle.conversationId;
         input.log?.info(
           {
             event: "csapi.run.finished",
             requestId: input.requestId,
             runId: handle.runId,
-            durationMs: Date.now() - runStartedAt
+            provider,
+            model,
+            durationMs: now() - runStartedAt
           },
           "csapi run finished"
         );
         return completed;
       } catch (error) {
+        const normalized = normalizeError(error);
         input.log?.warn(
           {
             event: "csapi.run.failed",
             requestId: input.requestId,
             runId: handle.runId,
-            durationMs: Date.now() - runStartedAt,
-            errorKind: error instanceof CsapiError ? error.kind : "internal_error",
-            statusCode: error instanceof CsapiError ? error.status : 500
+            durationMs: now() - runStartedAt,
+            errorKind: normalized.kind,
+            httpStatusCode: normalized.status,
+            applicationStatusCode: normalized.details.applicationStatusCode,
+            ...(normalized.details.cancelReason
+              ? { cancelReason: normalized.details.cancelReason }
+              : {}),
+            provider: normalized.details.provider ?? provider,
+            model: normalized.details.model ?? model
           },
           "csapi run failed"
         );
@@ -415,9 +555,11 @@ export function createCsapi(deps: CsapiDeps) {
 
     async handleAnthropicMessages(request: FastifyRequest, reply: FastifyReply) {
       let keyId: string | undefined;
+      let idempotencyKey: string | undefined;
       try {
         keyId = authenticate(request);
         acquireOrThrow(keyId);
+        idempotencyKey = idempotencyKeyFor(request, keyId);
       } catch (error) {
         if (keyId && error instanceof CsapiError && error.status !== 429) limiter.release(keyId);
         return sendAnthropicError(reply, error);
@@ -425,7 +567,6 @@ export function createCsapi(deps: CsapiDeps) {
       const body = (request.body ?? {}) as Record<string, unknown>;
       const stream = wantsStream(body);
       const controller = makeAbortSignal(request, reply);
-      const idempotencyKey = idempotencyKeyFor(request, keyId);
       const input: ExecuteInput = {
         keyId,
         system: extractSystem(body.system),
@@ -473,8 +614,11 @@ export function createCsapi(deps: CsapiDeps) {
         reply.raw.end();
       } catch (error) {
         if (!(error instanceof AbortedError)) {
-          const { kind, message } = normalizeError(error);
-          writeFrame(reply, { event: "error", data: anthropicError(kind, message) });
+          const { kind, message, details } = normalizeError(error);
+          writeFrame(reply, {
+            event: "error",
+            data: anthropicError(kind, message, details)
+          });
         }
         reply.raw.end();
       } finally {
@@ -485,9 +629,11 @@ export function createCsapi(deps: CsapiDeps) {
 
     async handleOpenAiChatCompletions(request: FastifyRequest, reply: FastifyReply) {
       let keyId: string | undefined;
+      let idempotencyKey: string | undefined;
       try {
         keyId = authenticate(request);
         acquireOrThrow(keyId);
+        idempotencyKey = idempotencyKeyFor(request, keyId);
       } catch (error) {
         if (keyId && error instanceof CsapiError && error.status !== 429) limiter.release(keyId);
         return sendOpenAiError(reply, error);
@@ -495,7 +641,6 @@ export function createCsapi(deps: CsapiDeps) {
       const body = (request.body ?? {}) as Record<string, unknown>;
       const stream = wantsStream(body);
       const controller = makeAbortSignal(request, reply);
-      const idempotencyKey = idempotencyKeyFor(request, keyId);
       // OpenAI carries system as a message; Anthropic uses a top-level field.
       const input: ExecuteInput = {
         keyId,
@@ -542,8 +687,10 @@ export function createCsapi(deps: CsapiDeps) {
         reply.raw.end();
       } catch (error) {
         if (!(error instanceof AbortedError)) {
-          const { message, kind } = normalizeError(error);
-          writeFrame(reply, { data: openaiError(message, kind) });
+          const { message, kind, details } = normalizeError(error);
+          writeFrame(reply, {
+            data: openaiError(message, kind, undefined, details)
+          });
         }
         reply.raw.end();
       } finally {
@@ -561,34 +708,142 @@ export function createCsapi(deps: CsapiDeps) {
       return reply.send(buildModelsResponse(backend.listModelIds()));
     },
 
+    async handleObserveByIdempotency(
+      request: FastifyRequest,
+      reply: FastifyReply
+    ) {
+      try {
+        const keyId = authenticate(request);
+        const raw = (
+          request.params as { idempotencyKey?: unknown } | undefined
+        )?.idempotencyKey;
+        if (
+          typeof raw !== "string" ||
+          !raw.trim() ||
+          raw.trim().length > MAX_IDEMPOTENCY_KEY_CHARS
+        ) {
+          throw new CsapiError(
+            400,
+            "invalid_request_error",
+            "invalid idempotency key",
+            "CSAPI_IDEMPOTENCY_KEY_INVALID"
+          );
+        }
+        const principalId = await backend.getPrincipalId();
+        const runs = await backend.observeByIdempotencyKey(
+          idempotencyDigest(keyId, raw.trim()),
+          principalId,
+          keyId
+        );
+        return reply
+          .header("cache-control", "no-store")
+          .send({ runs });
+      } catch (error) {
+        return sendOpenAiError(reply, error);
+      }
+    },
+
+    async handleObserveByRunId(
+      request: FastifyRequest,
+      reply: FastifyReply
+    ) {
+      try {
+        const keyId = authenticate(request);
+        const runId = (
+          request.params as { runId?: unknown } | undefined
+        )?.runId;
+        if (typeof runId !== "string" || !RUN_ID_PATTERN.test(runId)) {
+          throw new CsapiError(
+            400,
+            "invalid_request_error",
+            "invalid run id",
+            "CSAPI_RUN_ID_INVALID"
+          );
+        }
+        const principalId = await backend.getPrincipalId();
+        const run = await backend.observeByRunId(
+          runId,
+          principalId,
+          keyId
+        );
+        if (!run) {
+          throw new CsapiError(
+            404,
+            "invalid_request_error",
+            "run not found",
+            "CSAPI_RUN_NOT_FOUND"
+          );
+        }
+        return reply
+          .header("cache-control", "no-store")
+          .send({ run });
+      } catch (error) {
+        return sendOpenAiError(reply, error);
+      }
+    },
+
     async handleHealth(_request: FastifyRequest, reply: FastifyReply) {
+      const runnersOnline = backend.runnersOnline();
+      const capacity = backend.capacitySummary?.() ?? {
+        runnerIdentities: runnersOnline,
+        totalRunnerSlots: runnersOnline * config.maxConcurrencyPerKey
+      };
       return reply.send({
         ok: true,
         service: "csapi",
         mode: "plaintext-compat-b",
         e2ee: false,
-        runnersOnline: backend.runnersOnline(),
-        models: ["auto", ...backend.listModelIds()]
+        runnersOnline,
+        models: ["auto", ...backend.listModelIds()],
+        capacity: {
+          maxConcurrencyPerKey: config.maxConcurrencyPerKey,
+          runnerIdentities: capacity.runnerIdentities,
+          totalRunnerSlots: capacity.totalRunnerSlots,
+          effectiveTotal: Math.min(
+            config.maxConcurrencyPerKey,
+            capacity.totalRunnerSlots
+          )
+        }
       });
     }
   };
 
-  function normalizeError(error: unknown): { status: number; kind: string; message: string } {
+  function normalizeError(error: unknown): {
+    status: number;
+    kind: string;
+    message: string;
+    details: CsapiErrorDetails;
+  } {
     if (error instanceof CsapiError) {
-      return { status: error.status, kind: error.kind, message: error.message };
+      return {
+        status: error.status,
+        kind: error.kind,
+        message: error.message,
+        details: {
+          applicationStatusCode: error.applicationStatusCode,
+          ...(error.cancelReason ? { cancelReason: error.cancelReason } : {}),
+          ...(error.provider ? { provider: error.provider } : {}),
+          ...(error.model ? { model: error.model } : {})
+        }
+      };
     }
-    return { status: 500, kind: "api_error", message: "internal error" };
+    return {
+      status: 500,
+      kind: "api_error",
+      message: "internal error",
+      details: { applicationStatusCode: "CSAPI_INTERNAL_ERROR" }
+    };
   }
 
   function sendAnthropicError(reply: FastifyReply, error: unknown) {
-    const { status, kind, message } = normalizeError(error);
-    return reply.code(status).send(anthropicError(kind, message));
+    const { status, kind, message, details } = normalizeError(error);
+    return reply.code(status).send(anthropicError(kind, message, details));
   }
 
   function sendOpenAiError(reply: FastifyReply, error: unknown) {
-    const { status, kind, message } = normalizeError(error);
+    const { status, kind, message, details } = normalizeError(error);
     if (status === 429) reply.header("retry-after", "1");
-    return reply.code(status).send(openaiError(message, kind));
+    return reply.code(status).send(openaiError(message, kind, undefined, details));
   }
 }
 
@@ -612,6 +867,15 @@ export function registerCsapi(app: FastifyInstance, deps: CsapiDeps) {
   });
   app.post("/v1/chat/completions", (request, reply) => csapi.handleOpenAiChatCompletions(request, reply));
   app.get("/v1/models", (request, reply) => csapi.handleModels(request, reply));
+  app.get(
+    "/validation/v1/runs/by-idempotency/:idempotencyKey",
+    (request, reply) =>
+      csapi.handleObserveByIdempotency(request, reply)
+  );
+  app.get(
+    "/validation/v1/runs/:runId",
+    (request, reply) => csapi.handleObserveByRunId(request, reply)
+  );
   app.get("/health", (request, reply) => csapi.handleHealth(request, reply));
 
   return csapi;
@@ -620,12 +884,14 @@ export function registerCsapi(app: FastifyInstance, deps: CsapiDeps) {
 /** Path predicate used by index.ts to exempt csapi routes from Access auth. */
 export function isCsapiPath(url: string | undefined): boolean {
   if (!url) return false;
-  const path = url.split("?")[0];
+  const path = url.split("?")[0] ?? "";
   return (
     path === "/health" ||
     path === "/v1/models" ||
     path === "/v1/messages" ||
     path === "/v1/chat/completions" ||
+    path.startsWith("/validation/v1/runs/by-idempotency/") ||
+    path.startsWith("/validation/v1/runs/") ||
     path === "/cg/v1/server-keys" ||
     path === "/cg/v1/enroll" ||
     path === "/cg/v1/enroll/challenge" ||

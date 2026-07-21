@@ -35,6 +35,8 @@ test(
     const userId = globalThis.crypto.randomUUID();
     const conversationId = globalThis.crypto.randomUUID();
     const runId = globalThis.crypto.randomUUID();
+    const guardedConversationId = globalThis.crypto.randomUUID();
+    const guardedRunId = globalThis.crypto.randomUUID();
     const cancelledConversationId = globalThis.crypto.randomUUID();
     const cancelledRunId = globalThis.crypto.randomUUID();
     const plaintextConversationId = globalThis.crypto.randomUUID();
@@ -124,6 +126,24 @@ test(
         maxAttempts: 3
       });
       assert.equal(job?.request.runId, runId);
+      const guardedRequest = e2eeRunRequestEnvelopeSchema.parse({
+        ...request,
+        messageId: guardedRunId,
+        runId: guardedRunId,
+        conversationId: guardedConversationId
+      });
+      await createE2eeRun({ userId, request: guardedRequest });
+      assert.equal(
+        await claimNextE2eeRun({
+          runnerId: "runner-test",
+          runnerKeyId: "runner-key-test",
+          maxAttempts: 3,
+          maxConcurrentJobs: 6
+        }),
+        undefined,
+        "one runner identity must not claim two E2EE jobs"
+      );
+      await cancelE2eeRun(guardedRunId, userId);
       const rejected = await rejectE2eeRun({
         runId,
         runnerId: "runner-test",
@@ -185,7 +205,12 @@ test(
       const firstClaim = await claimNextRun("windows", "runner-test");
       assert.equal(firstClaim?.run.id, plaintextRunId);
       await pool.query(
-        "update runs set updated_at = now() - interval '1 hour' where id = $1",
+        `
+          update runs
+          set updated_at = now() - interval '1 hour',
+              last_activity_at = now() - interval '1 hour'
+          where id = $1
+        `,
         [plaintextRunId]
       );
       assert.deepEqual(await recoverStaleRuns("windows", 60, 2), {
@@ -195,6 +220,7 @@ test(
       const secondClaim = await claimNextRun("windows", "runner-test");
       assert.equal(secondClaim?.run.id, plaintextRunId);
       assert.notEqual(secondClaim?.leaseId, firstClaim?.leaseId);
+      assert.equal(secondClaim?.run.startedAt, firstClaim?.run.startedAt);
       assert.equal(
         await renewRunLease({
           runId: plaintextRunId,
@@ -233,7 +259,12 @@ test(
         true
       );
       await pool.query(
-        "update runs set updated_at = now() - interval '1 hour' where id = $1",
+        `
+          update runs
+          set updated_at = now() - interval '1 hour',
+              last_activity_at = now() - interval '1 hour'
+          where id = $1
+        `,
         [plaintextRunId]
       );
       assert.deepEqual(await recoverStaleRuns("windows", 60, 2), {
@@ -245,6 +276,8 @@ test(
       await pool.query("delete from conversations where id = $1", [plaintextConversationId]);
       await pool.query("delete from runs where id = $1", [cancelledRunId]);
       await pool.query("delete from conversations where id = $1", [cancelledConversationId]);
+      await pool.query("delete from runs where id = $1", [guardedRunId]);
+      await pool.query("delete from conversations where id = $1", [guardedConversationId]);
       await pool.query("delete from runs where id = $1", [runId]);
       await pool.query("delete from conversations where id = $1", [conversationId]);
       await pool.query("delete from workspaces where id = $1", [workspaceId]);
