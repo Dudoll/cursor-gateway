@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "profiles": {
+    "main": {
+      "protected": true,
+      "hermes_home": "~/.hermes",
+      "config": "config.yaml",
+      "state_db": "state.db",
+      "sessions": "sessions/sessions.json",
+      "service": "hermes-gateway.service",
+      "provider": "cursor-gateway",
+      "model": "gpt-5.6-sol",
+      "base_url": "http://127.0.0.1:18080/v1",
+      "api_key_env": "CURSOR_GATEWAY_CSAPI_KEY",
+      "health_timeout_seconds": 3
+    },
+    "telegram2": {
+      "protected": true,
+      "hermes_home": "~/.hermes/profiles/telegram2",
+      "config": "config.yaml",
+      "state_db": "state.db",
+      "sessions": "sessions/sessions.json",
+      "service": "hermes-gateway-telegram2.service",
+      "provider": "cursor-gateway",
+      "model": "gpt-5.6-sol",
+      "base_url": "http://127.0.0.1:18080/v1",
+      "api_key_env": "CURSOR_GATEWAY_CSAPI_KEY",
+      "health_timeout_seconds": 3
+    }
+  }
+}

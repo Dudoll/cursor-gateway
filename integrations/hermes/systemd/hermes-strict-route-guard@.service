@@ -1,0 +1,26 @@
+[Unit]
+Description=Hermes strict route guard (%i)
+After=network-online.target
+StopWhenUnneeded=yes
+
+[Service]
+Type=simple
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStart=/usr/bin/env %h/.hermes/hermes-agent/venv/bin/python \
+  %h/cursor-gateway/integrations/hermes/cursor-gateway/strict_route_guard.py \
+  watch \
+  --profile %i \
+  --profiles-file %h/.config/hermes/strict-route-profiles.json \
+  --require-protected \
+  --interval 1 \
+  --heartbeat-seconds 300
+Restart=no
+TimeoutStopSec=10s
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=read-only
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
