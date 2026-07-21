@@ -567,8 +567,10 @@ npm run build      # pass
   `https://github.com/Dudoll/cursor-gateway/tree/fix/telegram-hermes-gateway-latency`
 - 代码候选提交：
   `97ff88a90778ae1838f97daa3902b5a8ee2ace17`
-- `origin/main` 已无 force fast-forward 到同一提交；无需 PR。
-- VPS `~/cursor-gateway` 已 ff-only 到 `97ff88a`，tracked tree clean。
+- 其后仅追加 aggregate shared test gate 与本报告证据；feature/main 最终共同 SHA
+  以本次交付的 Git HEAD 为准。
+- `origin/main` 已无 force fast-forward；无需 PR。
+- VPS `~/cursor-gateway` 已 ff-only 到同一最终 HEAD，tracked tree clean。
 - `infra-app-1` 来自正确的 `~/cursor-gateway/infra`，running/healthy：
   `sha256:233f614086a1e8bba328746d1ec398ffb68e4af5f57ba68c807d01fb2424ae36`
 - 本地 build 与容器内 `index/config/db/routes/social/csapi/*` JS SHA-256 完全一致。

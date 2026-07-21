@@ -266,8 +266,8 @@
     "vpsHeadPreSync": "56fec7e0b2d44ee714fba708ac1a827c1b52f877",
     "releaseRepoHeadPreMerge": "ea31a790bf893d8d024cee28b298d0b18e4e9ab9",
     "codeCandidateHead": "97ff88a90778ae1838f97daa3902b5a8ee2ace17",
-    "originMainFinal": "97ff88a90778ae1838f97daa3902b5a8ee2ace17",
-    "vpsHeadFinal": "97ff88a90778ae1838f97daa3902b5a8ee2ace17",
+    "originMainFinal": "delivery HEAD (report-only follow-up after code candidate)",
+    "vpsHeadFinal": "delivery HEAD (report-only follow-up after code candidate)",
     "vpsBackups": [
       "cursor-gateway/backups/pre-sync-inventory-20260721T044510Z",
       "/home/joel/backups/cursor-gateway/reconcile-20260721T032145Z",
