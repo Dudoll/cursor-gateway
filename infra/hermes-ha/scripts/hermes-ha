@@ -1,0 +1,105 @@
+#!/usr/bin/env bash
+# hermes-ha — unified CLI for Hermes high-availability
+set -euo pipefail
+
+# Resolve symlinks so ~/.local/bin/hermes-ha still finds the install tree.
+SOURCE="${BASH_SOURCE[0]}"
+while [[ -L "$SOURCE" ]]; do
+  DIR="$(cd "$(dirname "$SOURCE")" && pwd)"
+  SOURCE="$(readlink "$SOURCE")"
+  [[ "$SOURCE" != /* ]] && SOURCE="$DIR/$SOURCE"
+done
+ROOT="$(cd "$(dirname "$SOURCE")/.." && pwd)"
+AGENT="$ROOT/agent"
+export PYTHONPATH="$AGENT${PYTHONPATH:+:$PYTHONPATH}"
+CONFIG="${HERMES_HA_CONFIG:-$HOME/.config/hermes-ha/config.json}"
+if [[ ! -f "$CONFIG" && -f "$ROOT/config.json" ]]; then
+  CONFIG="$ROOT/config.json"
+fi
+export HERMES_HA_CONFIG="$CONFIG"
+
+usage() {
+  cat <<'EOF'
+Usage: hermes-ha <command> [args]
+
+  status                 Leader + stack + peer reachability
+  takeover [--force] [--skip-dns]
+  failback --confirm [--skip-dns]
+  evaluate               Auto takeover / failback_ready (metrics hook)
+  dns show|to-band|to-dmit [--dry-run]
+  secrets init-keys|seal|apply
+  migrate ensure-layout|sync|cutover|link-home|wait-sync
+  sync-agent-code <peer>   # SSH rsync hermes-agent (not via iCloud)
+  gateway-checkpoint create|latest|restore
+  checkpoint-watchdog      # fail when gateway backup age exceeds SLO
+  state-checkpoint create|restore|wire
+  accept-p0 --node dmit|band [--skip-state-hash]
+  leader status|acquire|release-to|failback-ready|set-mode
+  stack start|stop
+  peer-accept-failback   (remote, used during failback)
+EOF
+}
+
+cmd="${1:-}"
+shift || true
+
+case "$cmd" in
+  ""|-h|--help|help) usage; exit 0 ;;
+  status) exec python3 "$AGENT/orchestrator.py" --config "$CONFIG" status ;;
+  takeover) exec python3 "$AGENT/orchestrator.py" --config "$CONFIG" takeover "$@" ;;
+  failback) exec python3 "$AGENT/orchestrator.py" --config "$CONFIG" failback "$@" ;;
+  evaluate) exec python3 "$AGENT/orchestrator.py" --config "$CONFIG" evaluate "$@" ;;
+  peer-accept-failback) exec python3 "$AGENT/orchestrator.py" --config "$CONFIG" peer-accept-failback "$@" ;;
+  stack)
+    sub="${1:-}"; shift || true
+    case "$sub" in
+      start) exec python3 "$AGENT/orchestrator.py" --config "$CONFIG" stack-start ;;
+      stop) exec python3 "$AGENT/orchestrator.py" --config "$CONFIG" stack-stop ;;
+      *) echo "stack start|stop" >&2; exit 2 ;;
+    esac
+    ;;
+  dns)
+    sub="${1:-}"; shift || true
+    case "$sub" in
+      show) exec python3 "$AGENT/dns_cloudflare.py" --config "$CONFIG" show ;;
+      to-band) exec python3 "$AGENT/dns_cloudflare.py" --config "$CONFIG" to-band "$@" ;;
+      to-dmit) exec python3 "$AGENT/dns_cloudflare.py" --config "$CONFIG" to-dmit "$@" ;;
+      to) exec python3 "$AGENT/dns_cloudflare.py" --config "$CONFIG" to "$@" ;;
+      *) echo "dns show|to-band|to-dmit" >&2; exit 2 ;;
+    esac
+    ;;
+  secrets)
+    sub="${1:-}"; shift || true
+    exec python3 "$AGENT/secrets.py" --config "$CONFIG" "$sub" "$@"
+    ;;
+  migrate)
+    sub="${1:-}"; shift || true
+    exec python3 "$AGENT/migrate.py" --config "$CONFIG" "$sub" "$@"
+    ;;
+  sync-agent-code)
+    exec bash "$ROOT/scripts/sync-agent-code.sh" "$@"
+    ;;
+  gateway-checkpoint)
+    sub="${1:-}"; shift || true
+    exec python3 "$AGENT/gateway_checkpoint.py" --config "$CONFIG" "$sub" "$@"
+    ;;
+  checkpoint-watchdog)
+    exec python3 "$AGENT/checkpoint_watchdog.py" --config "$CONFIG" "$@"
+    ;;
+  state-checkpoint)
+    sub="${1:-}"; shift || true
+    exec python3 "$AGENT/state_checkpoint.py" --config "$CONFIG" "$sub" "$@"
+    ;;
+  accept-p0)
+    exec python3 "$AGENT/acceptance.py" --config "$CONFIG" "$@"
+    ;;
+  leader)
+    sub="${1:-}"; shift || true
+    exec python3 "$AGENT/leader.py" --config "$CONFIG" "$sub" "$@"
+    ;;
+  *)
+    echo "unknown command: $cmd" >&2
+    usage >&2
+    exit 2
+    ;;
+esac

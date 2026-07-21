@@ -52,6 +52,7 @@ Related deployment guides:
 - [docs/windows-runner.md](docs/windows-runner.md) — Windows Runner 与守护进程
 - [docs/interview-commercialization.md](docs/interview-commercialization.md) — 付费面试空间、多租户隔离与小红书发布框架
 - [infra/reverse-proxy.md](infra/reverse-proxy.md) — 接到已有 Nginx / Caddy
+- [infra/hermes-ha/README.md](infra/hermes-ha/README.md) — Hermes HA、checkpoint/watchdog 与可复现安装的唯一版本化源码
 
 ## Quick start: the server
 

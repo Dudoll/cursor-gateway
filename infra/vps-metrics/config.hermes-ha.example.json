@@ -1,0 +1,7 @@
+{
+  "hermes_ha": {
+    "enabled": true,
+    "hook": "~/hermes-ha/hooks/vps-metrics-trigger.sh",
+    "timeout_seconds": 15
+  }
+}

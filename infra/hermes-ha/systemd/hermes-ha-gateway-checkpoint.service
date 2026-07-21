@@ -1,0 +1,23 @@
+[Unit]
+Description=Hermes HA gateway Postgres checkpoint
+After=network-online.target
+
+[Service]
+Type=oneshot
+Environment=HERMES_HA_CONFIG=%h/.config/hermes-ha/config.json
+ExecStart=@HERMES_HA_ROOT@/scripts/hermes-ha gateway-checkpoint create --if-leader
+Nice=15
+IOSchedulingClass=idle
+IOSchedulingPriority=7
+CPUWeight=20
+MemoryAccounting=true
+MemoryHigh=160M
+MemoryMax=256M
+MemorySwapMax=128M
+TasksAccounting=true
+TasksMax=64
+TimeoutStartSec=4min
+OOMPolicy=stop
+
+[Install]
+WantedBy=default.target

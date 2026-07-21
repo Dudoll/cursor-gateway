@@ -1,0 +1,12 @@
+[Unit]
+Description=Hermes HA evaluate (takeover / failback_ready)
+After=network-online.target
+
+[Service]
+Type=oneshot
+Environment=HERMES_HA_CONFIG=%h/.config/hermes-ha/config.json
+Environment=HERMES_HA_NODE_ID=vps-band
+ExecStart=@HERMES_HA_ROOT@/scripts/hermes-ha evaluate
+
+[Install]
+WantedBy=default.target
