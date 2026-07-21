@@ -53,6 +53,11 @@ jobs:
         with:
           node-version: 22
 
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
       - name: Install workspace dependencies
         run: npm install
 
@@ -72,6 +77,12 @@ jobs:
 
       - name: Run server tests with real Postgres
         run: npx tsx --test --test-concurrency=1 apps/server/test/*.test.ts
+
+      - name: Telegram Hermes smoke matrix (fake Bot / fake runner)
+        run: npm run test:telegram-smoke
+
+      - name: Hermes cursor-gateway provider unit tests
+        run: python3 -m unittest discover integrations/hermes/cursor-gateway -p 'test_*.py'
 
   build:
     needs: integration

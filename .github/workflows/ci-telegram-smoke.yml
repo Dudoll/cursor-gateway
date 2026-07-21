@@ -1,0 +1,59 @@
+name: ci-telegram-smoke
+
+# Deterministic Telegram → Hermes → CSAPI smoke (fake Bot + fake runner).
+# Does NOT call real Telegram or production secrets.
+# Real smoke remains opt-in via scripts/diagnostics/telegram-real-smoke.mjs.
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - "fix/**"
+      - "feat/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  telegram-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install workspace dependencies
+        run: npm install
+
+      - name: Build shared + server
+        run: |
+          npm run build -w @cursor-gateway/shared
+          npm run build -w @cursor-gateway/e2ee
+          npm run build -w @cursor-gateway/server
+
+      - name: Typecheck server
+        run: npm run typecheck -w @cursor-gateway/server
+
+      - name: Telegram Hermes scenario matrix (fake)
+        run: npm run test:telegram-smoke
+
+      - name: Hermes cursor-gateway provider unit tests
+        run: python3 -m unittest discover integrations/hermes/cursor-gateway -p 'test_*.py'
+
+      - name: Confirm real Telegram smoke stays skipped without secrets
+        run: |
+          unset TELEGRAM_SMOKE TELEGRAM_BOT_TOKEN TELEGRAM_SMOKE_CHAT_ID TELEGRAM_SMOKE_CSAPI_KEY || true
+          npm run smoke:telegram | tee /tmp/telegram-real-smoke.json
+          grep -q '"skipped":true' /tmp/telegram-real-smoke.json

@@ -10,6 +10,7 @@
     "dev": "tsx watch src/index.ts",
     "start": "node dist/index.js",
     "test": "tsx --test test/*.test.ts",
+    "test:telegram-smoke": "tsx --test --test-concurrency=1 test/telegram-hermes-smoke.test.ts",
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
