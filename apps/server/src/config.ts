@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { readFileSync } from "node:fs";
 
 const booleanEnv = (defaultValue: boolean) =>
   z.preprocess((value) => {
@@ -57,6 +58,7 @@ const envSchema = z.object({
   REPORT_MODEL_ID: z.string().default(""),
   REPORT_WORKSPACE_ID: z.string().default(""),
   PUBLIC_REPORTS: booleanEnv(false),
+  XHS_ACCOUNTS_CONFIG: z.string().default(""),
   // --- csapi (compatibility API facade, 方案 B). Plaintext-visible: NOT E2EE. ---
   // Mount the Anthropic/OpenAI compatible facade under /v1/*. Auth is a
   // csapi-specific API key, fully separate from Cloudflare Access.
@@ -155,6 +157,7 @@ export const config = {
   reportModelId: parsed.REPORT_MODEL_ID,
   reportWorkspaceId: parsed.REPORT_WORKSPACE_ID,
   publicReports: parsed.PUBLIC_REPORTS,
+  xhsAccountsConfig: parsed.XHS_ACCOUNTS_CONFIG,
   csapi: {
     enabled: parsed.CSAPI_ENABLED,
     apiKeys: new Set(splitCsv(parsed.CSAPI_API_KEYS)),
@@ -210,4 +213,50 @@ export const isProduction = config.nodeEnv === "production";
 export function isAllowedSecureOrigin(origin: string | undefined | null): boolean {
   if (config.secureClientOrigins.size === 0) return true;
   return !!origin && config.secureClientOrigins.has(origin);
+}
+
+// ── Xiaohongshu multi-account helpers ──────────────────────────────────────
+
+export type XhsAccount = {
+  name: string;
+  report_ids: string[];
+  official_publish_url: string | null;
+  official_access_token_env: string | null;
+  enabled?: boolean;
+};
+
+export type XhsAccountsConfig = {
+  accounts: Record<string, XhsAccount>;
+  default_account: string;
+};
+
+let cachedXhsAccounts: XhsAccountsConfig | null = null;
+
+export function loadXhsAccounts(): XhsAccountsConfig | null {
+  if (cachedXhsAccounts) return cachedXhsAccounts;
+  const path = config.xhsAccountsConfig;
+  if (!path) return null;
+  try {
+    const raw = readFileSync(path, "utf-8");
+    cachedXhsAccounts = JSON.parse(raw) as XhsAccountsConfig;
+    return cachedXhsAccounts;
+  } catch {
+    return null;
+  }
+}
+
+export function getXhsAccountReportIds(accountKey: string): string[] | null {
+  const cfg = loadXhsAccounts();
+  if (!cfg) return null;
+  const account = cfg.accounts[accountKey];
+  if (!account || account.enabled === false) return null;
+  return account.report_ids;
+}
+
+export function getEnabledXhsAccountKeys(): string[] {
+  const cfg = loadXhsAccounts();
+  if (!cfg) return [];
+  return Object.entries(cfg.accounts)
+    .filter(([, acc]) => acc.enabled !== false)
+    .map(([key]) => key);
 }

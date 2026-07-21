@@ -14,6 +14,7 @@ import {
 } from "./desktopPublic.js";
 import {
   E2EE_PROTOCOL,
+  type SocialInterviewReportId,
   automationCreateRunSchema,
   createRunSchema,
   e2eeApprovalSubmissionSchema,
@@ -100,6 +101,11 @@ const {
 // Re-resolve per request so a deploy that adds the installer after startup
 // (or uses a legacy layout) is picked up without a server restart.
 const currentDesktopInstallerPath = () => resolveDesktopInstallerPath(desktopInstallerCandidates);
+import {
+  loadXhsAccounts,
+  getXhsAccountReportIds,
+  getEnabledXhsAccountKeys
+} from "./config.js";
 import {
   AutomationThreadWorkspaceMismatchError,
   type RunExecutor,
@@ -250,7 +256,6 @@ import {
 import {
   listModels,
   listRunnerHeartbeats,
-  modelIsHermes,
   modelIsKnown,
   registerRunner
 } from "./runnerRegistry.js";
@@ -335,9 +340,42 @@ function buildInterviewRecommendations(
   ];
 }
 
-async function prepareLatestXiaohongshuDrafts() {
+function isSocialInterviewReportId(value: string): value is SocialInterviewReportId {
+  return value === "ai-infra-mianshi" || value === "ai-agent-mianshi";
+}
+
+async function prepareLatestXiaohongshuDrafts(targetAccount?: string) {
   const service = await upsertServicePrincipal("automation", "operator");
-  const reportIds = ["ai-infra-mianshi", "ai-agent-mianshi"] as const;
+  // Build the list of report IDs to prepare. If targetAccount is given, use
+  // only the report IDs configured for that account. Otherwise, use all
+  // report IDs from all enabled accounts (backward-compatible fallback).
+  let reportIds: SocialInterviewReportId[];
+  if (targetAccount) {
+    const ids = getXhsAccountReportIds(targetAccount);
+    const fallbackIds: Record<string, SocialInterviewReportId[]> = {
+      "ai-infra": ["ai-infra-mianshi"],
+      "ai-agent": ["ai-agent-mianshi"]
+    };
+    const resolvedIds = ids?.filter(isSocialInterviewReportId) ?? fallbackIds[targetAccount];
+    if (!resolvedIds || resolvedIds.length === 0) {
+      throw new Error(`No report IDs configured for Xiaohongshu account '${targetAccount}'`);
+    }
+    reportIds = resolvedIds;
+  } else {
+    const accountsCfg = loadXhsAccounts();
+    if (accountsCfg) {
+      // Collect report IDs from all enabled accounts, deduplicated.
+      reportIds = [
+        ...new Set(
+          getEnabledXhsAccountKeys().flatMap(
+            (key) => accountsCfg.accounts[key]?.report_ids ?? []
+          )
+        )
+      ].filter(isSocialInterviewReportId);
+    } else {
+      reportIds = ["ai-infra-mianshi", "ai-agent-mianshi"];
+    }
+  }
   const drafts = [];
   for (const reportId of reportIds) {
     const report = getReport(reportId);
@@ -359,10 +397,12 @@ async function prepareLatestXiaohongshuDrafts() {
       await prepareSocialPublication({
         reportId,
         runId: run.id,
+        targetAccount: targetAccount || "",
         title: draft.title,
         body: draft.body,
         landingUrl: draft.landingUrl,
-        assets: draft.cards
+        assets: draft.cards,
+        hashtags: draft.hashtags
       })
     );
   }
@@ -916,12 +956,17 @@ export async function registerRoutes(app: FastifyInstance) {
         return reply.code(403).send({ error: "not_allowed" });
       }
       const query = z
-        .object({ status: socialPublicationStatusSchema.optional() })
+        .object({
+          status: socialPublicationStatusSchema.optional(),
+          account: z.string().optional()
+        })
         .parse(request.query);
       return {
-        publications: await listSocialPublications(
-          query.status ? { status: query.status, limit: 100 } : { limit: 100 }
-        )
+        publications: await listSocialPublications({
+          ...(query.status ? { status: query.status } : {}),
+          ...(query.account ? { targetAccount: query.account } : {}),
+          limit: 100
+        })
       };
     });
 
@@ -929,11 +974,12 @@ export async function registerRoutes(app: FastifyInstance) {
       if (!request.principal || !requireRole(request.principal, ["admin", "operator"])) {
         return reply.code(403).send({ error: "not_allowed" });
       }
-      const publications = await prepareLatestXiaohongshuDrafts();
+      const query = z.object({ account: z.string().optional() }).parse(request.query);
+      const publications = await prepareLatestXiaohongshuDrafts(query.account);
       await appendAudit({
         actorUserId: request.principal.id,
         eventType: "social.xiaohongshu.prepared",
-        details: { publicationIds: publications.map((item) => item.id) }
+        details: { publicationIds: publications.map((item) => item.id), account: query.account ?? null }
       });
       return { publications };
     });
@@ -1048,9 +1094,6 @@ export async function registerRoutes(app: FastifyInstance) {
 
       if (!modelIsKnown(body.model)) {
         return reply.code(400).send({ error: "model_not_available" });
-      }
-      if (body.allowWrites && modelIsHermes(body.model)) {
-        return reply.code(400).send({ error: "hermes_model_is_qa_only" });
       }
 
       const workspace = await getWorkspace(body.workspaceId);
@@ -1929,18 +1972,32 @@ export async function registerRoutes(app: FastifyInstance) {
     });
 
     automation.post("/social/xiaohongshu/prepare-latest", async (request) => {
-      const publications = await prepareLatestXiaohongshuDrafts();
+      const query = z.object({ account: z.string().optional() }).parse(request.query);
+      const publications = await prepareLatestXiaohongshuDrafts(query.account);
       await appendAudit({
         actorUserId: request.principal!.id,
         eventType: "social.xiaohongshu.prepared",
-        details: { publicationIds: publications.map((item) => item.id) }
+        details: { publicationIds: publications.map((item) => item.id), account: query.account ?? null }
       });
       return { publications };
     });
 
-    automation.post("/social/xiaohongshu/claim", async (_request, reply) => {
-      const publication = await claimApprovedSocialPublication();
+    automation.post("/social/xiaohongshu/claim", async (request, reply) => {
+      const query = z.object({ account: z.string().optional() }).parse(request.query);
+      const publication = await claimApprovedSocialPublication(query.account);
       return publication ? { publication } : reply.code(204).send();
+    });
+
+    automation.post("/social/xiaohongshu/publications/:publicationId/approve", async (request, reply) => {
+      const params = z.object({ publicationId: z.string().uuid() }).parse(request.params);
+      const publication = await approveSocialPublication(params.publicationId);
+      if (!publication) return reply.code(409).send({ error: "publication_not_approvable" });
+      await appendAudit({
+        actorUserId: request.principal!.id,
+        eventType: "social.xiaohongshu.auto_approved",
+        details: { publicationId: publication.id, reportId: publication.reportId }
+      });
+      return { publication };
     });
 
     automation.post("/social/xiaohongshu/publications/:publicationId/result", async (request, reply) => {
@@ -2048,9 +2105,6 @@ export async function registerRoutes(app: FastifyInstance) {
 
       if (!modelIsKnown(body.model)) {
         return reply.code(400).send({ error: "model_not_available" });
-      }
-      if (body.allowWrites && modelIsHermes(body.model)) {
-        return reply.code(400).send({ error: "hermes_model_is_qa_only" });
       }
 
       const workspace = await getWorkspace(body.workspaceId);

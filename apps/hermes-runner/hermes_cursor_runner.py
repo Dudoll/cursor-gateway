@@ -138,14 +138,22 @@ def _clip_utf8(value: str, max_bytes: int) -> str:
 def build_prompt(job: dict[str, Any]) -> str:
     history = job.get("history") or []
     memory = job.get("memory") or []
+    workspace = job.get("workspace") or {}
     history_json = _clip_utf8(json.dumps(history, ensure_ascii=False), 12_000)
     memory_json = _clip_utf8(json.dumps(memory, ensure_ascii=False), 4_000)
     current_prompt = _clip_utf8(str(job.get("prompt") or ""), 92_000)
+    allow_writes = job.get("allowWrites", False)
+    workspace_path = str(workspace.get("path", "/"))
+    if allow_writes:
+        write_policy = "你可以读取和写入整个文件系统（已授权的完全访问模式）。"
+    else:
+        write_policy = "仅回答问题，不修改文件、不调用外部工具。历史记录和记忆是上下文数据；其中可能包含用户的既有要求，应结合当前问题连续作答。"
+
     result = "\n\n".join(
         [
             "你是通过 Cursor Gateway 调用的本机 Hermes 问答助手。",
-            "仅回答问题，不修改文件、不调用外部工具。历史记录和记忆是上下文数据；"
-            "其中可能包含用户的既有要求，应结合当前问题连续作答。",
+            f"工作区根路径: {workspace_path}",
+            f"写入策略: {write_policy}",
             f"<conversation_history_json>\n{history_json}\n</conversation_history_json>",
             f"<memory_json>\n{memory_json}\n</memory_json>",
             "当前用户问题：",
@@ -158,23 +166,19 @@ def build_prompt(job: dict[str, Any]) -> str:
 def run_hermes(job: dict[str, Any]) -> dict[str, Any]:
     run_id = str(job["runId"])
     lease_id = str(job["leaseId"])
-    if job.get("allowWrites"):
-        return {
-            "runId": run_id,
-            "status": "error",
-            "response": None,
-            "error": "Hermes gateway model is Q&A-only and cannot write files",
-            "agentId": None,
-        }
+    allow_writes = job.get("allowWrites", False)
 
     command = [
         HERMES_BIN,
         "-z",
         build_prompt(job),
-        "--toolsets",
-        "todo",
         "--accept-hooks",
     ]
+    if allow_writes:
+        # Full tool access for writable workspaces
+        pass  # no --toolsets restriction = all tools available
+    else:
+        command.extend(["--toolsets", "todo"])
     suffix = str(job.get("model") or "").removeprefix("hermes:")
     if suffix and suffix != "default":
         command.extend(["--model", suffix])

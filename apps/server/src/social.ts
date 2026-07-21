@@ -1,8 +1,9 @@
 import type { RunRecord, SocialInterviewReportId } from "@cursor-gateway/shared";
 
 export type XiaohongshuCard = {
-  kind: "cover" | "question" | "summary";
+  kind: "cover" | "question" | "summary" | "continuation";
   kicker: string;
+  source?: string;
   title: string;
   body: string;
   footer: string;
@@ -43,11 +44,17 @@ function questionCards(markdown: string, date: string): XiaohongshuCard[] {
     const prompt = field(section, "题目");
     const focus = field(section, "考察点");
     const answer = field(section, "参考答案");
+    const questionCode = match[1] ?? `Q${index + 1}`;
+    const headingText = match[2] ?? "面试题";
+    // The heading may contain source info such as
+    // "来源线索： Reddit + Anthropic". Use it as the small-font source.
+    const sourceText = compactMarkdown(headingText, 80).replace(/^来源线索/, "面经来源");
     return {
-      kind: "question",
-      kicker: `${match[1]} · ${focus ? compactMarkdown(focus, 42) : "面试真题"}`,
-      title: compactMarkdown(match[2] ?? match[1] ?? "Question", 44),
-      body: compactMarkdown(`${prompt}\n\n答题抓手：${answer}`, 520),
+      kind: "question" as const,
+      kicker: `${questionCode} · ${focus ? compactMarkdown(focus, 42) : "面试真题"}`,
+      ...(sourceText ? { source: sourceText } : {}),
+      title: compactMarkdown(prompt || headingText, 60),
+      body: answer ? `答题抓手：\n${answer}` : "",
       footer: `${date} · 完整答案与个性化训练见主页`
     };
   });
@@ -90,7 +97,7 @@ export function buildXiaohongshuDraft(input: {
   const title = `${focus} 大厂面经｜1 道笔试 + 5 道面试题`;
   const list = questions
     .slice(0, 6)
-    .map((card, index) => `${index === 0 ? "笔试" : `Q${index}`}｜${card.title}`)
+    .map((card, idx) => `${idx === 0 ? "笔试" : `Q${idx}`}｜${card.title}`)
     .join("\n");
   const hashtags = isAgent
     ? ["AI面试", "AIAgent", "Java转AI", "面试题", "程序员求职"]

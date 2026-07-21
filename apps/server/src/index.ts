@@ -5,7 +5,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { requireCloudflareUser } from "./auth.js";
 import { config } from "./config.js";
-import { migrate } from "./db.js";
+import { migrate, seedWorkspaces } from "./db.js";
 import { registerHttpMiddleware } from "./httpMiddleware.js";
 import { registerRoutes } from "./routes.js";
 import { registerTelegram } from "./telegram.js";
@@ -55,6 +55,7 @@ async function main() {
   await registerHttpMiddleware(app);
 
   await migrate();
+  await seedWorkspaces();
   await registerRoutes(app);
   await registerTelegram(app);
 

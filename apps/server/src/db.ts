@@ -315,20 +315,24 @@ export async function migrate() {
       platform text not null,
       report_id text not null,
       run_id uuid not null references runs(id) on delete cascade,
+      target_account text not null default '',
       status text not null default 'draft',
       title text not null,
       body text not null,
       landing_url text not null,
       assets jsonb not null default '[]'::jsonb,
+      hashtags jsonb not null default '[]'::jsonb,
       external_post_id text,
       error text,
       approved_at timestamptz,
       published_at timestamptz,
       created_at timestamptz not null default now(),
       updated_at timestamptz not null default now(),
-      unique (platform, run_id),
       check (status in ('draft', 'approved', 'publishing', 'exported', 'published', 'failed'))
     );
+
+    alter table social_publications add column if not exists target_account text not null default '';
+    alter table social_publications add column if not exists hashtags jsonb not null default '[]'::jsonb;
 
     create index if not exists runs_status_created_idx on runs(status, created_at);
     drop index if exists runs_user_idempotency_unique;
@@ -668,7 +672,25 @@ export async function migrate() {
       on interview_question_progress(user_id, next_review_at, updated_at desc);
     create index if not exists social_publications_queue_idx
       on social_publications(platform, status, created_at);
+    create unique index if not exists social_publications_run_account_unique
+      on social_publications(platform, run_id, target_account);
+    create index if not exists social_publications_account_idx
+      on social_publications(target_account, created_at desc);
   `);
+}
+
+/**
+ * Seed required workspaces that are not registered by the Windows runner heartbeat.
+ * These are static entries for VPS servers that need full write access.
+ */
+export async function seedWorkspaces() {
+  const servers: Workspace[] = [
+    { id: "vps-dmit", label: "VPS DMIT", path: "/", writable: true },
+    { id: "vps-band", label: "VPS Bandwagon", path: "/", writable: true }
+  ];
+  for (const ws of servers) {
+    await upsertWorkspace(ws);
+  }
 }
 
 function mapRun(row: QueryResultRow): RunRecord {
@@ -2163,11 +2185,13 @@ export type SocialPublicationRecord = {
   platform: "xiaohongshu";
   reportId: SocialInterviewReportId;
   runId: string;
+  targetAccount: string;
   status: SocialPublicationStatus;
   title: string;
   body: string;
   landingUrl: string;
   assets: unknown[];
+  hashtags: string[];
   externalPostId: string | null;
   error: string | null;
   approvedAt: string | null;
@@ -2182,11 +2206,13 @@ function mapSocialPublication(row: QueryResultRow): SocialPublicationRecord {
     platform: row.platform,
     reportId: row.report_id,
     runId: row.run_id,
+    targetAccount: row.target_account ?? "",
     status: row.status,
     title: row.title,
     body: row.body,
     landingUrl: row.landing_url,
     assets: Array.isArray(row.assets) ? row.assets : [],
+    hashtags: Array.isArray(row.hashtags) ? row.hashtags : [],
     externalPostId: row.external_post_id ?? null,
     error: row.error ?? null,
     approvedAt: row.approved_at?.toISOString() ?? null,
@@ -2199,33 +2225,37 @@ function mapSocialPublication(row: QueryResultRow): SocialPublicationRecord {
 export async function prepareSocialPublication(input: {
   reportId: SocialInterviewReportId;
   runId: string;
+  targetAccount: string;
   title: string;
   body: string;
   landingUrl: string;
   assets: unknown[];
+  hashtags: string[];
 }) {
   const result = await pool.query(
     `
       insert into social_publications (
-        platform, report_id, run_id, status, title, body, landing_url, assets
+        platform, report_id, run_id, target_account, status, title, body, landing_url, assets, hashtags
       )
-      values ('xiaohongshu', $1, $2, 'draft', $3, $4, $5, $6::jsonb)
-      on conflict (platform, run_id)
+      values ('xiaohongshu', $1, $2, $3, 'draft', $4, $5, $6, $7::jsonb, $8::jsonb)
+      on conflict (platform, run_id, target_account)
       do update set
         title = case when social_publications.status = 'published' then social_publications.title else excluded.title end,
         body = case when social_publications.status = 'published' then social_publications.body else excluded.body end,
         landing_url = case when social_publications.status = 'published' then social_publications.landing_url else excluded.landing_url end,
         assets = case when social_publications.status = 'published' then social_publications.assets else excluded.assets end,
+        hashtags = case when social_publications.status = 'published' then social_publications.hashtags else excluded.hashtags end,
         updated_at = now()
       returning *
     `,
-    [input.reportId, input.runId, input.title, input.body, input.landingUrl, JSON.stringify(input.assets)]
+    [input.reportId, input.runId, input.targetAccount, input.title, input.body, input.landingUrl, JSON.stringify(input.assets), JSON.stringify(input.hashtags)]
   );
   return mapSocialPublication(result.rows[0]);
 }
 
 export async function listSocialPublications(input?: {
   status?: SocialPublicationStatus;
+  targetAccount?: string;
   limit?: number;
 }) {
   const result = await pool.query(
@@ -2234,10 +2264,11 @@ export async function listSocialPublications(input?: {
       from social_publications
       where platform = 'xiaohongshu'
         and ($1::text is null or status = $1)
+        and ($2::text is null or target_account = $2)
       order by created_at desc
-      limit $2
+      limit $3
     `,
-    [input?.status ?? null, input?.limit ?? 50]
+    [input?.status ?? null, input?.targetAccount ?? null, input?.limit ?? 50]
   );
   return result.rows.map(mapSocialPublication);
 }
@@ -2255,7 +2286,7 @@ export async function approveSocialPublication(id: string) {
   return result.rows[0] ? mapSocialPublication(result.rows[0]) : undefined;
 }
 
-export async function claimApprovedSocialPublication() {
+export async function claimApprovedSocialPublication(targetAccount?: string) {
   const result = await pool.query(
     `
       update social_publications
@@ -2264,12 +2295,14 @@ export async function claimApprovedSocialPublication() {
         select id
         from social_publications
         where platform = 'xiaohongshu' and status = 'approved'
+          and ($1::text is null or target_account = $1)
         order by created_at asc
         for update skip locked
         limit 1
       )
       returning *
-    `
+    `,
+    [targetAccount ?? null]
   );
   return result.rows[0] ? mapSocialPublication(result.rows[0]) : undefined;
 }
