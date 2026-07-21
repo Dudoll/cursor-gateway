@@ -43,6 +43,9 @@ powershell -ExecutionPolicy Bypass -File apps\windows-runner\scripts\start-wsl-e
 
 Details and troubleshooting: [`docs/runner.md`](docs/runner.md).
 
+Telegram → Hermes → Gateway scenario smoke (CI fake + optional real Bot):
+[`docs/telegram-smoke-e2e.md`](docs/telegram-smoke-e2e.md).
+
 Related deployment guides:
 
 - [docs/deploy.md](docs/deploy.md) — VPS / Cloudflare / Telegram
