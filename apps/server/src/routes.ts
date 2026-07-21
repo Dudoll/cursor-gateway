@@ -464,7 +464,8 @@ async function claimJobFor(executor: RunExecutor, runnerId: string) {
     userIdentity: row.display_name ?? row.email ?? row.telegram_user_id ?? undefined,
     memory: memoryFacts.map((fact) => fact.content),
     history: truncateConversationHistory(completedHistory),
-    allowWrites: row.allow_writes
+    allowWrites: row.allow_writes,
+    sshWriteHosts: row.allow_writes ? config.sshWriteHosts : []
   };
 }
 

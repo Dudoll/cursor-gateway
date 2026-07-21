@@ -32,6 +32,7 @@ const envSchema = z.object({
   RUNNER_MAX_CONCURRENT_JOBS: z.coerce.number().int().positive().default(3),
   RUNNER_STALE_AFTER_SECONDS: z.coerce.number().int().positive().default(900),
   RUNNER_MAX_ATTEMPTS: z.coerce.number().int().positive().max(10).default(3),
+  SSH_WRITE_HOSTS: z.string().default(""),
   E2EE_REQUIRED_FOR_WEB: booleanEnv(false),
   E2EE_EXTENSION_ORIGINS: z.string().default(""),
   SECURE_CLIENT_ORIGIN: z.string().default(""),
@@ -131,6 +132,16 @@ export const config = {
   runnerMaxConcurrentJobs: parsed.RUNNER_MAX_CONCURRENT_JOBS,
   runnerStaleAfterSeconds: parsed.RUNNER_STALE_AFTER_SECONDS,
   runnerMaxAttempts: parsed.RUNNER_MAX_ATTEMPTS,
+  sshWriteHosts: [
+    ...new Set(
+      splitCsv(parsed.SSH_WRITE_HOSTS).map((host) => {
+        if (!/^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$/.test(host)) {
+          throw new Error(`Invalid SSH_WRITE_HOSTS alias: ${host}`);
+        }
+        return host;
+      })
+    )
+  ],
   e2eeRequiredForWeb: parsed.E2EE_REQUIRED_FOR_WEB,
   e2eeExtensionOrigins: new Set(splitCsv(parsed.E2EE_EXTENSION_ORIGINS)),
   // SECURE_CLIENT_ORIGIN accepts a comma-separated allowlist so the same

@@ -113,6 +113,13 @@ export const conversationTurnSchema = z.object({
 });
 export type ConversationTurn = z.infer<typeof conversationTurnSchema>;
 
+export const sshHostAliasSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(253)
+  .regex(/^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$/);
+
 export const runnerJobSchema = z.object({
   runId: z.string().uuid(),
   conversationId: z.string().uuid(),
@@ -123,7 +130,8 @@ export const runnerJobSchema = z.object({
   userIdentity: z.string().optional(),
   memory: z.array(z.string()).default([]),
   history: z.array(conversationTurnSchema).default([]),
-  allowWrites: z.boolean()
+  allowWrites: z.boolean(),
+  sshWriteHosts: z.array(sshHostAliasSchema).default([])
 });
 export type RunnerJob = z.infer<typeof runnerJobSchema>;
 

@@ -269,7 +269,10 @@ export class E2eeJobProcessor {
             ...(plaintext.userIdentity ? { userIdentity: plaintext.userIdentity } : {}),
             memory: plaintext.memory,
             history: plaintext.history,
-            allowWrites: plaintext.routing.allowWrites
+            allowWrites: plaintext.routing.allowWrites,
+            // E2EE routing does not carry server-side SSH_WRITE_HOSTS; preferred
+            // aliases are injected only on the plaintext claim path.
+            sshWriteHosts: []
           },
           createProgress,
           signal

@@ -16,6 +16,7 @@ import type {
 } from "@cursor-gateway/shared";
 import { config } from "./config.js";
 import { toLocalPath } from "./pathTranslation.js";
+import { buildWritePolicy } from "./writePolicy.js";
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -102,9 +103,7 @@ function buildPrompt(job: RunnerJob, includeHistory: boolean) {
       ? `Durable user and workspace memory:\n${job.memory.map((fact) => `- ${fact}`).join("\n")}`
       : "";
 
-  const writePolicy = job.allowWrites
-    ? "You may read and write files only inside the configured workspace."
-    : "Do not modify files. You may inspect and explain only.";
+  const writePolicy = buildWritePolicy(job);
   const historyBlock =
     includeHistory && job.history.length > 0
       ? `Previous conversation turns:\n${job.history
