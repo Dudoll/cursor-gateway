@@ -186,6 +186,7 @@ class StrictRouteGuardTests(unittest.TestCase):
             os.environ,
             {
                 guard.DEFAULT_API_KEY_ENV: ambient_secret,
+                "HOME": str(self.root),
                 "HERMES_HOME": str(ambient_home or self.main_home),
             },
             clear=False,
@@ -528,6 +529,138 @@ class StrictRouteGuardTests(unittest.TestCase):
         self.assertEqual(exit_code, guard.EXIT_CONFIG)
         self.assert_event(
             stdout + stderr, "HSG_PROFILE_SCOPE_VIOLATION"
+        )
+
+    def test_ha_profile_links_stay_within_explicit_resolved_roots(self):
+        shared = self.root / "iCloudDrive" / "hermes-ha" / "hermes"
+        local_trees = self.root / ".config" / "hermes-ha" / "local_trees"
+        runtime = self.root / ".config" / "hermes-ha" / "runtime"
+        (shared / "sessions").mkdir(parents=True)
+        local_trees.mkdir(parents=True)
+        runtime.mkdir(parents=True)
+
+        main_config = self.main_home / "config.yaml"
+        main_config.rename(shared / "config.yaml")
+        main_config.symlink_to(shared / "config.yaml")
+        (shared / "sessions" / "sessions.json").write_text(
+            "{}", encoding="utf-8"
+        )
+        (self.main_home / "sessions" / "sessions.json").symlink_to(
+            shared / "sessions" / "sessions.json"
+        )
+        (self.main_home / "state.db").symlink_to(local_trees / "state.db")
+        main_env = self.main_home / ".env"
+        main_env.rename(runtime / ".env")
+        main_env.symlink_to(runtime / ".env")
+
+        self.write_profiles(
+            mutate=lambda document: document["profiles"]["main"].update(
+                {
+                    "resolved_roots": [
+                        str(shared),
+                        str(local_trees),
+                        str(runtime),
+                    ]
+                }
+            )
+        )
+        exit_code, stdout, stderr = self.run_guard("main")
+        self.assertEqual(exit_code, guard.EXIT_OK)
+        self.assert_event(stdout + stderr, "HSG_OK")
+
+    def test_unlisted_or_overbroad_resolved_roots_fail_closed(self):
+        shared = self.root / "iCloudDrive" / "hermes-ha" / "hermes"
+        shared.mkdir(parents=True)
+        main_config = self.main_home / "config.yaml"
+        main_config.rename(shared / "config.yaml")
+        main_config.symlink_to(shared / "config.yaml")
+
+        exit_code, stdout, stderr = self.run_guard("main")
+        self.assertEqual(exit_code, guard.EXIT_CONFIG)
+        self.assert_event(stdout + stderr, "HSG_PROFILE_PATH_ESCAPE")
+
+        self.write_profiles(
+            mutate=lambda document: document["profiles"]["main"].update(
+                {"resolved_roots": [str(self.root)]}
+            )
+        )
+        exit_code, stdout, stderr = self.run_guard("main")
+        self.assertEqual(exit_code, guard.EXIT_CONFIG)
+        self.assert_event(
+            stdout + stderr, "HSG_PROFILE_RESOLVED_ROOTS_INVALID"
+        )
+
+    def test_ha_shared_root_cannot_cross_into_other_profile_scope(self):
+        shared = self.root / "iCloudDrive" / "hermes-ha" / "hermes"
+        telegram_shared = shared / "profiles" / "telegram2"
+        telegram_shared.mkdir(parents=True)
+        (telegram_shared / "config.yaml").write_text(
+            json.dumps(
+                {
+                    "model": {
+                        "provider": guard.DEFAULT_PROVIDER,
+                        "default": guard.DEFAULT_MODEL,
+                        "base_url": guard.DEFAULT_BASE_URL,
+                        "api_mode": "chat_completions",
+                    },
+                    "fallback_providers": [],
+                }
+            ),
+            encoding="utf-8",
+        )
+        main_config = self.main_home / "config.yaml"
+        main_config.unlink()
+        main_config.symlink_to(telegram_shared / "config.yaml")
+        self.write_profiles(
+            mutate=lambda document: (
+                document["profiles"]["main"].update(
+                    {"resolved_roots": [str(shared)]}
+                ),
+                document["profiles"]["telegram2"].update(
+                    {"resolved_roots": [str(telegram_shared)]}
+                ),
+            )
+        )
+        exit_code, stdout, stderr = self.run_guard("main")
+        self.assertEqual(exit_code, guard.EXIT_CONFIG)
+        self.assert_event(
+            stdout + stderr, "HSG_PROFILE_SCOPE_VIOLATION"
+        )
+
+    def test_ha_symlink_swap_cannot_move_into_other_resolved_root(self):
+        shared = self.root / "iCloudDrive" / "hermes-ha" / "hermes"
+        telegram_shared = shared / "profiles" / "telegram2"
+        telegram_shared.mkdir(parents=True)
+        main_config = self.main_home / "config.yaml"
+        main_config.rename(shared / "config.yaml")
+        main_config.symlink_to(shared / "config.yaml")
+        (telegram_shared / "config.yaml").write_text(
+            (shared / "config.yaml").read_text(encoding="utf-8"),
+            encoding="utf-8",
+        )
+        self.write_profiles(
+            mutate=lambda document: (
+                document["profiles"]["main"].update(
+                    {"resolved_roots": [str(shared)]}
+                ),
+                document["profiles"]["telegram2"].update(
+                    {"resolved_roots": [str(telegram_shared)]}
+                ),
+            )
+        )
+        with mock.patch.dict(os.environ, {"HOME": str(self.root)}):
+            policy = guard.load_policy(
+                profiles_file=self.profiles_file,
+                profile="main",
+                expected_service="hermes-gateway.service",
+                timeout_override=None,
+            )
+        main_config.unlink()
+        main_config.symlink_to(telegram_shared / "config.yaml")
+        with self.assertRaises(guard.GuardFailure) as caught:
+            guard.validate_config(policy)
+        self.assertEqual(
+            caught.exception.code, "HSG_PROFILE_SCOPE_VIOLATION"
         )
 
     def test_post_start_symlink_swap_cannot_cross_profile_scope(self):
