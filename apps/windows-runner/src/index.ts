@@ -39,6 +39,7 @@ const HEARTBEAT_INTERVAL_MS = 60_000;
 const MAX_CONSECUTIVE_HEARTBEAT_FAILURES = 5;
 const ERROR_BACKOFF_MS = Math.min(config.pollIntervalMs * 5, 15_000);
 const PROGRESS_THROTTLE_MS = 1_000;
+const MAX_PROGRESS_MESSAGE_CHARS = 800;
 const RESULT_SUBMIT_ATTEMPTS = 5;
 const E2EE_LEASE_RENEW_INTERVAL_MS = 60_000;
 const LEGACY_LEASE_RENEW_INTERVAL_MS = 30_000;
@@ -467,7 +468,8 @@ async function runLegacyJob(
   let lastProgress = "";
   const abortController = new AbortController();
   const reportProgress = async (progress: Omit<RunnerJobProgress, "runId">) => {
-    const message = progress.message.slice(-200_000);
+    const message = progress.message.trim().slice(0, MAX_PROGRESS_MESSAGE_CHARS);
+    if (!message) return;
     const fingerprint = `${progress.kind}:${message}`;
     const now = Date.now();
     if (fingerprint === lastProgress || now - lastProgressAt < PROGRESS_THROTTLE_MS) return;

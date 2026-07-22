@@ -455,13 +455,16 @@ export function buildOpenAiStreamFrames(input: {
   model: string;
   text: string;
   created?: number;
+  includeRole?: boolean;
 }): SseFrame[] {
   const created = input.created ?? Math.floor(Date.now() / 1000);
   const base = { id: input.id, object: "chat.completion.chunk", created, model: input.model };
   const frames: SseFrame[] = [];
-  frames.push({
-    data: { ...base, choices: [{ index: 0, delta: { role: "assistant" }, finish_reason: null }] }
-  });
+  if (input.includeRole !== false) {
+    frames.push({
+      data: { ...base, choices: [{ index: 0, delta: { role: "assistant" }, finish_reason: null }] }
+    });
+  }
   for (const chunk of chunkText(input.text)) {
     frames.push({
       data: { ...base, choices: [{ index: 0, delta: { content: chunk }, finish_reason: null }] }
@@ -471,6 +474,29 @@ export function buildOpenAiStreamFrames(input: {
     data: { ...base, choices: [{ index: 0, delta: {}, finish_reason: "stop" }] }
   });
   return frames;
+}
+
+/** Build one safe runner-progress delta for OpenAI-compatible clients. */
+export function buildOpenAiProgressFrame(input: {
+  id: string;
+  model: string;
+  text: string;
+  includeRole?: boolean;
+  created?: number;
+}): SseFrame {
+  const created = input.created ?? Math.floor(Date.now() / 1000);
+  const delta = input.includeRole === false
+    ? { reasoning_content: input.text }
+    : { role: "assistant", reasoning_content: input.text };
+  return {
+    data: {
+      id: input.id,
+      object: "chat.completion.chunk",
+      created,
+      model: input.model,
+      choices: [{ index: 0, delta, finish_reason: null }]
+    }
+  };
 }
 
 export const OPENAI_STREAM_DONE: SseFrame = { data: "[DONE]" };

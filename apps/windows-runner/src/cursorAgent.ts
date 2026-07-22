@@ -198,28 +198,46 @@ function isAgentNotFoundError(error: unknown) {
   );
 }
 
+const MAX_PROGRESS_MESSAGE_CHARS = 800;
+
+function safeProgressText(value: string): string {
+  return value
+    .replace(/[\u0000-\u001f\u007f]/g, " ")
+    .replace(/\b(?:sk|rk|gh[pousr]|xox[baprs])[-_][A-Za-z0-9_-]{16,}\b/gi, "[redacted]")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, MAX_PROGRESS_MESSAGE_CHARS)
+    .trim();
+}
+
+function safeToolName(value: string): string {
+  return safeProgressText(value).replace(/[^A-Za-z0-9_.:-]+/g, " ").trim();
+}
+
 function progressFromMessage(message: SDKMessage): {
   kind: RunProgressKind;
   message: string;
 } | undefined {
   if (message.type === "thinking" && message.text.trim()) {
-    return { kind: "thinking", message: "The model is thinking." };
+    // Do not expose raw hidden chain-of-thought. The gateway receives a safe
+    // phase marker while the model is analyzing the task.
+    return { kind: "thinking", message: "Analyzing the task…" };
   }
   if (message.type === "assistant") {
-    const text = assistantTextFromMessage(message);
-    return text.trim() ? { kind: "responding", message: text } : undefined;
+    return { kind: "responding", message: "Preparing the response…" };
   }
   if (message.type === "tool_call") {
+    const name = safeToolName(message.name) || "tool";
     return {
       kind: "tool",
-      message: `${message.status === "running" ? "Using" : "Used"} ${message.name}`
+      message: `${message.status === "running" ? "Using" : "Used"} ${name}`
     };
   }
   if (message.type === "task" && message.text?.trim()) {
-    return { kind: "working", message: message.text };
+    return { kind: "working", message: `Working: ${safeProgressText(message.text)}` };
   }
   if (message.type === "status" && message.message?.trim()) {
-    return { kind: "working", message: message.message };
+    return { kind: "working", message: safeProgressText(message.message) };
   }
   return undefined;
 }
