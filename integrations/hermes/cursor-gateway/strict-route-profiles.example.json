@@ -7,6 +7,11 @@
       "config": "config.yaml",
       "state_db": "state.db",
       "sessions": "sessions/sessions.json",
+      "resolved_roots": [
+        "~/iCloudDrive/hermes-ha/hermes",
+        "~/.config/hermes-ha/local_trees",
+        "~/.config/hermes-ha/runtime"
+      ],
       "service": "hermes-gateway.service",
       "provider": "cursor-gateway",
       "model": "gpt-5.6-sol",
@@ -20,6 +25,9 @@
       "config": "config.yaml",
       "state_db": "state.db",
       "sessions": "sessions/sessions.json",
+      "resolved_roots": [
+        "~/iCloudDrive/hermes-ha/hermes/profiles/telegram2"
+      ],
       "service": "hermes-gateway-telegram2.service",
       "provider": "cursor-gateway",
       "model": "gpt-5.6-sol",

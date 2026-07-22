@@ -30,16 +30,20 @@ non-secret profile layout. Install a reviewed copy at
 service only from the selected manifest entry.
 
 The shipped protected homes and services are unique. A selected config/state
-path must remain inside its own home and outside every more-specific protected
-home. This permits the intended nested telegram2 home while preventing main
-from pointing into telegram2 or telegram2 from escaping to main. Only other
-profiles' home boundaries are consulted; their route/config drift cannot fail
-the selected profile. A profile declared with `"protected": false` is skipped
-before any profile state is read. Production preflight/watch commands add
-`--require-protected`, so changing main or telegram2 to false fails closed
-rather than bypassing protection. For these two names it also applies compiled
-default home/service expectations; the gateway preflights pass those
-expectations explicitly.
+path must remain lexically inside its own home and outside every more-specific
+protected home. The profile-scoped `resolved_roots` allow only the canonical HA
+symlink targets under the shared iCloud tree, local-trees storage, and private
+runtime directory. Broad account/root paths and another profile's resolved
+roots are rejected. Paths are re-resolved on every check, so a post-start
+symlink swap also fails closed. This permits the intended nested telegram2 home
+while preventing main from pointing into telegram2 or telegram2 from escaping
+to main. Only other profiles' path boundaries are consulted; their route/config
+drift cannot fail the selected profile. A profile declared with
+`"protected": false` is skipped before any profile state is read. Production
+preflight/watch commands add `--require-protected`, so changing main or
+telegram2 to false fails closed rather than bypassing protection. For these two
+names it also applies compiled default home/service expectations; the gateway
+preflights pass those expectations explicitly.
 
 ## Route invariants
 

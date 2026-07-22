@@ -94,6 +94,7 @@ class GuardPolicy:
     config_path: Path
     state_db_path: Path
     sessions_path: Path
+    resolved_roots: tuple[Path, ...]
     service: str
     provider: str
     model: str
@@ -344,12 +345,90 @@ def _resolve_home(value: Any, *, profile: str) -> Path:
     return raw.resolve()
 
 
+def _path_is_within(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+        return True
+    except ValueError:
+        return False
+
+
+def _scope_contains_selected_root(
+    policy: GuardPolicy, scope: Path
+) -> bool:
+    """Return true when `scope` is a parent owned by the selected profile.
+
+    Main intentionally owns parent HA roots while telegram2 owns narrower
+    subtrees. A selected telegram2 path may therefore live below a main root;
+    the inverse must still be rejected.
+    """
+    return any(
+        root != scope and _path_is_within(root, scope)
+        for root in policy.resolved_roots
+    )
+
+
+def _resolve_profile_roots(
+    value: Any,
+    *,
+    profile: str,
+    hermes_home: Path,
+) -> tuple[Path, ...]:
+    roots = {hermes_home}
+    if value is None:
+        return (hermes_home,)
+    if (
+        not isinstance(value, list)
+        or len(value) > 8
+        or any(not isinstance(item, str) or not item.strip() for item in value)
+    ):
+        raise _profile_failure(
+            "HSG_PROFILE_RESOLVED_ROOTS_INVALID",
+            "resolved profile roots must be a bounded list of absolute paths",
+            field=f"profiles.{profile}.resolved_roots",
+        )
+
+    account_home = Path.home().resolve()
+    for item in value:
+        raw = Path(item.strip()).expanduser()
+        if not raw.is_absolute():
+            raise _profile_failure(
+                "HSG_PROFILE_RESOLVED_ROOTS_INVALID",
+                "resolved profile roots must be absolute or start with ~",
+                field=f"profiles.{profile}.resolved_roots",
+            )
+        try:
+            root = raw.resolve()
+        except (OSError, RuntimeError, ValueError) as exc:
+            raise _profile_failure(
+                "HSG_PROFILE_RESOLVED_ROOTS_INVALID",
+                "a resolved profile root is invalid",
+                field=f"profiles.{profile}.resolved_roots",
+            ) from exc
+        if (
+            root in {Path("/"), account_home}
+            or not _path_is_within(root, account_home)
+            or (
+                root != hermes_home
+                and _path_is_within(hermes_home, root)
+            )
+        ):
+            raise _profile_failure(
+                "HSG_PROFILE_RESOLVED_ROOTS_INVALID",
+                "resolved profile roots must be narrow account-local directories",
+                field=f"profiles.{profile}.resolved_roots",
+            )
+        roots.add(root)
+    return tuple(sorted(roots, key=str))
+
+
 def _resolve_profile_path(
     value: Any,
     *,
     profile: str,
     field: str,
     hermes_home: Path,
+    resolved_roots: tuple[Path, ...],
 ) -> Path:
     if not isinstance(value, str) or not value.strip():
         raise _profile_failure(
@@ -358,22 +437,37 @@ def _resolve_profile_path(
             field=f"profiles.{profile}.{field}",
         )
     raw = Path(value.strip()).expanduser()
-    resolved = (raw if raw.is_absolute() else hermes_home / raw).resolve()
+    candidate = raw if raw.is_absolute() else hermes_home / raw
+    lexical = Path(os.path.abspath(os.path.normpath(candidate)))
     try:
-        resolved.relative_to(hermes_home)
+        lexical.relative_to(hermes_home)
     except ValueError as exc:
         raise _profile_failure(
             "HSG_PROFILE_PATH_ESCAPE",
             "a protected profile path escapes its HERMES_HOME",
             field=f"profiles.{profile}.{field}",
         ) from exc
-    if resolved == hermes_home:
+    if lexical == hermes_home:
         raise _profile_failure(
             "HSG_PROFILE_PATH_INVALID",
             "a protected profile file path cannot equal HERMES_HOME",
             field=f"profiles.{profile}.{field}",
         )
-    return resolved
+    try:
+        resolved = lexical.resolve()
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise _profile_failure(
+            "HSG_PROFILE_PATH_ESCAPE",
+            "a protected profile path cannot be resolved safely",
+            field=f"profiles.{profile}.{field}",
+        ) from exc
+    if not any(_path_is_within(resolved, root) for root in resolved_roots):
+        raise _profile_failure(
+            "HSG_PROFILE_PATH_ESCAPE",
+            "a protected profile path resolves outside its allowed roots",
+            field=f"profiles.{profile}.{field}",
+        )
+    return lexical
 
 
 def _parse_protected_profile(
@@ -391,6 +485,7 @@ def _parse_protected_profile(
         "model",
         "protected",
         "provider",
+        "resolved_roots",
         "service",
         "sessions",
         "state_db",
@@ -404,23 +499,31 @@ def _parse_protected_profile(
         )
 
     hermes_home = _resolve_home(value.get("hermes_home"), profile=profile)
+    resolved_roots = _resolve_profile_roots(
+        value.get("resolved_roots"),
+        profile=profile,
+        hermes_home=hermes_home,
+    )
     config_path = _resolve_profile_path(
         value.get("config"),
         profile=profile,
         field="config",
         hermes_home=hermes_home,
+        resolved_roots=resolved_roots,
     )
     state_db_path = _resolve_profile_path(
         value.get("state_db"),
         profile=profile,
         field="state_db",
         hermes_home=hermes_home,
+        resolved_roots=resolved_roots,
     )
     sessions_path = _resolve_profile_path(
         value.get("sessions"),
         profile=profile,
         field="sessions",
         hermes_home=hermes_home,
+        resolved_roots=resolved_roots,
     )
     if len({config_path, state_db_path, sessions_path}) != 3:
         raise _profile_failure(
@@ -487,6 +590,7 @@ def _parse_protected_profile(
         config_path=config_path,
         state_db_path=state_db_path,
         sessions_path=sessions_path,
+        resolved_roots=resolved_roots,
         service=service,
         provider=DEFAULT_PROVIDER,
         model=DEFAULT_MODEL,
@@ -511,6 +615,26 @@ def _lenient_protected_home(value: Any) -> Path | None:
         return None
 
 
+def _lenient_protected_scopes(value: Any) -> tuple[Path, ...]:
+    home = _lenient_protected_home(value)
+    if home is None or not isinstance(value, dict):
+        return ()
+    scopes = {home}
+    roots = value.get("resolved_roots")
+    if isinstance(roots, list):
+        for item in roots[:8]:
+            if not isinstance(item, str) or not item.strip():
+                continue
+            raw = Path(item.strip()).expanduser()
+            if not raw.is_absolute():
+                continue
+            try:
+                scopes.add(raw.resolve())
+            except (OSError, RuntimeError, ValueError):
+                continue
+    return tuple(sorted(scopes, key=str))
+
+
 def _validate_selected_isolation(
     policy: GuardPolicy, profile_values: dict[str, Any]
 ) -> tuple[Path, ...]:
@@ -525,32 +649,34 @@ def _validate_selected_isolation(
     for other_name, other_value in profile_values.items():
         if other_name == policy.profile:
             continue
-        other_home = _lenient_protected_home(other_value)
-        if other_home is None:
+        other_scopes = _lenient_protected_scopes(other_value)
+        if not other_scopes:
             continue
+        other_home = _lenient_protected_home(other_value)
+        assert other_home is not None
         other_homes.add(other_home)
+        other_homes.update(other_scopes)
         if other_home == policy.hermes_home:
             raise _profile_failure(
                 "HSG_PROFILE_HOME_COLLISION",
                 "the selected profile shares HERMES_HOME with another profile",
                 field=f"profiles.{policy.profile}.hermes_home",
             )
-        if len(other_home.parts) <= len(policy.hermes_home.parts):
-            continue
-        for field, path in (
-            ("config", policy.config_path),
-            ("state_db", policy.state_db_path),
-            ("sessions", policy.sessions_path),
-        ):
-            try:
-                path.relative_to(other_home)
-            except ValueError:
+        for other_scope in other_scopes:
+            if _scope_contains_selected_root(policy, other_scope):
                 continue
-            raise _profile_failure(
-                "HSG_PROFILE_SCOPE_VIOLATION",
-                "a selected profile path belongs to another HERMES_HOME",
-                field=f"profiles.{policy.profile}.{field}",
-            )
+            for field, path in (
+                ("config", policy.config_path),
+                ("state_db", policy.state_db_path),
+                ("sessions", policy.sessions_path),
+            ):
+                if not _path_is_within(path.resolve(), other_scope):
+                    continue
+                raise _profile_failure(
+                    "HSG_PROFILE_SCOPE_VIOLATION",
+                    "a selected profile path belongs to another protected scope",
+                    field=f"profiles.{policy.profile}.{field}",
+                )
     return tuple(sorted(other_homes, key=str))
 
 
@@ -560,19 +686,25 @@ def _current_profile_path(
     """Re-resolve profile paths so a later symlink swap fails closed."""
     try:
         resolved = path.resolve()
-        resolved.relative_to(policy.hermes_home)
     except (OSError, RuntimeError, ValueError) as exc:
         raise _profile_failure(
             "HSG_PROFILE_PATH_ESCAPE",
-            "a selected profile path escaped its HERMES_HOME",
+            "a selected profile path cannot be resolved safely",
             field=f"profiles.{policy.profile}.{field}",
         ) from exc
+    if not any(
+        _path_is_within(resolved, root)
+        for root in policy.resolved_roots
+    ):
+        raise _profile_failure(
+            "HSG_PROFILE_PATH_ESCAPE",
+            "a selected profile path escaped its allowed resolved roots",
+            field=f"profiles.{policy.profile}.{field}",
+        )
     for other_home in policy.other_protected_homes:
-        if len(other_home.parts) <= len(policy.hermes_home.parts):
+        if _scope_contains_selected_root(policy, other_home):
             continue
-        try:
-            resolved.relative_to(other_home)
-        except ValueError:
+        if not _path_is_within(resolved, other_home):
             continue
         raise _profile_failure(
             "HSG_PROFILE_SCOPE_VIOLATION",
@@ -629,6 +761,7 @@ def load_policy(
             config_path=Path("/"),
             state_db_path=Path("/"),
             sessions_path=Path("/"),
+            resolved_roots=(),
             service="",
             provider=DEFAULT_PROVIDER,
             model=DEFAULT_MODEL,

@@ -31,6 +31,15 @@ redirect it to another profile. Nested-home ownership checks prevent main from
 reading telegram2 state, and database routing entries are filtered by the
 selected sessions-directory scope.
 
+`resolved_roots` is the narrow allowlist for the canonical Hermes HA layout.
+The path named by `config`, `state_db`, or `sessions` must still be lexically
+inside that profile's `HERMES_HOME`; only its symlink target may resolve into
+one of these account-local roots. Main permits the shared iCloud Hermes tree,
+the HA local-trees directory, and the private runtime-secret directory.
+Telegram2 permits only its own shared iCloud subtree in addition to its
+resolved home. Broad roots and links into another protected profile fail
+closed, including links swapped after startup.
+
 Install this provider independently under both homes:
 
 ```text
