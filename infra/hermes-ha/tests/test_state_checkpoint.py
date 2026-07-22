@@ -86,6 +86,19 @@ class StateCheckpointTests(unittest.TestCase):
                 state_checkpoint.create_checkpoint(self.config, self.source)
         self.assertEqual(manifest_path.read_bytes(), previous)
 
+    def test_rclone_falls_back_to_executable_user_install(self) -> None:
+        binary = self.root / ".local" / "bin" / "rclone"
+        binary.parent.mkdir(parents=True)
+        binary.write_text("#!/bin/sh\n", encoding="utf-8")
+        binary.chmod(0o700)
+        with mock.patch.dict(os.environ, {"HOME": str(self.root)}), mock.patch.object(
+            state_checkpoint.shutil, "which", return_value=None
+        ):
+            self.assertEqual(state_checkpoint.rclone_bin(), str(binary))
+            binary.chmod(0o600)
+            with self.assertRaisesRegex(RuntimeError, "rclone is required"):
+                state_checkpoint.rclone_bin()
+
     def test_rclone_publishes_manifest_after_all_parts(self) -> None:
         config = dict(self.config)
         config["state_checkpoint"] = {

@@ -46,6 +46,8 @@ python3 ~/hermes-ha/scripts/csapi-capacity-smoke.py --slots 6
 Gateway PG timer 使用固定 `OnCalendar`，一次 dump 失败不会让后续调度消失。
 oneshot 设 4 分钟运行上限和 256 MiB 内存上限。独立 watchdog 每分钟检查
 manifest、dump 大小及年龄；默认超过 600 秒告警，恢复后发送恢复通知。
+checkpoint 的 rclone transport 先查 systemd `PATH`，再查用户安装路径
+`~/.local/bin/rclone`，且只接受可执行文件。
 
 ## 目录
 

@@ -43,6 +43,16 @@ def checkpoint_work_dir(config: dict[str, Any]) -> Path:
     return checkpoint_dir(config)
 
 
+def rclone_bin() -> str:
+    discovered = shutil.which("rclone")
+    if discovered:
+        return discovered
+    user_install = Path.home() / ".local" / "bin" / "rclone"
+    if user_install.is_file() and os.access(user_install, os.X_OK):
+        return str(user_install)
+    raise RuntimeError("rclone is required for gateway checkpoint transport")
+
+
 def checkpoint_restore_dir(config: dict[str, Any]) -> Path:
     if checkpoint_transport(config) != "rclone":
         return checkpoint_dir(config)
@@ -50,17 +60,13 @@ def checkpoint_restore_dir(config: dict[str, Any]) -> Path:
 
     root = runtime_dir(config) / "checkpoint-cache" / "gateway"
     root.mkdir(parents=True, exist_ok=True)
-    rclone = shutil.which("rclone")
-    if not rclone:
-        raise RuntimeError("rclone is required for gateway checkpoint transport")
+    rclone = rclone_bin()
     subprocess.run([rclone, "sync", checkpoint_remote(config), str(root)], check=True)
     return root
 
 
 def publish_remote(config: dict[str, Any], dump_path: Path, manifest_path: Path) -> None:
-    rclone = shutil.which("rclone")
-    if not rclone:
-        raise RuntimeError("rclone is required for gateway checkpoint transport")
+    rclone = rclone_bin()
     remote = checkpoint_remote(config)
     subprocess.run([rclone, "copyto", str(dump_path), f"{remote}/{dump_path.name}"], check=True)
     subprocess.run([rclone, "copyto", str(manifest_path), f"{remote}/manifest.json"], check=True)
