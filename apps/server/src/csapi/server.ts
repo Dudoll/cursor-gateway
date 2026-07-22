@@ -22,6 +22,7 @@ import {
   buildAnthropicStreamFrames,
   buildModelsResponse,
   buildOpenAiResponse,
+  buildOpenAiProgressFrame,
   buildOpenAiStreamFrames,
   buildPrompt,
   estimateTokens,
@@ -113,6 +114,7 @@ const sleep = (ms: number, signal?: AbortSignal) =>
 const RUN_ID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
 const MAX_IDEMPOTENCY_KEY_CHARS = 512;
+const MAX_PROGRESS_EVENT_CHARS = 800;
 
 interface CompletedRun {
   text: string;
@@ -121,6 +123,11 @@ interface CompletedRun {
   runId: string;
   conversationId: string;
 }
+
+type CsapiProgressUpdate = {
+  kind: NonNullable<CsapiRunSnapshot["progressKind"]>;
+  message: string;
+};
 
 interface ExecuteInput {
   keyId: string;
@@ -262,9 +269,11 @@ export function createCsapi(deps: CsapiDeps) {
     runId: string,
     principalId: string,
     fallbackModel: string,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    onProgress?: (progress: CsapiProgressUpdate) => void
   ): Promise<CompletedRun> {
     const callerDeadline = now() + config.callerWaitTimeoutMs;
+    let lastProgressFingerprint = "";
     try {
       for (;;) {
         if (signal?.aborted) throw new AbortedError();
@@ -279,6 +288,26 @@ export function createCsapi(deps: CsapiDeps) {
             providerForModel(fallbackModel),
             fallbackModel
           );
+        }
+        const progressMessage = snapshot.progress?.trim().slice(0, MAX_PROGRESS_EVENT_CHARS);
+        const progressKind = snapshot.progressKind;
+        if (
+          onProgress &&
+          progressMessage &&
+          progressKind &&
+          progressKind !== "responding"
+        ) {
+          const fingerprint = `${progressKind}:${progressMessage}`;
+          if (fingerprint !== lastProgressFingerprint) {
+            lastProgressFingerprint = fingerprint;
+            // Progress is observational; a disconnected stream must not turn a
+            // successful model run into an API failure.
+            try {
+              onProgress({ kind: progressKind, message: progressMessage });
+            } catch {
+              // Ignore stream write failures and keep polling the run.
+            }
+          }
         }
         if (snapshot.status === "finished") {
           return {
@@ -360,7 +389,10 @@ export function createCsapi(deps: CsapiDeps) {
   }
 
   /** Core execution: serialize per-session, enqueue a run, wait for completion. */
-  async function execute(input: ExecuteInput): Promise<CompletedRun> {
+  async function execute(
+    input: ExecuteInput,
+    onProgress?: (progress: CsapiProgressUpdate) => void
+  ): Promise<CompletedRun> {
     if (!lastUserText(input.messages)) {
       throw new CsapiError(400, "invalid_request_error", "no user message provided");
     }
@@ -425,7 +457,8 @@ export function createCsapi(deps: CsapiDeps) {
           handle.runId,
           principalId,
           model,
-          input.signal
+          input.signal,
+          onProgress
         );
         completed.conversationId = handle.conversationId;
         input.log?.info(
@@ -516,7 +549,8 @@ export function createCsapi(deps: CsapiDeps) {
     reply: FastifyReply,
     input: ExecuteInput,
     wire: "anthropic" | "openai",
-    model: string
+    model: string,
+    onProgress?: (progress: CsapiProgressUpdate) => void
   ): Promise<CompletedRun> {
     writeHeartbeat(reply, wire, model);
     const heartbeat = setInterval(
@@ -524,7 +558,7 @@ export function createCsapi(deps: CsapiDeps) {
       heartbeatIntervalMs
     );
     try {
-      return await execute(input);
+      return await execute(input, onProgress);
     } finally {
       clearInterval(heartbeat);
     }
@@ -676,9 +710,31 @@ export function createCsapi(deps: CsapiDeps) {
 
       beginStream(reply);
       try {
-        const result = await executeWithHeartbeat(reply, input, "openai", responseModel);
+        const streamId = openaiCompletionId();
+        let progressRoleSent = false;
+        const onProgress = (progress: CsapiProgressUpdate) => {
+          if (reply.raw.writableEnded || reply.raw.destroyed) return;
+          writeFrame(
+            reply,
+            buildOpenAiProgressFrame({
+              id: streamId,
+              model: responseModel,
+              text: progress.message,
+              includeRole: !progressRoleSent
+            })
+          );
+          progressRoleSent = true;
+        };
+        const result = await executeWithHeartbeat(
+          reply,
+          input,
+          "openai",
+          responseModel,
+          onProgress
+        );
         const frames = buildOpenAiStreamFrames({
-          id: openaiCompletionId(),
+          id: streamId,
+          includeRole: !progressRoleSent,
           model: responseModel,
           text: result.text
         });

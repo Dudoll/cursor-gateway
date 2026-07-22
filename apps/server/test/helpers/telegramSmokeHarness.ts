@@ -200,6 +200,7 @@ export class FakeRunnerBackend implements CsapiBackend {
         response: `echo:${run.prompt}`,
         error: null,
         progress: null,
+        progressKind: null,
         inputTokens: 7,
         outputTokens: 5,
         ...lifecycle
@@ -211,6 +212,7 @@ export class FakeRunnerBackend implements CsapiBackend {
         response: null,
         error: "upstream boom",
         progress: null,
+        progressKind: null,
         inputTokens: null,
         outputTokens: null,
         ...lifecycle
@@ -222,6 +224,7 @@ export class FakeRunnerBackend implements CsapiBackend {
         response: null,
         error: "cancelled",
         progress: null,
+        progressKind: null,
         inputTokens: null,
         outputTokens: null,
         ...lifecycle
@@ -232,6 +235,7 @@ export class FakeRunnerBackend implements CsapiBackend {
       response: null,
       error: null,
       progress: "working",
+      progressKind: "working",
       inputTokens: null,
       outputTokens: null,
       ...lifecycle

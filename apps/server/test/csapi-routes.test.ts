@@ -160,6 +160,7 @@ class FakeBackend implements CsapiBackend {
         response: `echo:${run.prompt}`,
         error: null,
         progress: null,
+        progressKind: null,
         inputTokens: 7,
         outputTokens: 5,
         ...lifecycle
@@ -171,6 +172,7 @@ class FakeBackend implements CsapiBackend {
         response: null,
         error: "upstream boom",
         progress: null,
+        progressKind: null,
         inputTokens: null,
         outputTokens: null,
         ...lifecycle
@@ -182,6 +184,7 @@ class FakeBackend implements CsapiBackend {
         response: null,
         error: "cancelled",
         progress: null,
+        progressKind: null,
         inputTokens: null,
         outputTokens: null,
         ...lifecycle
@@ -192,6 +195,7 @@ class FakeBackend implements CsapiBackend {
       response: null,
       error: null,
       progress: "working",
+      progressKind: "working",
       inputTokens: null,
       outputTokens: null,
       ...lifecycle
@@ -576,6 +580,7 @@ test("OpenAI streaming emits chunks and [DONE]", async () => {
   const payload = res.payload;
   assert.match(payload, /chatcmpl-heartbeat/);
   assert.match(payload, /chat\.completion\.chunk/);
+  assert.match(payload, /reasoning_content/);
   assert.match(payload, /hey/);
   assert.match(payload, /data: \[DONE\]/);
   await closeApp(app);

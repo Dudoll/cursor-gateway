@@ -4,7 +4,7 @@
 // PostgreSQL-backed gateway in production and an in-memory fake in tests (no
 // database required). Everything here is plaintext (方案 B); there is no E2EE.
 import { createHash } from "node:crypto";
-import type { RunStatus } from "@cursor-gateway/shared";
+import type { RunProgressKind, RunStatus } from "@cursor-gateway/shared";
 import {
   applicationStatusCodeForRun,
   isTerminalRunStatus,
@@ -24,6 +24,7 @@ export interface CsapiRunSnapshot {
   response: string | null;
   error: string | null;
   progress: string | null;
+  progressKind: RunProgressKind | null;
   inputTokens: number | null;
   outputTokens: number | null;
   queuedAt: string;
@@ -125,6 +126,7 @@ type EvidenceRun = {
   response: string | null;
   error: string | null;
   progress: string | null;
+  progressKind: RunProgressKind | null;
   inputTokens: number | null;
   outputTokens: number | null;
   queuedAt: string;
@@ -142,6 +144,7 @@ function snapshotFromRun(run: EvidenceRun): CsapiRunSnapshot {
     response: run.response,
     error: run.error,
     progress: run.progress,
+    progressKind: run.progressKind,
     inputTokens: run.inputTokens,
     outputTokens: run.outputTokens,
     queuedAt: run.queuedAt,
