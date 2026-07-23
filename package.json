@@ -19,7 +19,10 @@
     "dev:runner": "npm run dev -w @cursor-gateway/windows-runner",
     "lint": "npm run lint --workspaces --if-present",
     "test": "npm run test -w @cursor-gateway/e2ee && npm run test -w @cursor-gateway/server && npm run test -w @cursor-gateway/browser-extension && npm run test -w @cursor-gateway/secure-web && npm run test -w @cursor-gateway/web && npm run test -w @cursor-gateway/windows-runner && npm run test -w @cursor-gateway/secure-adapter",
-    "typecheck": "npm run typecheck -w @cursor-gateway/shared && npm run typecheck -w @cursor-gateway/e2ee && npm run typecheck -w @cursor-gateway/server && npm run typecheck -w @cursor-gateway/web && npm run typecheck -w @cursor-gateway/browser-extension && npm run typecheck -w @cursor-gateway/secure-web && npm run typecheck -w @cursor-gateway/windows-runner && npm run typecheck -w @cursor-gateway/secure-adapter && npm run typecheck -w @cursor-gateway/secure-desktop"
+    "typecheck": "npm run typecheck -w @cursor-gateway/shared && npm run typecheck -w @cursor-gateway/e2ee && npm run typecheck -w @cursor-gateway/server && npm run typecheck -w @cursor-gateway/web && npm run typecheck -w @cursor-gateway/browser-extension && npm run typecheck -w @cursor-gateway/secure-web && npm run typecheck -w @cursor-gateway/windows-runner && npm run typecheck -w @cursor-gateway/secure-adapter && npm run typecheck -w @cursor-gateway/secure-desktop",
+    "smoke:csapi": "node scripts/diagnostics/csapi-capacity-smoke.mjs",
+    "smoke:telegram": "node scripts/diagnostics/telegram-real-smoke.mjs",
+    "test:telegram-smoke": "npm run test:telegram-smoke -w @cursor-gateway/server"
   },
   "engines": {
     "node": ">=22.0.0",

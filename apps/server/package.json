@@ -11,7 +11,8 @@
     "start": "node dist/index.js",
     "migrate": "node dist/migrate.js",
     "test": "tsx --test test/*.test.ts",
-    "typecheck": "tsc --noEmit -p tsconfig.json"
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test:telegram-smoke": "tsx --test --test-concurrency=1 test/telegram-hermes-smoke.test.ts"
   },
   "dependencies": {
     "@cursor-gateway/e2ee": "file:../../packages/e2ee",
