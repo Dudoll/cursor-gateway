@@ -1,0 +1,12 @@
+[Unit]
+Description=Timer — Hermes HA host load sample every 2 minutes
+
+[Timer]
+OnBootSec=90s
+OnUnitActiveSec=2min
+AccuracySec=30s
+Persistent=true
+Unit=hermes-ha-host-load.service
+
+[Install]
+WantedBy=timers.target

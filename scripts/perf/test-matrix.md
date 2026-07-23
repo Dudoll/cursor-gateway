@@ -42,6 +42,10 @@ Aligned with `docs/gateway-performance-refactor-plan.md`.
 npm run test -w @cursor-gateway/server
 python3 apps/hermes-runner/telegram_provider_runtime.py
 
-# Baseline on VPS
+# Baseline on VPS (one-shot)
 bash scripts/perf/baseline.sh ./var/perf-baseline
+
+# Rolling host-load samples (systemd timer on vps-dmit; fail-open)
+bash scripts/perf/sample-host-load.sh
+# → ~/.local/state/hermes-ha/host-load/latest.json
 ```

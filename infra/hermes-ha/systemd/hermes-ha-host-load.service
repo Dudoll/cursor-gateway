@@ -1,0 +1,25 @@
+[Unit]
+Description=Hermes HA lightweight host load / high-resource sample
+After=default.target
+
+[Service]
+Type=oneshot
+# Fail-open sampler: low priority, tight resource caps, short timeout.
+ExecStart=@HERMES_HA_ROOT@/scripts/sample-host-load.py
+Nice=15
+IOSchedulingClass=idle
+IOSchedulingPriority=7
+CPUWeight=10
+CPUQuota=15%
+MemoryAccounting=true
+MemoryHigh=32M
+MemoryMax=48M
+MemorySwapMax=32M
+TasksAccounting=true
+TasksMax=32
+TimeoutStartSec=25
+OOMPolicy=stop
+SuccessExitStatus=0
+
+[Install]
+WantedBy=default.target
