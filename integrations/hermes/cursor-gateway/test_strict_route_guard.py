@@ -885,12 +885,13 @@ class StrictRouteSystemdTests(unittest.TestCase):
             cls.systemd_root / "hermes-strict-route-guard@.service"
         ).read_text(encoding="utf-8")
 
-    def test_each_gateway_binds_only_its_own_guard_instance(self):
+    def test_each_gateway_depends_only_on_its_own_guard_instance(self):
         self.assertIn(
-            "BindsTo=hermes-strict-route-guard@main.service",
+            "Requires=hermes-strict-route-guard@main.service",
             self.main_dropin,
         )
         self.assertNotIn("@telegram2.service", self.main_dropin)
+        self.assertNotIn("BindsTo=", self.main_dropin)
         self.assertIn(
             "BindsTo=hermes-strict-route-guard@telegram2.service",
             self.telegram_dropin,
