@@ -24,7 +24,9 @@ import {
 
 export const pool = new Pool({
   connectionString: config.databaseUrl,
-  max: 10
+  max: config.dbPoolMax,
+  idleTimeoutMillis: 30_000,
+  connectionTimeoutMillis: 5_000
 });
 
 export class AutomationThreadWorkspaceMismatchError extends Error {
@@ -1071,7 +1073,12 @@ export async function createRun(input: {
       input.idempotencyKey ?? null
     ]
   );
-  return mapRun(result.rows[0]);
+  const run = mapRun(result.rows[0]);
+  if (run.status === "queued") {
+    const { notifyPlaintextJobQueued } = await import("./runWaiter.js");
+    notifyPlaintextJobQueued();
+  }
+  return run;
 }
 
 export type RunExecutor = "windows" | "hermes";
@@ -1537,6 +1544,12 @@ export async function createAutomationThreadRun(input: {
       ]
     );
     return { run: mapRun(runResult.rows[0]), created: true };
+  }).then(async (result) => {
+    if (result.created && result.run.status === "queued") {
+      const { notifyPlaintextJobQueued } = await import("./runWaiter.js");
+      notifyPlaintextJobQueued();
+    }
+    return result;
   });
 }
 

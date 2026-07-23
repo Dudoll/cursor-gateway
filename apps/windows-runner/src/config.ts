@@ -60,9 +60,9 @@ const envSchema = z.object({
   RUNNER_SHARED_SECRET: z.string().min(32),
   RUNNER_WORKSPACES: z.string().min(1),
   RUNNER_POLL_INTERVAL_MS: z.coerce.number().int().positive().default(2000),
-  RUNNER_MAX_CONCURRENT_JOBS: z.coerce.number().int().positive().default(6),
   RUNNER_JOB_TIMEOUT_MS: z.coerce.number().int().positive().default(1_800_000),
   RUNNER_CANCEL_GRACE_MS: z.coerce.number().int().positive().default(10_000),
+  RUNNER_MAX_CONCURRENT_JOBS: z.coerce.number().int().positive().default(3),
   RUNNER_VERSION: z.string().min(1).default("0.1.0"),
   RUNNER_E2EE_ENABLED: booleanEnv(true),
   RUNNER_LEGACY_ENABLED: booleanEnv(false),
@@ -81,6 +81,7 @@ const envSchema = z.object({
   CF_ACCESS_CLIENT_SECRET: optionalEnvString,
   // Secure-web magic-link pairing
   SECURE_CLIENT_ORIGIN: optionalEnvString,
+  SECURE_CLIENT_ORIGINS: optionalEnvString,
   PAIRING_TTL_SECONDS: z.coerce.number().int().positive().default(900),
   PAIRING_MAIL_MODE: z.enum(["log", "smtp", "api"]).default("log"),
   // PAIRING_MAIL_TO is ONLY for scripts/e2ee/send-test-pairing-mail.* — never for live pairing.
@@ -149,6 +150,7 @@ if (Boolean(parsed.CF_ACCESS_CLIENT_ID) !== Boolean(parsed.CF_ACCESS_CLIENT_SECR
 if (!parsed.RUNNER_E2EE_ENABLED && !parsed.RUNNER_LEGACY_ENABLED) {
   throw new Error("At least one of RUNNER_E2EE_ENABLED or RUNNER_LEGACY_ENABLED must be enabled");
 }
+
 if (parsed.RUNNER_WEBAUTHN_ENABLED && (!parsed.CF_ACCESS_TEAM_DOMAIN || !parsed.CF_ACCESS_AUD)) {
   throw new Error(
     "RUNNER_WEBAUTHN_ENABLED=true requires CF_ACCESS_TEAM_DOMAIN and CF_ACCESS_AUD " +
@@ -182,9 +184,9 @@ export const config = {
     .map((path) => path.trim())
     .filter(Boolean),
   pollIntervalMs: parsed.RUNNER_POLL_INTERVAL_MS,
-  maxConcurrentJobs: parsed.RUNNER_MAX_CONCURRENT_JOBS,
   jobTimeoutMs: parsed.RUNNER_JOB_TIMEOUT_MS,
   cancelGraceMs: parsed.RUNNER_CANCEL_GRACE_MS,
+  maxConcurrentJobs: parsed.RUNNER_MAX_CONCURRENT_JOBS,
   runnerVersion: parsed.RUNNER_VERSION,
   e2eeEnabled: parsed.RUNNER_E2EE_ENABLED,
   legacyEnabled: parsed.RUNNER_LEGACY_ENABLED,
@@ -197,19 +199,11 @@ export const config = {
   defaultModel: parsed.DEFAULT_MODEL,
   cloudflareAccessClientId: parsed.CF_ACCESS_CLIENT_ID,
   cloudflareAccessClientSecret: parsed.CF_ACCESS_CLIENT_SECRET,
-  // Comma-separated allowlist. First entry stays canonical; every entry is
-  // accepted for the secureOrigin embedded in pairing/approval envelopes so the
-  // Tauri desktop shell (http://tauri.localhost / tauri://localhost) works
-  // alongside the hosted PWA.
-  secureClientOrigin: (parsed.SECURE_CLIENT_ORIGIN ?? "")
-    .split(",")
-    .map((item) => item.trim())
-    .filter(Boolean)[0] ?? "",
+  secureClientOrigin: parsed.SECURE_CLIENT_ORIGIN,
   secureClientOrigins: new Set(
-    (parsed.SECURE_CLIENT_ORIGIN ?? "")
-      .split(",")
-      .map((item) => item.trim())
-      .filter(Boolean)
+    [parsed.SECURE_CLIENT_ORIGIN, ...(parsed.SECURE_CLIENT_ORIGINS ?? "").split(",")]
+      .map((origin) => origin?.trim())
+      .filter((origin): origin is string => Boolean(origin))
   ),
   pairingTtlSeconds: parsed.PAIRING_TTL_SECONDS,
   pairingMailMode: parsed.PAIRING_MAIL_MODE,
@@ -260,13 +254,3 @@ export const config = {
   runnerCodeTtlSeconds: parsed.RUNNER_CODE_TTL_SECONDS,
   runnerCodeTty: parsed.RUNNER_CODE_TTY
 };
-
-/**
- * True when `origin` is an allowlisted Secure Web origin (or when no allowlist
- * is configured). Mirrors the Gateway's check so pairing/approval envelopes
- * from the desktop shell are not rejected as `secure_origin_mismatch`.
- */
-export function isAllowedSecureOrigin(origin: string | undefined | null): boolean {
-  if (config.secureClientOrigins.size === 0) return true;
-  return !!origin && config.secureClientOrigins.has(origin);
-}

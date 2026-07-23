@@ -6,7 +6,18 @@ After=network-online.target
 Type=oneshot
 Environment=HERMES_HA_CONFIG=%h/.config/hermes-ha/config.json
 ExecStart=@HERMES_HA_ROOT@/scripts/hermes-ha state-checkpoint create --if-leader
-Nice=10
+Nice=15
+IOSchedulingClass=idle
+IOSchedulingPriority=7
+CPUWeight=10
+MemoryAccounting=true
+MemoryHigh=384M
+MemoryMax=512M
+MemorySwapMax=256M
+TasksAccounting=true
+TasksMax=32
+TimeoutStartSec=5min
+OOMPolicy=stop
 
 [Install]
 WantedBy=default.target

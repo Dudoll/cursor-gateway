@@ -65,6 +65,11 @@ def checkpoint_restore_dir(config: dict[str, Any]) -> Path:
     return root
 
 
+def publish_status_path(config: dict[str, Any]) -> Path:
+    """Return the leader-local marker for the last completed remote publish."""
+    return checkpoint_work_dir(config) / ".last-published.json"
+
+
 def publish_remote(config: dict[str, Any], dump_path: Path, manifest_path: Path) -> None:
     rclone = rclone_bin()
     remote = checkpoint_remote(config)
@@ -207,6 +212,14 @@ def create_checkpoint(config: dict[str, Any]) -> Path:
     atomic_write_json(manifest_path, manifest)
     if checkpoint_transport(config) == "rclone":
         publish_remote(config, dump_path, manifest_path)
+        atomic_write_json(
+            publish_status_path(config),
+            {
+                "created_at": stamp,
+                "file": dump_path.name,
+                "size": dump_path.stat().st_size,
+            },
+        )
     # retention
     retain = max(1, int(gateway_settings(config).get("retain") or 12))
     dumps = sorted(out_dir.glob("pg-*.dump"), key=lambda p: p.name, reverse=True)

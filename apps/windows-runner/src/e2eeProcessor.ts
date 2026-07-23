@@ -53,8 +53,7 @@ export class E2eeJobProcessor {
 
   async process(
     job: E2eeRunnerJob,
-    reportEncryptedProgress: EncryptedProgressReporter,
-    signal?: AbortSignal
+    reportEncryptedProgress: EncryptedProgressReporter
   ): Promise<E2eeResultEnvelope> {
     const request = job.request;
     if (
@@ -65,10 +64,17 @@ export class E2eeJobProcessor {
     }
 
     const client = this.state.getPairedClient(request.clientId, request.clientKeyId);
-    // cs-relay: CS signs with its server signing key; accept when configured via
-    // RUNNER_CS_RELAY_SIGNING_PUBLIC_JWK (or already paired as clientId cs-relay).
+    // Trusted VPS sources (cs-relay / vps-csapi / vps-hermes / vps-telegram): CS
+    // signs with its server signing key. Accept when configured via
+    // RUNNER_CS_RELAY_SIGNING_PUBLIC_JWK (or already paired under that clientId).
+    const trustedVpsClientIds = new Set([
+      "cs-relay",
+      "vps-csapi",
+      "vps-hermes",
+      "vps-telegram"
+    ]);
     let clientSigningKey: CryptoKey;
-    if (request.clientId === "cs-relay") {
+    if (trustedVpsClientIds.has(request.clientId)) {
       const csPub =
         this.state.getCsRelaySigningPublicKey?.() ??
         (await this.state.ensureCsRelaySigningPublicKey?.());
@@ -270,12 +276,9 @@ export class E2eeJobProcessor {
             memory: plaintext.memory,
             history: plaintext.history,
             allowWrites: plaintext.routing.allowWrites,
-            // E2EE routing does not carry server-side SSH_WRITE_HOSTS; preferred
-            // aliases are injected only on the plaintext claim path.
             sshWriteHosts: []
           },
-          createProgress,
-          signal
+          createProgress
         );
         resultStatus = result.status;
         response = result.response;

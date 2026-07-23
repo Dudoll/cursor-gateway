@@ -83,8 +83,8 @@ cat <<EOF
 Start it now (foreground, Ctrl+C to stop):
   cd "$RUNNER_DIR" && "$NODE_DIR/bin/node" dist/index.js
 
-Runner service options:
+Keep it running automatically:
   Linux (systemd):   ./apps/windows-runner/scripts/install-runner-service.sh
-  WSL on Windows:    autostart is intentionally disabled. Start it manually:
-                     powershell -ExecutionPolicy Bypass -File apps\\windows-runner\\scripts\\start-wsl-e2ee-runner.ps1
+  WSL on Windows:    run from an elevated PowerShell:
+                     powershell -ExecutionPolicy Bypass -File apps\\windows-runner\\scripts\\install-wsl-runner-daemon.ps1
 EOF

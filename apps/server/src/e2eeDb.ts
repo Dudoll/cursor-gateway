@@ -356,6 +356,12 @@ export async function createE2eeRun(input: {
       ]
     );
     return { run: mapRun(runResult.rows[0]), created: true };
+  }).then(async (result) => {
+    if (result.created && result.run.status === "queued") {
+      const { notifyE2eeJobQueued } = await import("./runWaiter.js");
+      notifyE2eeJobQueued(request.runnerId);
+    }
+    return result;
   });
 }
 

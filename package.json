@@ -9,19 +9,17 @@
     "packages/*"
   ],
   "scripts": {
-    "build": "npm run build -w @cursor-gateway/shared && npm run build -w @cursor-gateway/e2ee && npm run build -w @cursor-gateway/server && npm run build -w @cursor-gateway/web && npm run build -w @cursor-gateway/browser-extension && npm run build -w @cursor-gateway/secure-web && npm run build -w @cursor-gateway/windows-runner && npm run build -w @cursor-gateway/secure-adapter",
+    "build": "npm run build -w @cursor-gateway/shared && npm run build -w @cursor-gateway/e2ee && npm run build -w @cursor-gateway/server && npm run build -w @cursor-gateway/web && npm run build -w @cursor-gateway/browser-extension && npm run build -w @cursor-gateway/secure-web && npm run build -w @cursor-gateway/windows-runner && npm run build -w @cursor-gateway/secure-adapter && npm run build -w @cursor-gateway/secure-desktop",
+    "pack:secure-desktop": "npm run pack:win -w @cursor-gateway/secure-desktop",
     "dev:server": "npm run dev -w @cursor-gateway/server",
     "dev:secure-adapter": "npm run dev -w @cursor-gateway/secure-adapter",
     "dev:web": "npm run dev -w @cursor-gateway/web",
     "dev:extension": "npm run dev -w @cursor-gateway/browser-extension",
     "dev:secure-web": "npm run dev -w @cursor-gateway/secure-web",
     "dev:runner": "npm run dev -w @cursor-gateway/windows-runner",
-    "smoke:csapi": "node scripts/diagnostics/csapi-capacity-smoke.mjs",
-    "smoke:telegram": "node scripts/diagnostics/telegram-real-smoke.mjs",
-    "test:telegram-smoke": "npm run test:telegram-smoke -w @cursor-gateway/server",
     "lint": "npm run lint --workspaces --if-present",
-    "test": "npm run test -w @cursor-gateway/shared && npm run test -w @cursor-gateway/e2ee && npm run test -w @cursor-gateway/server && npm run test -w @cursor-gateway/browser-extension && npm run test -w @cursor-gateway/secure-web && npm run test -w @cursor-gateway/web && npm run test -w @cursor-gateway/windows-runner && npm run test -w @cursor-gateway/secure-adapter",
-    "typecheck": "npm run typecheck -w @cursor-gateway/shared && npm run typecheck -w @cursor-gateway/e2ee && npm run typecheck -w @cursor-gateway/server && npm run typecheck -w @cursor-gateway/web && npm run typecheck -w @cursor-gateway/browser-extension && npm run typecheck -w @cursor-gateway/secure-web && npm run typecheck -w @cursor-gateway/windows-runner && npm run typecheck -w @cursor-gateway/secure-adapter"
+    "test": "npm run test -w @cursor-gateway/e2ee && npm run test -w @cursor-gateway/server && npm run test -w @cursor-gateway/browser-extension && npm run test -w @cursor-gateway/secure-web && npm run test -w @cursor-gateway/web && npm run test -w @cursor-gateway/windows-runner && npm run test -w @cursor-gateway/secure-adapter",
+    "typecheck": "npm run typecheck -w @cursor-gateway/shared && npm run typecheck -w @cursor-gateway/e2ee && npm run typecheck -w @cursor-gateway/server && npm run typecheck -w @cursor-gateway/web && npm run typecheck -w @cursor-gateway/browser-extension && npm run typecheck -w @cursor-gateway/secure-web && npm run typecheck -w @cursor-gateway/windows-runner && npm run typecheck -w @cursor-gateway/secure-adapter && npm run typecheck -w @cursor-gateway/secure-desktop"
   },
   "engines": {
     "node": ">=22.0.0",

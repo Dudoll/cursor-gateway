@@ -18,7 +18,7 @@ import {
   verifyRecoveryTranscriptMac,
   verifyValue
 } from "@cursor-gateway/e2ee";
-import { config, isAllowedSecureOrigin } from "./config.js";
+import { config } from "./config.js";
 import { RunnerE2eeState } from "./e2eeState.js";
 import { getRunnerCertificate } from "./runnerCert.js";
 
@@ -124,7 +124,10 @@ async function claimAndPublishOffer(input: {
     // for another Runner (or let it expire); we cannot build an offer.
     return;
   }
-  if (!isAllowedSecureOrigin(start.secureOrigin)) {
+  if (
+    config.secureClientOrigins.size > 0 &&
+    !config.secureClientOrigins.has(start.secureOrigin)
+  ) {
     console.warn(`Rejecting recovery pairing ${pairId}: secure origin mismatch`);
     return;
   }

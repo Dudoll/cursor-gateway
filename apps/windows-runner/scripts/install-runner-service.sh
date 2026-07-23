@@ -2,19 +2,12 @@
 # Install the runner as a systemd user service so it starts on boot and
 # restarts on failure. For real Linux hosts with systemd.
 #
-# WSL must remain manual-only; this installer refuses to enable autostart there.
+# WSL1 has no systemd: use install-wsl-runner-daemon.ps1 from Windows instead.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 RUNNER_DIR="$ROOT/apps/windows-runner"
-
-if grep -qi microsoft /proc/sys/kernel/osrelease 2>/dev/null; then
-  echo "Cursor Gateway autostart is disabled on WSL." >&2
-  echo "Start manually from PowerShell:" >&2
-  echo "  powershell -ExecutionPolicy Bypass -File apps\\windows-runner\\scripts\\start-wsl-e2ee-runner.ps1" >&2
-  exit 1
-fi
 
 NODE="$HOME/.node22/bin/node"
 if [ ! -x "$NODE" ]; then
@@ -27,7 +20,8 @@ fi
 
 if ! command -v systemctl >/dev/null 2>&1; then
   echo "systemd (systemctl) not found."
-  echo "On WSL, start the runner manually; no boot task is installed."
+  echo "This is expected on WSL1. Install the Windows boot task instead:"
+  echo "  powershell -ExecutionPolicy Bypass -File apps\\windows-runner\\scripts\\install-wsl-runner-daemon.ps1"
   exit 1
 fi
 

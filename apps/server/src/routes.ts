@@ -107,6 +107,7 @@ import {
   getEnabledXhsAccountKeys
 } from "./config.js";
 import {
+  pool,
   AutomationThreadWorkspaceMismatchError,
   type RunExecutor,
   addMemoryFact,
@@ -429,6 +430,34 @@ function sweepCsapiRunTimeouts() {
     idleTimeoutMs: config.csapi.idleTimeoutMs,
     absoluteTimeoutMs: config.csapi.absoluteTimeoutMs
   });
+}
+
+
+function isClientGone(request: {
+  raw: { aborted?: boolean; socket?: { destroyed?: boolean } | null };
+  signal?: AbortSignal;
+}) {
+  return Boolean(request.signal?.aborted || request.raw.aborted || request.raw.socket?.destroyed);
+}
+
+async function claimJobForWithLongPoll(
+  executor: RunExecutor,
+  runnerId: string,
+  request: {
+    raw: { aborted?: boolean; socket?: { destroyed?: boolean } | null };
+    signal?: AbortSignal;
+  }
+) {
+  const deadline = Date.now() + config.runnerLongPollMs;
+  for (;;) {
+    const job = await claimJobFor(executor, runnerId);
+    if (job) return job;
+    const remaining = deadline - Date.now();
+    if (remaining <= 0 || isClientGone(request)) return undefined;
+    const { waitForPlaintextJob } = await import("./runWaiter.js");
+    const outcome = await waitForPlaintextJob(Math.min(remaining, 1000), request.signal);
+    if (outcome === "aborted") return undefined;
+  }
 }
 
 async function claimJobFor(executor: RunExecutor, runnerId: string) {
@@ -2211,7 +2240,7 @@ export async function registerRoutes(app: FastifyInstance) {
         .object({ runnerId: z.string().trim().min(1).max(128).default("windows-legacy") })
         .strict()
         .parse(request.body ?? {});
-      const job = await claimJobFor("windows", body.runnerId);
+      const job = await claimJobForWithLongPoll("windows", body.runnerId, request);
       return job ? { job } : reply.code(204).send();
     });
 
@@ -2315,13 +2344,27 @@ export async function registerRoutes(app: FastifyInstance) {
       ) {
         return reply.code(409).send({ error: "runner_e2ee_identity_mismatch" });
       }
-      const job = await claimNextE2eeRun({
-        runnerId: body.runnerId,
-        runnerKeyId: body.runnerKeyId,
-        maxAttempts: config.runnerMaxAttempts,
-        maxConcurrentJobs: config.runnerMaxConcurrentJobs
-      });
-      return job ? { job } : reply.code(204).send();
+      const deadline = Date.now() + config.runnerLongPollMs;
+      for (;;) {
+        const job = await claimNextE2eeRun({
+          runnerId: body.runnerId,
+          runnerKeyId: body.runnerKeyId,
+          maxAttempts: config.runnerMaxAttempts,
+          maxConcurrentJobs: config.runnerMaxConcurrentJobs
+        });
+        if (job) return { job };
+        const remaining = deadline - Date.now();
+        if (remaining <= 0 || isClientGone(request)) {
+          return reply.code(204).send();
+        }
+        const { waitForE2eeJob } = await import("./runWaiter.js");
+        const outcome = await waitForE2eeJob(
+          body.runnerId,
+          Math.min(remaining, 1000),
+          request.signal
+        );
+        if (outcome === "aborted") return reply.code(204).send();
+      }
     });
 
     runner.post("/e2ee/v1/jobs/:runId/lease", async (request, reply) => {
@@ -2441,6 +2484,59 @@ export async function registerRoutes(app: FastifyInstance) {
         }
       });
       return { run };
+    });
+
+    
+    runner.post("/e2ee/v1/pairings/claim-batch", async (request, reply) => {
+      const body = z
+        .object({ runnerId: z.string().trim().min(1).max(128) })
+        .parse(request.body);
+      const deadline = Date.now() + config.runnerLongPollMs;
+      for (;;) {
+        const pending = await pool.query(
+          `
+            select 1 as ok where exists (
+              select 1 from e2ee_pairings
+              where runner_id = $1 and expires_at > now()
+                and status in ('started', 'completed')
+            ) or exists (
+              select 1 from e2ee_cs_auth
+              where runner_id = $1 and expires_at > now()
+                and status in ('intent', 'pending_runner')
+            ) or exists (
+              select 1 from e2ee_passkey_pairings
+              where runner_id = $1 and expires_at > now()
+                and status in ('started', 'completed')
+            ) or exists (
+              select 1 from e2ee_device_approvals
+              where runner_id = $1 and expires_at > now() and status = 'decided'
+            ) or exists (
+              select 1 from e2ee_recovery_pairings
+              where runner_id = $1 and expires_at > now()
+                and status in ('started', 'completed')
+            ) or exists (
+              select 1 from e2ee_runner_code_enrollments
+              where runner_id = $1 and expires_at > now()
+                and status in ('started', 'confirmed')
+            )
+          `,
+          [body.runnerId]
+        );
+        if ((pending.rowCount ?? 0) > 0) {
+          return { ready: true };
+        }
+        const remaining = deadline - Date.now();
+        if (remaining <= 0 || isClientGone(request)) {
+          return reply.code(204).send();
+        }
+        const { waitForPairing } = await import("./runWaiter.js");
+        const outcome = await waitForPairing(
+          body.runnerId,
+          Math.min(remaining, 1000),
+          request.signal
+        );
+        if (outcome === "aborted") return reply.code(204).send();
+      }
     });
 
     runner.post("/e2ee/v1/pairings/claim-start", async (request, reply) => {
@@ -2977,7 +3073,7 @@ export async function registerRoutes(app: FastifyInstance) {
     });
 
     hermesRunner.post("/jobs/claim", async (request, reply) => {
-      const job = await claimJobFor("hermes", "hermes");
+      const job = await claimJobForWithLongPoll("hermes", "hermes", request);
       return job ? { job } : reply.code(204).send();
     });
 

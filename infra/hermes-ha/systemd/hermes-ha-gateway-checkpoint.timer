@@ -3,8 +3,8 @@ Description=Timer — Hermes HA gateway Postgres checkpoint every 5 min
 
 [Timer]
 OnCalendar=*:0/5
-AccuracySec=30s
-RandomizedDelaySec=15s
+AccuracySec=5s
+RandomizedDelaySec=0
 Persistent=true
 Unit=hermes-ha-gateway-checkpoint.service
 
