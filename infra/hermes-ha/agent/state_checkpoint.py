@@ -57,14 +57,22 @@ def checkpoint_work_root(config: dict[str, Any]) -> Path:
     return checkpoint_root(config)
 
 
+def rclone_bin() -> str:
+    discovered = shutil.which("rclone")
+    if discovered:
+        return discovered
+    user_install = Path.home() / ".local" / "bin" / "rclone"
+    if user_install.is_file() and os.access(user_install, os.X_OK):
+        return str(user_install)
+    raise RuntimeError("rclone is required for state checkpoint transport")
+
+
 def checkpoint_restore_root(config: dict[str, Any]) -> Path:
     if checkpoint_transport(config) != "rclone":
         return checkpoint_root(config)
     root = runtime_dir(config) / "checkpoint-cache" / "hermes-state"
     root.mkdir(parents=True, exist_ok=True)
-    rclone = shutil.which("rclone")
-    if not rclone:
-        raise RuntimeError("rclone is required for state checkpoint transport")
+    rclone = rclone_bin()
     subprocess.run(
         [rclone, "sync", checkpoint_remote(config), str(root)],
         check=True,
@@ -73,9 +81,7 @@ def checkpoint_restore_root(config: dict[str, Any]) -> Path:
 
 
 def remote_manifest(config: dict[str, Any]) -> dict[str, Any] | None:
-    rclone = shutil.which("rclone")
-    if not rclone:
-        raise RuntimeError("rclone is required for state checkpoint transport")
+    rclone = rclone_bin()
     proc = subprocess.run(
         [rclone, "cat", f"{checkpoint_remote(config)}/manifest.json"],
         text=True,
@@ -97,9 +103,7 @@ def publish_remote(
     manifest: dict[str, Any],
     previous: dict[str, Any] | None,
 ) -> None:
-    rclone = shutil.which("rclone")
-    if not rclone:
-        raise RuntimeError("rclone is required for state checkpoint transport")
+    rclone = rclone_bin()
     remote = checkpoint_remote(config)
     for name in manifest["parts"]:
         subprocess.run([rclone, "copyto", str(root / name), f"{remote}/{name}"], check=True)

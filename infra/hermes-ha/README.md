@@ -46,6 +46,36 @@ python3 ~/hermes-ha/scripts/csapi-capacity-smoke.py --slots 6
 Gateway PG timer 使用固定 `OnCalendar`，一次 dump 失败不会让后续调度消失。
 oneshot 设 4 分钟运行上限和 256 MiB 内存上限。独立 watchdog 每分钟检查
 manifest、dump 大小及年龄；默认超过 600 秒告警，恢复后发送恢复通知。
+checkpoint 的 rclone transport 先查 systemd `PATH`，再查用户安装路径
+`~/.local/bin/rclone`，且只接受可执行文件。
+
+## Gateway 版本冷备同步
+
+`vps-band` 的 `hermes-ha-gateway-version-sync.timer` 每 12 小时读取
+`vps-dmit` **运行中** `infra-app-1` 的 OCI revision，而不是跟随
+`latest` 或 `main`。同步必须同时通过：
+
+- 主容器 healthy，OCI source/revision 合法，主源码工作树 clean 且 HEAD 与
+  运行 revision 一致，并在稳定窗口内未变化；
+- GitHub commit 可获取、签名 verified，且已在 `main` 或以该 merge commit
+  合并到 `main`；
+- `git archive` 内嵌 commit 与 SHA-256 校验通过；
+- band 仍为 standby、没有 queued/running run；
+- band 自己的 `~/cursor-gateway/.env` 已预置且为 0600。同步器永不从主节点
+  复制 `.env`、token、密钥或运行状态。
+
+变更时先构建 candidate，再做 Compose/配置预检，并在 checkpoint 的临时
+数据库上执行迁移兼容检查；随后只重建 app（以及显式配置的 runner unit）。
+本机健康必须为 200；外部 route 在 Cloudflare Access 保护下可按配置接受
+200/401/403。健康或路由验收失败会恢复旧 image、Compose、env 备份和本机 PG checkpoint。
+缺少本机 env、主不可达、dirty/unmerged/未签名 revision、active failover
+都会 fail closed，保留原版本并经既有 Hermes HA Telegram 入口告警。
+
+```bash
+hermes-ha gateway-version-sync status
+hermes-ha gateway-version-sync sync
+systemctl --user list-timers hermes-ha-gateway-version-sync.timer
+```
 
 ## 目录
 
@@ -71,6 +101,7 @@ hermes-ha failback --confirm
 hermes-ha dns show|to-band|to-dmit [--dry-run]
 hermes-ha evaluate          # band：metrics / timer
 hermes-ha checkpoint-watchdog
+hermes-ha gateway-version-sync sync|status
 hermes-ha accept-p0 --node dmit|band
 ```
 

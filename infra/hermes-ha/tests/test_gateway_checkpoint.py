@@ -93,6 +93,19 @@ class GatewayCheckpointTests(unittest.TestCase):
                 gateway_checkpoint.create_checkpoint(self.config)
         self.assertFalse((gateway_checkpoint.checkpoint_dir(self.config) / "manifest.json").exists())
 
+    def test_rclone_falls_back_to_executable_user_install(self) -> None:
+        binary = self.root / ".local" / "bin" / "rclone"
+        binary.parent.mkdir(parents=True)
+        binary.write_text("#!/bin/sh\n", encoding="utf-8")
+        binary.chmod(0o700)
+        with mock.patch.dict("os.environ", {"HOME": str(self.root)}), mock.patch.object(
+            gateway_checkpoint.shutil, "which", return_value=None
+        ):
+            self.assertEqual(gateway_checkpoint.rclone_bin(), str(binary))
+            binary.chmod(0o600)
+            with self.assertRaisesRegex(RuntimeError, "rclone is required"):
+                gateway_checkpoint.rclone_bin()
+
     def test_rclone_publishes_dump_before_manifest(self) -> None:
         config = dict(self.config)
         config["gateway_checkpoint"] = {
