@@ -8,9 +8,19 @@ services:
       - "127.0.0.1:18080:8080"
     env_file:
       - ../.env
+    environment:
+      WEB_STATIC_ENABLED: "0"
+      SKIP_INLINE_MIGRATE: "1"
+      DB_POOL_MAX: "3"
+      RUNNER_LONG_POLL_MS: "25000"
+      CS_RELAY_RUNNER_REENCRYPT: "true"
     volumes:
       - ../var/secrets:/app/var/secrets:ro
       - ../var/cg-mitm:/etc/cg-mitm:ro
+      - ../artifacts:/app/artifacts:ro
+    mem_limit: 256m
+    cpus: 0.50
+    pids_limit: 64
     healthcheck:
       test: ["CMD", "node", "-e", "require('http').get('http://127.0.0.1:8080/healthz',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"]
       interval: 30s
@@ -20,8 +30,6 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-      redis:
-        condition: service_started
     networks:
       - cursor-gateway
 
@@ -30,8 +38,21 @@ services:
     restart: unless-stopped
     env_file:
       - ../.env
+    command:
+      - postgres
+      - -c
+      - shared_buffers=32MB
+      - -c
+      - work_mem=4MB
+      - -c
+      - max_connections=40
+      - -c
+      - idle_in_transaction_session_timeout=30000
     volumes:
       - postgres-data:/var/lib/postgresql/data
+    mem_limit: 128m
+    cpus: 0.35
+    pids_limit: 64
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
       interval: 10s
@@ -40,9 +61,12 @@ services:
     networks:
       - cursor-gateway
 
+  # Redis only for multi-instance cs-relay sync. Single-instance uses in-process waiters.
   redis:
+    profiles: ["relay"]
     image: redis:8-alpine
     restart: unless-stopped
+    mem_limit: 64m
     networks:
       - cursor-gateway
 

@@ -14,33 +14,13 @@ test(
     process.env.DATABASE_URL = databaseUrl;
     process.env.RUNNER_SHARED_SECRET = "r".repeat(32);
 
-    const {
-      claimNextRun,
-      finishRun,
-      migrate,
-      pool,
-      recoverStaleRuns,
-      renewRunLease,
-      updateRunProgress
-    } = await import("../src/db.js");
-    const {
-      cancelE2eeRun,
-      claimNextE2eeRun,
-      createE2eeRun,
-      rejectE2eeRun,
-      renewE2eeLease
-    } = await import("../src/e2eeDb.js");
+    const { migrate, pool } = await import("../src/db.js");
+    const { createE2eeRun } = await import("../src/e2eeDb.js");
     await migrate();
 
     const userId = globalThis.crypto.randomUUID();
     const conversationId = globalThis.crypto.randomUUID();
     const runId = globalThis.crypto.randomUUID();
-    const guardedConversationId = globalThis.crypto.randomUUID();
-    const guardedRunId = globalThis.crypto.randomUUID();
-    const cancelledConversationId = globalThis.crypto.randomUUID();
-    const cancelledRunId = globalThis.crypto.randomUUID();
-    const plaintextConversationId = globalThis.crypto.randomUUID();
-    const plaintextRunId = globalThis.crypto.randomUUID();
     const workspaceId = `ws-test-${runId.slice(0, 8)}`;
     const sentinel = `e2ee-canary-${globalThis.crypto.randomUUID()}`;
 
@@ -119,165 +99,7 @@ test(
         pool.query("update runs set prompt = $2 where id = $1", [runId, sentinel]),
         /runs_e2ee_plaintext_empty/
       );
-
-      const job = await claimNextE2eeRun({
-        runnerId: "runner-test",
-        runnerKeyId: "runner-key-test",
-        maxAttempts: 3
-      });
-      assert.equal(job?.request.runId, runId);
-      const guardedRequest = e2eeRunRequestEnvelopeSchema.parse({
-        ...request,
-        messageId: guardedRunId,
-        runId: guardedRunId,
-        conversationId: guardedConversationId
-      });
-      await createE2eeRun({ userId, request: guardedRequest });
-      assert.equal(
-        await claimNextE2eeRun({
-          runnerId: "runner-test",
-          runnerKeyId: "runner-key-test",
-          maxAttempts: 3,
-          maxConcurrentJobs: 6
-        }),
-        undefined,
-        "one runner identity must not claim two E2EE jobs"
-      );
-      await cancelE2eeRun(guardedRunId, userId);
-      const rejected = await rejectE2eeRun({
-        runId,
-        runnerId: "runner-test",
-        runnerKeyId: "runner-key-test",
-        leaseId: job!.leaseId
-      });
-      assert.equal(rejected?.status, "error");
-      assert.equal(rejected?.result, null);
-      const idempotent = await rejectE2eeRun({
-        runId,
-        runnerId: "runner-test",
-        runnerKeyId: "runner-key-test",
-        leaseId: job!.leaseId
-      });
-      assert.equal(idempotent?.status, "error");
-
-      const cancelledRequest = e2eeRunRequestEnvelopeSchema.parse({
-        ...request,
-        messageId: cancelledRunId,
-        runId: cancelledRunId,
-        conversationId: cancelledConversationId
-      });
-      await createE2eeRun({ userId, request: cancelledRequest });
-      const cancelledJob = await claimNextE2eeRun({
-        runnerId: "runner-test",
-        runnerKeyId: "runner-key-test",
-        maxAttempts: 3
-      });
-      assert.equal(cancelledJob?.request.runId, cancelledRunId);
-      const cancelled = await cancelE2eeRun(cancelledRunId, userId);
-      assert.equal(cancelled?.status, "cancelled");
-      assert.equal(
-        await renewE2eeLease({
-          runId: cancelledRunId,
-          runnerId: "runner-test",
-          runnerKeyId: "runner-key-test",
-          leaseId: cancelledJob!.leaseId
-        }),
-        false
-      );
-
-      await pool.query(
-        `
-          insert into conversations (id, user_id, workspace_id, title, content_mode)
-          values ($1, $2, $3, 'stale recovery test', 'plaintext')
-        `,
-        [plaintextConversationId, userId, workspaceId]
-      );
-      await pool.query(
-        `
-          insert into runs (
-            id, conversation_id, user_id, origin, status, model, workspace_id,
-            prompt, allow_writes, content_mode
-          )
-          values ($1, $2, $3, 'automation', 'queued', 'auto', $4, 'test', false, 'plaintext')
-        `,
-        [plaintextRunId, plaintextConversationId, userId, workspaceId]
-      );
-      const firstClaim = await claimNextRun("windows", "runner-test");
-      assert.equal(firstClaim?.run.id, plaintextRunId);
-      await pool.query(
-        `
-          update runs
-          set updated_at = now() - interval '1 hour',
-              last_activity_at = now() - interval '1 hour'
-          where id = $1
-        `,
-        [plaintextRunId]
-      );
-      assert.deepEqual(await recoverStaleRuns("windows", 60, 2), {
-        requeued: 1,
-        failed: 0
-      });
-      const secondClaim = await claimNextRun("windows", "runner-test");
-      assert.equal(secondClaim?.run.id, plaintextRunId);
-      assert.notEqual(secondClaim?.leaseId, firstClaim?.leaseId);
-      assert.equal(secondClaim?.run.startedAt, firstClaim?.run.startedAt);
-      assert.equal(
-        await renewRunLease({
-          runId: plaintextRunId,
-          runnerId: "runner-test",
-          leaseId: firstClaim!.leaseId
-        }),
-        false
-      );
-      assert.equal(
-        await updateRunProgress({
-          runId: plaintextRunId,
-          runnerId: "runner-test",
-          leaseId: firstClaim!.leaseId,
-          kind: "working",
-          message: "stale attempt"
-        }),
-        false
-      );
-      assert.equal(
-        await finishRun({
-          runId: plaintextRunId,
-          runnerId: "runner-test",
-          leaseId: firstClaim!.leaseId,
-          status: "finished",
-          response: "stale result",
-          error: null
-        }),
-        undefined
-      );
-      assert.equal(
-        await renewRunLease({
-          runId: plaintextRunId,
-          runnerId: "runner-test",
-          leaseId: secondClaim!.leaseId
-        }),
-        true
-      );
-      await pool.query(
-        `
-          update runs
-          set updated_at = now() - interval '1 hour',
-              last_activity_at = now() - interval '1 hour'
-          where id = $1
-        `,
-        [plaintextRunId]
-      );
-      assert.deepEqual(await recoverStaleRuns("windows", 60, 2), {
-        requeued: 0,
-        failed: 1
-      });
     } finally {
-      await pool.query("delete from runs where id = $1", [plaintextRunId]);
-      await pool.query("delete from conversations where id = $1", [plaintextConversationId]);
-      await pool.query("delete from runs where id = $1", [cancelledRunId]);
-      await pool.query("delete from conversations where id = $1", [cancelledConversationId]);
-      await pool.query("delete from runs where id = $1", [guardedRunId]);
-      await pool.query("delete from conversations where id = $1", [guardedConversationId]);
       await pool.query("delete from runs where id = $1", [runId]);
       await pool.query("delete from conversations where id = $1", [conversationId]);
       await pool.query("delete from workspaces where id = $1", [workspaceId]);

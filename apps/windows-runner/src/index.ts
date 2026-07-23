@@ -4,10 +4,8 @@ import { basename } from "node:path";
 import type {
   E2eeProgressEnvelope,
   E2eeResultEnvelope,
-  E2eeRunRejectionCode,
   E2eeRunnerJob,
   PublicWorkspace,
-  RunnerClaimedJob,
   RunnerJobProgress,
   RunnerJobResult,
   Workspace
@@ -15,7 +13,7 @@ import type {
 import {
   E2EE_PROTOCOL,
   e2eeRunnerJobSchema,
-  runnerClaimedJobSchema
+  runnerJobSchema
 } from "@cursor-gateway/shared";
 import { config } from "./config.js";
 import { listCursorModels, runCursorJob } from "./cursorAgent.js";
@@ -32,17 +30,16 @@ import { processRecoveryPairingCycle } from "./recoveryPairing.js";
 import { processRunnerCodePairingCycle } from "./runnerCodePairing.js";
 import { trustRootSas } from "@cursor-gateway/e2ee";
 import { loadTrustRoots as loadRunnerTrustRoots } from "./runnerCert.js";
-import { SinglePermit, workerQueueOrder } from "./workerPool.js";
 
 const GATEWAY_REQUEST_TIMEOUT_MS = 30_000;
+/** Claim long-poll may hold up to ~25s server-side; allow client headroom. */
+const GATEWAY_CLAIM_TIMEOUT_MS = 35_000;
 const HEARTBEAT_INTERVAL_MS = 60_000;
 const MAX_CONSECUTIVE_HEARTBEAT_FAILURES = 5;
 const ERROR_BACKOFF_MS = Math.min(config.pollIntervalMs * 5, 15_000);
 const PROGRESS_THROTTLE_MS = 1_000;
-const MAX_PROGRESS_MESSAGE_CHARS = 800;
 const RESULT_SUBMIT_ATTEMPTS = 5;
-const E2EE_LEASE_RENEW_INTERVAL_MS = 60_000;
-const LEGACY_LEASE_RENEW_INTERVAL_MS = 30_000;
+const LEASE_RENEW_INTERVAL_MS = 5 * 60_000;
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -80,7 +77,11 @@ function publicWorkspaces(workspaces: Workspace[]): PublicWorkspace[] {
   return workspaces.map(({ id, label, writable }) => ({ id, label, writable }));
 }
 
-async function gatewayFetch(path: string, init: RequestInit = {}) {
+async function gatewayFetch(
+  path: string,
+  init: RequestInit = {},
+  options?: { timeoutMs?: number }
+) {
   const headers: Record<string, string> = {
     authorization: `Bearer ${config.sharedSecret}`,
     ...(init.body ? { "content-type": "application/json" } : {}),
@@ -93,8 +94,9 @@ async function gatewayFetch(path: string, init: RequestInit = {}) {
     ...(init.headers as Record<string, string> | undefined)
   };
 
+  const timeoutMs = options?.timeoutMs ?? GATEWAY_REQUEST_TIMEOUT_MS;
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), GATEWAY_REQUEST_TIMEOUT_MS);
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
     const response = await fetch(`${config.gatewayUrl}${path}`, {
@@ -113,7 +115,7 @@ async function gatewayFetch(path: string, init: RequestInit = {}) {
     return response;
   } catch (error) {
     if (error instanceof Error && error.name === "AbortError") {
-      throw new Error(`gateway request ${path} timed out after ${GATEWAY_REQUEST_TIMEOUT_MS}ms`);
+      throw new Error(`gateway request ${path} timed out after ${timeoutMs}ms`);
     }
     throw error;
   } finally {
@@ -153,7 +155,6 @@ async function heartbeat(state?: RunnerE2eeState) {
       method: "POST",
       body: JSON.stringify({
         runnerId: config.runnerId,
-        maxConcurrentJobs: config.maxConcurrentJobs,
         models,
         workspaces
       })
@@ -167,59 +168,54 @@ async function heartbeat(state?: RunnerE2eeState) {
 }
 
 async function claimJob() {
-  const response = await gatewayFetch("/api/runner/jobs/claim", {
-    method: "POST",
-    body: JSON.stringify({ runnerId: config.runnerId })
-  });
+  const response = await gatewayFetch(
+    "/api/runner/jobs/claim",
+    { method: "POST" },
+    { timeoutMs: GATEWAY_CLAIM_TIMEOUT_MS }
+  );
   if (response.status === 204) return undefined;
   if (!response.ok) throw new Error(`claim failed: ${response.status} ${await response.text()}`);
   const payload = (await response.json()) as { job?: unknown };
-  return payload.job ? runnerClaimedJobSchema.parse(payload.job) : undefined;
+  return payload.job ? runnerJobSchema.parse(payload.job) : undefined;
 }
 
 async function claimE2eeJob(state: RunnerE2eeState): Promise<E2eeRunnerJob | undefined> {
-  const response = await gatewayFetch("/api/runner/e2ee/v1/jobs/claim", {
-    method: "POST",
-    body: JSON.stringify({
-      runnerId: config.runnerId,
-      runnerKeyId: state.encryptionKey.keyId,
-      protocols: [E2EE_PROTOCOL]
-    })
-  });
+  const response = await gatewayFetch(
+    "/api/runner/e2ee/v1/jobs/claim",
+    {
+      method: "POST",
+      body: JSON.stringify({
+        runnerId: config.runnerId,
+        runnerKeyId: state.encryptionKey.keyId,
+        protocols: [E2EE_PROTOCOL]
+      })
+    },
+    { timeoutMs: GATEWAY_CLAIM_TIMEOUT_MS }
+  );
   if (response.status === 204) return undefined;
   if (!response.ok) throw new Error(`e2ee claim failed with status ${response.status}`);
   const payload = (await response.json()) as { job?: unknown };
   return payload.job ? e2eeRunnerJobSchema.parse(payload.job) : undefined;
 }
 
-async function submitResult(job: RunnerClaimedJob, result: RunnerJobResult) {
+async function submitResult(result: RunnerJobResult) {
   const response = await gatewayFetch(`/api/runner/jobs/${result.runId}/result`, {
     method: "POST",
-    body: JSON.stringify({
-      ...result,
-      runnerId: config.runnerId,
-      leaseId: job.leaseId
-    })
+    body: JSON.stringify(result)
   });
   if (!response.ok) {
     throw new Error(`result submit failed: ${response.status} ${await response.text()}`);
   }
 }
 
-async function submitProgress(job: RunnerClaimedJob, progress: RunnerJobProgress) {
+async function submitProgress(progress: RunnerJobProgress) {
   const response = await gatewayFetch(`/api/runner/jobs/${progress.runId}/progress`, {
     method: "POST",
-    body: JSON.stringify({
-      ...progress,
-      runnerId: config.runnerId,
-      leaseId: job.leaseId
-    })
+    body: JSON.stringify(progress)
   });
-  if (response.status === 409) return false;
-  if (!response.ok) {
+  if (!response.ok && response.status !== 409) {
     throw new Error(`progress submit failed: ${response.status} ${await response.text()}`);
   }
-  return true;
 }
 
 async function submitE2eeProgress(
@@ -233,11 +229,9 @@ async function submitE2eeProgress(
       body: JSON.stringify({ leaseId, envelope })
     }
   );
-  if (response.status === 409) return false;
-  if (!response.ok) {
+  if (!response.ok && response.status !== 409) {
     throw new Error(`e2ee progress submit failed with status ${response.status}`);
   }
-  return true;
 }
 
 async function submitE2eeResult(
@@ -256,33 +250,7 @@ async function submitE2eeResult(
   }
 }
 
-async function submitE2eeRejection(
-  job: E2eeRunnerJob,
-  state: RunnerE2eeState,
-  code: E2eeRunRejectionCode
-) {
-  const response = await gatewayFetch(
-    `/api/runner/e2ee/v1/jobs/${job.request.runId}/reject`,
-    {
-      method: "POST",
-      body: JSON.stringify({
-        runnerId: config.runnerId,
-        runnerKeyId: state.encryptionKey.keyId,
-        leaseId: job.leaseId,
-        code
-      })
-    }
-  );
-  if (!response.ok) {
-    throw new Error(`e2ee rejection submit failed with status ${response.status}`);
-  }
-}
-
-function startE2eeLeaseRenewal(
-  job: E2eeRunnerJob,
-  state: RunnerE2eeState,
-  abortController: AbortController
-) {
+function startE2eeLeaseRenewal(job: E2eeRunnerJob, state: RunnerE2eeState) {
   let stopped = false;
   let timer: ReturnType<typeof setTimeout> | undefined;
   const renew = async () => {
@@ -301,66 +269,25 @@ function startE2eeLeaseRenewal(
       );
       if (!response.ok) {
         console.warn(`Encrypted lease renewal failed with status ${response.status}`);
-        if (response.status === 404 || response.status === 409) {
-          abortController.abort();
-        }
       }
     } catch {
       console.warn("Encrypted lease renewal failed");
     } finally {
-      if (!stopped) timer = setTimeout(() => void renew(), E2EE_LEASE_RENEW_INTERVAL_MS);
+      if (!stopped) timer = setTimeout(() => void renew(), LEASE_RENEW_INTERVAL_MS);
     }
   };
-  timer = setTimeout(() => void renew(), E2EE_LEASE_RENEW_INTERVAL_MS);
+  timer = setTimeout(() => void renew(), LEASE_RENEW_INTERVAL_MS);
   return () => {
     stopped = true;
     if (timer) clearTimeout(timer);
   };
 }
 
-function startLegacyLeaseRenewal(
-  job: RunnerClaimedJob,
-  abortController: AbortController
-) {
-  let stopped = false;
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const renew = async () => {
-    if (stopped) return;
-    try {
-      const response = await gatewayFetch(`/api/runner/jobs/${job.runId}/lease`, {
-        method: "POST",
-        body: JSON.stringify({
-          runnerId: config.runnerId,
-          leaseId: job.leaseId
-        })
-      });
-      if (!response.ok) {
-        console.warn(`Legacy lease renewal failed with status ${response.status} for ${job.runId}`);
-        if (response.status === 404 || response.status === 409) {
-          abortController.abort();
-        }
-      }
-    } catch {
-      console.warn(`Legacy lease renewal failed for ${job.runId}`);
-    } finally {
-      if (!stopped) timer = setTimeout(() => void renew(), LEGACY_LEASE_RENEW_INTERVAL_MS);
-    }
-  };
-  timer = setTimeout(() => void renew(), LEGACY_LEASE_RENEW_INTERVAL_MS);
-  return () => {
-    stopped = true;
-    if (timer) clearTimeout(timer);
-  };
-}
-
-async function submitResultWithRetry(
-  job: RunnerClaimedJob,
-  result: RunnerJobResult
-) {
+async function submitResultWithRetry(result: RunnerJobResult) {
   let lastError: unknown;
   for (let attempt = 1; attempt <= RESULT_SUBMIT_ATTEMPTS; attempt += 1) {
     try {
-      await submitResult(job, result);
+      await submitResult(result);
       return;
     } catch (error) {
       lastError = error;
@@ -384,41 +311,6 @@ async function submitE2eeResultWithRetry(
       lastError = error;
       console.error(
         `Encrypted result submit attempt ${attempt}/${RESULT_SUBMIT_ATTEMPTS} failed`
-      );
-      if (attempt < RESULT_SUBMIT_ATTEMPTS) await sleep(ERROR_BACKOFF_MS);
-    }
-  }
-  throw lastError;
-}
-
-function e2eeRejectionCode(error: unknown): E2eeRunRejectionCode {
-  const code = error instanceof Error ? error.message : "";
-  if (code === "e2ee_client_not_paired") return "client_not_paired";
-  if (
-    code === "e2ee_wrong_runner" ||
-    code === "e2ee_workspace_not_configured_locally" ||
-    code === "e2ee_workspace_read_only_locally"
-  ) {
-    return "runner_state_mismatch";
-  }
-  if (code.startsWith("e2ee_")) return "invalid_request";
-  return "processor_failed";
-}
-
-async function submitE2eeRejectionWithRetry(
-  job: E2eeRunnerJob,
-  state: RunnerE2eeState,
-  code: E2eeRunRejectionCode
-) {
-  let lastError: unknown;
-  for (let attempt = 1; attempt <= RESULT_SUBMIT_ATTEMPTS; attempt += 1) {
-    try {
-      await submitE2eeRejection(job, state, code);
-      return;
-    } catch (error) {
-      lastError = error;
-      console.error(
-        `Encrypted rejection submit attempt ${attempt}/${RESULT_SUBMIT_ATTEMPTS} failed`
       );
       if (attempt < RESULT_SUBMIT_ATTEMPTS) await sleep(ERROR_BACKOFF_MS);
     }
@@ -466,142 +358,107 @@ async function runLegacyJob(
   console.log(`Worker ${workerId} running legacy job ${job.runId} with model ${job.model}`);
   let lastProgressAt = 0;
   let lastProgress = "";
-  const abortController = new AbortController();
   const reportProgress = async (progress: Omit<RunnerJobProgress, "runId">) => {
-    const message = progress.message.trim().slice(0, MAX_PROGRESS_MESSAGE_CHARS);
-    if (!message) return;
+    const message = progress.message.slice(-200_000);
     const fingerprint = `${progress.kind}:${message}`;
     const now = Date.now();
     if (fingerprint === lastProgress || now - lastProgressAt < PROGRESS_THROTTLE_MS) return;
     lastProgress = fingerprint;
     lastProgressAt = now;
     try {
-      const accepted = await submitProgress(job, {
-        runId: job.runId,
-        ...progress,
-        message
-      });
-      if (!accepted) abortController.abort();
+      await submitProgress({ runId: job.runId, ...progress, message });
     } catch {
       console.warn(`Failed to report legacy progress for ${job.runId}`);
     }
   };
   await reportProgress({ kind: "working", message: "Starting the model..." });
-  const stopLeaseRenewal = startLegacyLeaseRenewal(job, abortController);
-  try {
-    const result = await runCursorJob(job, reportProgress, abortController.signal);
-    if (abortController.signal.aborted) {
-      console.warn(`Worker ${workerId} stopped legacy run ${job.runId} after lease loss`);
-      return;
-    }
-    await submitResultWithRetry(job, result);
-    console.log(`Worker ${workerId} completed legacy run ${job.runId} with ${result.status}`);
-  } finally {
-    stopLeaseRenewal();
-  }
+  const result = await runCursorJob(job, reportProgress);
+  await submitResultWithRetry(result);
+  console.log(`Worker ${workerId} completed legacy run ${job.runId} with ${result.status}`);
 }
 
-async function runE2eeJob(
-  workerId: number,
-  encryptedJob: E2eeRunnerJob,
-  state: RunnerE2eeState,
-  processor: E2eeJobProcessor
-) {
-  console.log(
-    `Worker ${workerId} running encrypted job ${encryptedJob.request.runId}`
-  );
-  let lastProgressAt = 0;
-  const abortController = new AbortController();
-  const stopLeaseRenewal = startE2eeLeaseRenewal(
-    encryptedJob,
-    state,
-    abortController
-  );
-  try {
-    const encryptedResult = await processor.process(
-      encryptedJob,
-      async (envelope) => {
-        const now = Date.now();
-        if (now - lastProgressAt < PROGRESS_THROTTLE_MS) return;
-        lastProgressAt = now;
-        const accepted = await submitE2eeProgress(
-          encryptedJob.leaseId,
-          envelope
-        );
-        if (!accepted) abortController.abort();
-      },
-      abortController.signal
-    );
-    if (abortController.signal.aborted) {
-      console.warn(
-        `Worker ${workerId} stopped encrypted run ${encryptedJob.request.runId} after lease loss`
-      );
-      return;
-    }
-    await submitE2eeResultWithRetry(encryptedJob.leaseId, encryptedResult);
-    console.log(
-      `Worker ${workerId} completed encrypted run ${encryptedJob.request.runId} with ${encryptedResult.status}`
-    );
-  } catch (error) {
-    if (!abortController.signal.aborted) {
-      const rejection = e2eeRejectionCode(error);
-      console.error(
-        `Worker ${workerId} rejected encrypted run ${encryptedJob.request.runId}: ${rejection}`
-      );
-      await submitE2eeRejectionWithRetry(encryptedJob, state, rejection);
-    }
-  } finally {
-    stopLeaseRenewal();
-  }
-}
-
-async function sharedJobLoop(
+async function jobLoop(
   workerId: number,
   state: RunnerE2eeState | undefined,
-  processor: E2eeJobProcessor | undefined,
-  e2eePermit: SinglePermit
+  processor: E2eeJobProcessor | undefined
 ) {
-  let iteration = 0;
   for (;;) {
     try {
-      let claimed = false;
-      const order = workerQueueOrder({
-        workerId,
-        iteration,
-        e2eeEnabled: Boolean(state && processor),
-        legacyEnabled: config.legacyEnabled
-      });
-      iteration += 1;
-      for (const queue of order) {
-        if (queue === "e2ee" && state && processor) {
-          const release = e2eePermit.tryAcquire();
-          if (!release) continue;
-          try {
-            const encryptedJob = await claimE2eeJob(state);
-            if (encryptedJob) {
-              await runE2eeJob(workerId, encryptedJob, state, processor);
-              claimed = true;
+      if (config.e2eeEnabled) {
+        if (!state || !processor) throw new Error("e2ee_processor_not_initialized");
+        const encryptedJob = await claimE2eeJob(state);
+        if (encryptedJob) {
+          console.log(
+            `Worker ${workerId} running encrypted job ${encryptedJob.request.runId}`
+          );
+          let lastProgressAt = 0;
+          let pendingProgress: E2eeProgressEnvelope | undefined;
+          let progressTimer: ReturnType<typeof setTimeout> | undefined;
+          let progressChain = Promise.resolve();
+          const flushProgress = async () => {
+            if (progressTimer) {
+              clearTimeout(progressTimer);
+              progressTimer = undefined;
             }
+            const envelope = pendingProgress;
+            pendingProgress = undefined;
+            if (!envelope) return;
+            lastProgressAt = Date.now();
+            progressChain = progressChain
+              .then(() => submitE2eeProgress(encryptedJob.leaseId, envelope))
+              .catch(() => {
+                console.warn(`Failed to report encrypted progress for ${encryptedJob.request.runId}`);
+              });
+            await progressChain;
+          };
+          const queueProgress = (envelope: E2eeProgressEnvelope) => {
+            pendingProgress = envelope;
+            const remaining = PROGRESS_THROTTLE_MS - (Date.now() - lastProgressAt);
+            if (remaining <= 0) {
+              void flushProgress();
+            } else if (!progressTimer) {
+              progressTimer = setTimeout(() => void flushProgress(), remaining);
+            }
+          };
+          const stopLeaseRenewal = startE2eeLeaseRenewal(encryptedJob, state);
+          let encryptedResult: E2eeResultEnvelope;
+          try {
+            encryptedResult = await processor.process(
+              encryptedJob,
+              async (envelope) => {
+                queueProgress(envelope);
+              }
+            );
+            await flushProgress();
+            await submitE2eeResultWithRetry(encryptedJob.leaseId, encryptedResult);
           } finally {
-            release();
+            if (progressTimer) clearTimeout(progressTimer);
+            stopLeaseRenewal();
           }
-          if (claimed) break;
-        } else if (queue === "legacy") {
-          const legacyJob = await claimJob();
-          if (legacyJob) {
-            await runLegacyJob(workerId, legacyJob);
-            claimed = true;
-            break;
-          }
+          console.log(
+            `Worker ${workerId} completed encrypted run ${encryptedJob.request.runId} with ${encryptedResult.status}`
+          );
+          continue;
         }
       }
-      if (!claimed) await sleep(config.pollIntervalMs);
+
+      if (config.legacyEnabled) {
+        const legacyJob = await claimJob();
+        if (legacyJob) {
+          await runLegacyJob(workerId, legacyJob);
+          continue;
+        }
+      }
+
+      // Long-poll already waited server-side; only back off on errors.
+      // Tiny sleep avoids a hot loop if the server has long-poll disabled (0ms).
+      await sleep(50);
     } catch (error) {
       const code =
         error instanceof Error && /^e2ee_[a-z0-9_]+$/.test(error.message)
           ? error.message
           : "runner_job_failed";
-      console.error(`Shared worker ${workerId} loop failure: ${code}`);
+      console.error(`Worker ${workerId} job failure: ${code}`);
       await sleep(ERROR_BACKOFF_MS);
     }
   }
@@ -640,72 +497,47 @@ function installProcessGuards() {
 async function pairingLoop(state: RunnerE2eeState) {
   for (;;) {
     try {
-      await processSecureWebPairingCycle({
-        state,
-        gatewayFetch
-      });
+      const batchResponse = await gatewayFetch(
+        "/api/runner/e2ee/v1/pairings/claim-batch",
+        {
+          method: "POST",
+          body: JSON.stringify({ runnerId: config.runnerId })
+        },
+        { timeoutMs: GATEWAY_CLAIM_TIMEOUT_MS }
+      );
+      if (batchResponse.status === 204) {
+        await sleep(50);
+        continue;
+      }
+      if (batchResponse.status === 404 || batchResponse.status === 405) {
+        // Older gateways without claim-batch — fall back to serial cycles.
+        await processSecureWebPairingCycle({ state, gatewayFetch });
+        await processCsAuthCycle({ state, gatewayFetch });
+        await processWebauthnPairingCycle({ state, gatewayFetch });
+        await processDeviceApprovalCycle({ state, gatewayFetch });
+        await processRecoveryPairingCycle({ state, gatewayFetch });
+        await processRunnerCodePairingCycle({ state, gatewayFetch });
+        await sleep(Math.max(config.pollIntervalMs, 3_000));
+        continue;
+      }
+      if (!batchResponse.ok) {
+        throw new Error(`pairing batch claim failed: ${batchResponse.status}`);
+      }
+      // Batch claim already transitioned rows; process each non-null item via
+      // the existing cycle helpers (they re-claim / no-op when empty).
+      await processSecureWebPairingCycle({ state, gatewayFetch });
+      await processCsAuthCycle({ state, gatewayFetch });
+      await processWebauthnPairingCycle({ state, gatewayFetch });
+      await processDeviceApprovalCycle({ state, gatewayFetch });
+      await processRecoveryPairingCycle({ state, gatewayFetch });
+      await processRunnerCodePairingCycle({ state, gatewayFetch });
     } catch (error) {
       console.warn(
-        "Secure-web pairing cycle failed:",
+        "Pairing batch cycle failed:",
         error instanceof Error ? error.message : "unknown"
       );
+      await sleep(Math.max(config.pollIntervalMs, 3_000));
     }
-    try {
-      await processCsAuthCycle({
-        state,
-        gatewayFetch
-      });
-    } catch (error) {
-      console.warn(
-        "CS device auth cycle failed:",
-        error instanceof Error ? error.message : "unknown"
-      );
-    }
-    try {
-      await processWebauthnPairingCycle({
-        state,
-        gatewayFetch
-      });
-    } catch (error) {
-      console.warn(
-        "Passkey pairing cycle failed:",
-        error instanceof Error ? error.message : "unknown"
-      );
-    }
-    try {
-      await processDeviceApprovalCycle({
-        state,
-        gatewayFetch
-      });
-    } catch (error) {
-      console.warn(
-        "Device approval cycle failed:",
-        error instanceof Error ? error.message : "unknown"
-      );
-    }
-    try {
-      await processRecoveryPairingCycle({
-        state,
-        gatewayFetch
-      });
-    } catch (error) {
-      console.warn(
-        "Recovery pairing cycle failed:",
-        error instanceof Error ? error.message : "unknown"
-      );
-    }
-    try {
-      await processRunnerCodePairingCycle({
-        state,
-        gatewayFetch
-      });
-    } catch (error) {
-      console.warn(
-        "Runner-code pairing cycle failed:",
-        error instanceof Error ? error.message : "unknown"
-      );
-    }
-    await sleep(Math.max(config.pollIntervalMs, 3_000));
   }
 }
 
@@ -740,19 +572,13 @@ async function main() {
     }
   }
 
-  const e2eePermit = new SinglePermit();
-  const workers = Array.from(
-    { length: config.maxConcurrentJobs },
-    (_, index) => sharedJobLoop(index + 1, state, processor, e2eePermit)
+  const workers = Array.from({ length: config.maxConcurrentJobs }, (_, index) =>
+    jobLoop(index + 1, state, processor)
   );
   console.log(
-    `Starting shared worker pool (slots=${workers.length}, ` +
-      `e2ee=${config.e2eeEnabled}, legacy=${config.legacyEnabled})`
+    `Starting ${workers.length} concurrent job workers (e2ee=${config.e2eeEnabled}, legacy=${config.legacyEnabled})`
   );
-  const loops: Array<Promise<void>> = [
-    heartbeatLoop(state),
-    ...workers
-  ];
+  const loops: Array<Promise<void>> = [heartbeatLoop(state), ...workers];
   if (state) {
     console.log(
       `Secure-web pairing enabled (mail=${config.pairingMailMode}, ttl=${config.pairingTtlSeconds}s, ` +

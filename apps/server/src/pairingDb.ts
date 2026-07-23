@@ -121,7 +121,11 @@ export async function createPairingStart(input: {
       `,
       [start.pairId, input.userId, JSON.stringify(start), expiresAt.toISOString()]
     );
-    return mapPairing(result.rows[0]);
+    const pairing = mapPairing(result.rows[0]);
+    const { notifyPairingQueued } = await import("./runWaiter.js");
+    // Wake all runners; claim still filters by runner_id / null.
+    notifyPairingQueued(pairing.runnerId ?? "");
+    return pairing;
   } catch (error) {
     if (
       error &&

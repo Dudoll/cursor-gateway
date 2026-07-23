@@ -2,9 +2,9 @@ import { z } from "zod";
 import { readFileSync } from "node:fs";
 import {
   CSAPI_DEFAULT_ABSOLUTE_TIMEOUT_MS,
-  CSAPI_DEFAULT_CALLER_WAIT_TIMEOUT_MS,
   CSAPI_DEFAULT_IDLE_TIMEOUT_MS,
-  CSAPI_DEFAULT_QUEUE_TIMEOUT_MS
+  CSAPI_DEFAULT_QUEUE_TIMEOUT_MS,
+  resolveCsapiCallerWaitTimeoutMs
 } from "./csapi/runTimeouts.js";
 
 const booleanEnv = (defaultValue: boolean) =>
@@ -25,6 +25,8 @@ const envSchema = z.object({
   SERVER_PORT: z.coerce.number().int().positive().default(8080),
   JWT_SECRET: z.string().min(32),
   DATABASE_URL: z.string().min(1),
+  DB_POOL_MAX: z.coerce.number().int().positive().max(20).default(3),
+  RUNNER_LONG_POLL_MS: z.coerce.number().int().nonnegative().max(60_000).default(25_000),
   REDIS_URL: z.string().optional(),
   ALLOWED_EMAILS: z.string().default(""),
   ALLOWED_CLOUDFLARE_AUD: z.string().default(""),
@@ -143,6 +145,8 @@ export const config = {
   port: parsed.SERVER_PORT,
   jwtSecret: parsed.JWT_SECRET,
   databaseUrl: parsed.DATABASE_URL,
+  dbPoolMax: parsed.DB_POOL_MAX,
+  runnerLongPollMs: parsed.RUNNER_LONG_POLL_MS,
   redisUrl: parsed.REDIS_URL,
   allowedEmails: new Set(splitCsv(parsed.ALLOWED_EMAILS).map((email) => email.toLowerCase())),
   allowedCloudflareAud: new Set(splitCsv(parsed.ALLOWED_CLOUDFLARE_AUD)),
@@ -199,10 +203,13 @@ export const config = {
     defaultModel: parsed.CSAPI_DEFAULT_MODEL.trim() || "auto",
     defaultWorkspaceId: parsed.CSAPI_DEFAULT_WORKSPACE_ID.trim(),
     maxConcurrencyPerKey: parsed.CSAPI_MAX_CONCURRENCY_PER_KEY,
-    callerWaitTimeoutMs:
-      parsed.CSAPI_CALLER_WAIT_TIMEOUT_MS ??
-      parsed.CSAPI_RUN_TIMEOUT_MS ??
-      CSAPI_DEFAULT_CALLER_WAIT_TIMEOUT_MS,
+    callerWaitTimeoutMs: resolveCsapiCallerWaitTimeoutMs({
+      requestedMs:
+        parsed.CSAPI_CALLER_WAIT_TIMEOUT_MS ??
+        parsed.CSAPI_RUN_TIMEOUT_MS,
+      queueTimeoutMs: parsed.CSAPI_QUEUE_TIMEOUT_MS,
+      absoluteTimeoutMs: parsed.CSAPI_ABSOLUTE_TIMEOUT_MS
+    }),
     queueTimeoutMs: parsed.CSAPI_QUEUE_TIMEOUT_MS,
     idleTimeoutMs: parsed.CSAPI_IDLE_TIMEOUT_MS,
     absoluteTimeoutMs: parsed.CSAPI_ABSOLUTE_TIMEOUT_MS,

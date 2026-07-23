@@ -22,6 +22,11 @@ STRICT_MODEL = "gpt-5.6-sol"
 STRICT_BASE_URL = "http://127.0.0.1:18080/v1"
 STRICT_API_KEY_ENV = "CURSOR_GATEWAY_CSAPI_KEY"
 STRICT_EFFECTIVE_CAPACITY = 6
+STRICT_REQUEST_TIMEOUT_SECONDS = 1860.0
+STRICT_TIMEOUT_ENV_VARS = (
+    "HERMES_API_TIMEOUT",
+    "HERMES_STREAM_READ_TIMEOUT",
+)
 _MAX_PROBE_BYTES = 1024 * 1024
 _PROFILE_LABEL_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
 _SERVICE_LABEL_PATTERN = re.compile(
@@ -139,6 +144,21 @@ def _strict_error(code: str, check: str) -> StrictRouteViolation:
     return StrictRouteViolation(
         json.dumps(payload, ensure_ascii=True, sort_keys=True)
     )
+
+
+def _assert_long_call_budget() -> None:
+    for name in STRICT_TIMEOUT_ENV_VARS:
+        raw = str(os.environ.get(name) or "").strip()
+        try:
+            timeout = float(raw)
+        except (TypeError, ValueError) as exc:
+            raise _strict_error(
+                "HSG_REQUEST_TIMEOUT_BUDGET_DRIFT", "timeout"
+            ) from exc
+        if timeout < STRICT_REQUEST_TIMEOUT_SECONDS:
+            raise _strict_error(
+                "HSG_REQUEST_TIMEOUT_BUDGET_DRIFT", "timeout"
+            )
 
 
 def _probe_json(url: str, *, timeout: float, api_key: str | None = None) -> Any:
@@ -275,6 +295,7 @@ class CursorGatewayProfile(ProviderProfile):
             or _normalized_base_url(base_url) != expected_base_url
         ):
             raise _strict_error("HSG_RUNTIME_BASE_URL_DRIFT", "base_url")
+        _assert_long_call_budget()
         _probe_strict_target(base_url=expected_base_url, model=expected_model)
 
     def prepare_messages(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:

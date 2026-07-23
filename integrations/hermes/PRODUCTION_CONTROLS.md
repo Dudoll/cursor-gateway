@@ -61,6 +61,9 @@ model:
   default: gpt-5.6-sol
   base_url: http://127.0.0.1:18080/v1
   api_mode: chat_completions
+providers:
+  cursor-gateway:
+    request_timeout_seconds: 1860
 fallback_providers: []
 ```
 
@@ -80,6 +83,9 @@ Windows/WSL runner must advertise `gpt-5.6-sol`; setting its
 - Each value is accepted by the Gateway server's `CSAPI_API_KEYS`.
 - Gateway has `CSAPI_ENABLED=true` and
   `CSAPI_DEFAULT_MODEL=gpt-5.6-sol`.
+- Gateway's caller wait is `1800000` ms. Both protected Hermes units set
+  `HERMES_API_TIMEOUT=1860` and `HERMES_STREAM_READ_TIMEOUT=1860`, so the
+  finite client budget exceeds the queue + 29 minute absolute run envelope.
 - Gateway and the one active `wsl-e2ee` shared worker both use capacity `6`.
   `/health.capacity` must report one runner identity, six total slots, a
   per-key limit of six, and effective total six.

@@ -33,6 +33,7 @@ function isPublicReleaseAsset(url: string | undefined) {
 }
 
 async function main() {
+  const startedAt = Date.now();
   const app = Fastify({
     bodyLimit: 3 * 1024 * 1024,
     logger: {
@@ -54,7 +55,10 @@ async function main() {
 
   await registerHttpMiddleware(app);
 
-  await migrate();
+  // Prefer external migrate one-shot in production; keep inline for compat.
+  if (process.env.SKIP_INLINE_MIGRATE !== "1") {
+    await migrate();
+  }
   await seedWorkspaces();
   await registerRoutes(app);
   await registerTelegram(app);
@@ -127,8 +131,12 @@ async function main() {
     }
   }
 
+  // Prefer nginx for static UI in production. Keep Fastify static only when WEB_STATIC_ENABLED=1.
+  const webStaticEnabled =
+    process.env.WEB_STATIC_ENABLED === "1" ||
+    (process.env.WEB_STATIC_ENABLED !== "0" && process.env.NODE_ENV !== "production");
   const webDist = join(__dirname, "../../web/dist");
-  if (existsSync(webDist)) {
+  if (webStaticEnabled && existsSync(webDist)) {
     app.addHook("preHandler", async (request, reply) => {
       if (request.raw.url === "/healthz") {
         return;
@@ -167,6 +175,10 @@ async function main() {
   }
 
   await app.listen({ host: config.host, port: config.port });
+  app.log.info(
+    { listenMs: Date.now() - startedAt, poolMax: config.dbPoolMax },
+    "gateway ready"
+  );
 }
 
 main().catch((error) => {

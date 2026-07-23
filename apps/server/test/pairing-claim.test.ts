@@ -62,12 +62,6 @@ function sampleStart(pairId: string, clientId: string) {
 
 const databaseUrl = process.env.TEST_DATABASE_URL;
 
-test.after(async () => {
-  if (!databaseUrl) return;
-  const { pool } = await import("../src/db.js");
-  await pool.end();
-});
-
 test(
   "claim-start returns Access-bound recipientEmail and ignores client envelope email fields",
   { skip: !databaseUrl },
@@ -119,6 +113,7 @@ test(
     } finally {
       await pool.query("delete from e2ee_pairings where pair_id = $1", [pairId]);
       await pool.query("delete from app_users where id = $1", [userId]);
+      await pool.end();
     }
   }
 );
@@ -163,6 +158,7 @@ test(
     } finally {
       await pool.query("delete from e2ee_pairings where pair_id = $1", [pairId]);
       await pool.query("delete from app_users where id = $1", [userId]);
+      await pool.end();
     }
   }
 );

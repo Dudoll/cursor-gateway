@@ -2,9 +2,12 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   CSAPI_DEFAULT_ABSOLUTE_TIMEOUT_MS,
+  CSAPI_DEFAULT_CALLER_WAIT_TIMEOUT_MS,
   CSAPI_DEFAULT_IDLE_TIMEOUT_MS,
   CSAPI_DEFAULT_QUEUE_TIMEOUT_MS,
-  evaluateCsapiRunTimeout
+  evaluateCsapiRunTimeout,
+  minimumCsapiCallerWaitTimeoutMs,
+  resolveCsapiCallerWaitTimeoutMs
 } from "../src/csapi/runTimeouts.js";
 
 const origin = Date.parse("2026-07-21T00:00:00.000Z");
@@ -14,6 +17,30 @@ const defaults = {
   idleTimeoutMs: CSAPI_DEFAULT_IDLE_TIMEOUT_MS,
   absoluteTimeoutMs: CSAPI_DEFAULT_ABSOLUTE_TIMEOUT_MS
 };
+
+test("caller budget covers queue, absolute lifetime, and finite safety buffer", () => {
+  assert.equal(
+    minimumCsapiCallerWaitTimeoutMs(defaults),
+    1_800_000
+  );
+  assert.equal(CSAPI_DEFAULT_CALLER_WAIT_TIMEOUT_MS, 1_800_000);
+  assert.equal(
+    resolveCsapiCallerWaitTimeoutMs({
+      requestedMs: 300_000,
+      queueTimeoutMs: defaults.queueTimeoutMs,
+      absoluteTimeoutMs: defaults.absoluteTimeoutMs
+    }),
+    1_800_000
+  );
+  assert.equal(
+    resolveCsapiCallerWaitTimeoutMs({
+      requestedMs: 1_900_000,
+      queueTimeoutMs: defaults.queueTimeoutMs,
+      absoluteTimeoutMs: defaults.absoluteTimeoutMs
+    }),
+    1_900_000
+  );
+});
 
 test("active progress or lease keeps a run healthy beyond 300 seconds", () => {
   const decision = evaluateCsapiRunTimeout(

@@ -1,9 +1,9 @@
 [Unit]
-Description=Check Hermes HA gateway checkpoint age every minute
+Description=Check Hermes HA gateway checkpoint age every five minutes
 
 [Timer]
-OnCalendar=*:0/1
-AccuracySec=15s
+OnCalendar=*:3/5
+AccuracySec=5s
 Persistent=true
 Unit=hermes-ha-checkpoint-watchdog.service
 

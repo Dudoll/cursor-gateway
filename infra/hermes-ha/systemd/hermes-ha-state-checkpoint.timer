@@ -2,8 +2,8 @@
 Description=Timer — Hermes HA state.db checkpoint every 15 min
 
 [Timer]
-OnBootSec=5min
-OnUnitActiveSec=15min
+OnCalendar=*:1/15
+AccuracySec=5s
 Persistent=true
 Unit=hermes-ha-state-checkpoint.service
 

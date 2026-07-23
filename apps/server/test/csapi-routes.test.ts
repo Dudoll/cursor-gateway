@@ -13,11 +13,57 @@ import { SessionSerializer } from "../src/csapi/concurrency.js";
 import { createCsapi, registerCsapi } from "../src/csapi/server.js";
 import { providerForModel, type CsapiCancelReason } from "../src/csapi/runTimeouts.js";
 
+class FakeClock {
+  private currentMs = Date.parse("2026-07-22T00:00:00.000Z");
+  private nextHandle = 1;
+  private intervals = new Map<
+    number,
+    { callback: () => void; intervalMs: number; dueAt: number }
+  >();
+
+  readonly now = () => this.currentMs;
+
+  readonly sleep = async (ms: number, signal?: AbortSignal) => {
+    if (signal?.aborted) throw new Error("fake_clock_aborted");
+    const target = this.currentMs + ms;
+    for (;;) {
+      const next = [...this.intervals.entries()]
+        .filter(([, interval]) => interval.dueAt <= target)
+        .sort((a, b) => a[1].dueAt - b[1].dueAt)[0];
+      if (!next) break;
+      const [handle, interval] = next;
+      this.currentMs = interval.dueAt;
+      interval.callback();
+      const active = this.intervals.get(handle);
+      if (active) active.dueAt += active.intervalMs;
+    }
+    this.currentMs = target;
+  };
+
+  readonly scheduleHeartbeat = (
+    callback: () => void,
+    intervalMs: number
+  ): number => {
+    const handle = this.nextHandle++;
+    this.intervals.set(handle, {
+      callback,
+      intervalMs,
+      dueAt: this.currentMs + intervalMs
+    });
+    return handle;
+  };
+
+  readonly cancelHeartbeat = (handle: unknown) => {
+    if (typeof handle === "number") this.intervals.delete(handle);
+  };
+}
+
 // In-memory backend that simulates a runner: a run created at T becomes
 // "finished" after `finishDelayMs`. Tracks per-conversation concurrency so we
 // can assert same-session serialization and cross-session parallelism.
 class FakeBackend implements CsapiBackend {
   finishDelayMs = 120;
+  now = Date.now;
   private runs = new Map<
     string,
     {
@@ -100,7 +146,7 @@ class FakeBackend implements CsapiBackend {
     }
     const runId = randomUUID();
     this.runs.set(runId, {
-      createdAt: Date.now(),
+      createdAt: this.now(),
       prompt: input.prompt,
       conversationId: input.conversationId,
       model: input.model,
@@ -118,7 +164,7 @@ class FakeBackend implements CsapiBackend {
   private statusOf(runId: string): RunStatus {
     const run = this.runs.get(runId)!;
     if (run.cancelledAt) return "cancelled";
-    const elapsed = Date.now() - run.createdAt;
+    const elapsed = this.now() - run.createdAt;
     if (run.prompt.includes("FORCE_ERROR")) return elapsed >= this.finishDelayMs ? "error" : "running";
     return elapsed >= this.finishDelayMs ? "finished" : "running";
   }
@@ -268,11 +314,11 @@ class FakeBackend implements CsapiBackend {
         reason === "absolute_timeout")
     ) {
       this.refreshActivityOnNextTimeoutCancel = false;
-      run.lastActivityAt = Date.now();
+      run.lastActivityAt = this.now();
       return undefined;
     }
     if (run && !run.cancelledAt) {
-      run.cancelledAt = Date.now();
+      run.cancelledAt = this.now();
       run.cancelReason = reason;
       this.cancelCount += 1;
     }
@@ -296,9 +342,12 @@ function buildApp(options?: {
   finishDelayMs?: number;
   maxPromptChars?: number;
   heartbeatIntervalMs?: number;
+  pollIntervalMs?: number;
+  clock?: FakeClock;
   backend?: FakeBackend;
 }) {
   const backend = options?.backend ?? new FakeBackend();
+  if (options?.clock) backend.now = options.clock.now;
   if (options?.finishDelayMs !== undefined) backend.finishDelayMs = options.finishDelayMs;
   const app = Fastify();
   registerCsapi(app, {
@@ -316,8 +365,16 @@ function buildApp(options?: {
       maxPromptChars: options?.maxPromptChars ?? 96_000,
       allowWrites: false
     },
-    pollIntervalMs: 10,
-    heartbeatIntervalMs: options?.heartbeatIntervalMs ?? 10_000
+    pollIntervalMs: options?.pollIntervalMs ?? 10,
+    heartbeatIntervalMs: options?.heartbeatIntervalMs ?? 10_000,
+    ...(options?.clock
+      ? {
+          now: options.clock.now,
+          sleep: options.clock.sleep,
+          scheduleHeartbeat: options.clock.scheduleHeartbeat,
+          cancelHeartbeat: options.clock.cancelHeartbeat
+        }
+      : {})
   });
   return { app, backend };
 }
@@ -586,10 +643,18 @@ test("OpenAI streaming emits chunks and [DONE]", async () => {
   await closeApp(app);
 });
 
-test("OpenAI streaming emits protocol heartbeats during a slow run", async () => {
+test("OpenAI streaming keeps a Hermes-compatible request alive beyond 300 seconds", async () => {
+  const clock = new FakeClock();
+  const startedAt = clock.now();
   const { app } = buildApp({
-    finishDelayMs: 60,
-    heartbeatIntervalMs: 10
+    clock,
+    finishDelayMs: 310_000,
+    callerWaitTimeoutMs: 1_800_000,
+    queueTimeoutMs: 30_000,
+    idleTimeoutMs: 400_000,
+    absoluteTimeoutMs: 1_740_000,
+    pollIntervalMs: 10_000,
+    heartbeatIntervalMs: 10_000
   });
   const res = await app.inject({
     method: "POST",
@@ -598,7 +663,11 @@ test("OpenAI streaming emits protocol heartbeats during a slow run", async () =>
     payload: { model: "auto", stream: true, messages: [{ role: "user", content: "slow stream" }] }
   });
   const heartbeatCount = (res.payload.match(/chatcmpl-heartbeat/g) ?? []).length;
-  assert.ok(heartbeatCount >= 2, `expected repeated heartbeat frames, saw ${heartbeatCount}`);
+  assert.equal(res.statusCode, 200);
+  assert.ok(clock.now() - startedAt >= 310_000);
+  assert.ok(heartbeatCount >= 31, `expected repeated heartbeat frames, saw ${heartbeatCount}`);
+  assert.doesNotMatch(res.payload, /CSAPI_CALLER_WAIT_TIMEOUT/);
+  assert.match(res.payload, /data: \[DONE\]/);
   await closeApp(app);
 });
 
@@ -994,7 +1063,9 @@ test("idempotency key reuses a completed run", async () => {
 });
 
 test("caller timeout leaves a healthy idempotent run active and retry reattaches", async () => {
+  const clock = new FakeClock();
   const { app, backend } = buildApp({
+    clock,
     callerWaitTimeoutMs: 30,
     idleTimeoutMs: 1_000,
     absoluteTimeoutMs: 2_000,
@@ -1019,6 +1090,63 @@ test("caller timeout leaves a healthy idempotent run active and retry reattaches
   assert.equal(backend.createRunCount, 1);
   assert.equal(backend.cancelCount, 0);
   await closeApp(app);
+});
+
+test("structured CSAPI logs omit prompt, key, session, and authorization data", async () => {
+  const clock = new FakeClock();
+  const backend = new FakeBackend();
+  backend.now = clock.now;
+  backend.finishDelayMs = 20;
+  const events: unknown[] = [];
+  const log = {
+    info(value: unknown) {
+      events.push(value);
+    },
+    warn(value: unknown) {
+      events.push(value);
+    }
+  } as unknown as FastifyRequest["log"];
+  const csapi = createCsapi({
+    backend,
+    config: {
+      enabled: true,
+      apiKeys: new Set([KEY]),
+      defaultModel: "auto",
+      defaultWorkspaceId: "",
+      maxConcurrencyPerKey: 6,
+      callerWaitTimeoutMs: 100,
+      queueTimeoutMs: 100,
+      idleTimeoutMs: 1_000,
+      absoluteTimeoutMs: 2_000,
+      maxPromptChars: 96_000,
+      allowWrites: false
+    },
+    pollIntervalMs: 10,
+    now: clock.now,
+    sleep: clock.sleep
+  });
+  await assert.rejects(
+    csapi.execute({
+      keyId: "secret-key-id-marker",
+      system: "",
+      messages: [
+        {
+          role: "user",
+          text: "FORCE_ERROR secret-prompt-marker Authorization: Bearer hidden"
+        }
+      ],
+      requestedModel: "auto",
+      sessionKey: "secret-session-marker",
+      requestId: "safe-request-id",
+      log
+    })
+  );
+  const rendered = JSON.stringify(events);
+  assert.match(rendered, /CSAPI_RUN_ERROR/);
+  assert.doesNotMatch(
+    rendered,
+    /secret-key-id-marker|secret-prompt-marker|secret-session-marker|Bearer hidden/
+  );
 });
 
 test("large initial transcript is bounded and retains latest user turn", async () => {

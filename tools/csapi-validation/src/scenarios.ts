@@ -823,11 +823,11 @@ export async function runLongScenario(
         )
       );
     }
-  } else {
+  } else if (first.disposition !== "completed") {
     violations.push({
       scenario: name,
-      code: "CALLER_TIMEOUT_NOT_OBSERVED",
-      message: `expected a detachable caller timeout; first request was ${first.disposition}`,
+      code: "LONG_REQUEST_FAILED",
+      message: `expected direct completion or a safe detachable timeout; first request was ${first.disposition}`,
       runId: first.evidence.runId
     });
   }
@@ -844,7 +844,7 @@ export async function runLongScenario(
       runId: first.evidence.runId
     });
   }
-  if (!activeBeforeRetry) {
+  if (first.disposition === "detached" && !activeBeforeRetry) {
     violations.push({
       scenario: name,
       code: "ACTIVE_REATTACH_NOT_PROVEN",

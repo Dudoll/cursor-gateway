@@ -214,19 +214,32 @@ function safeToolName(value: string): string {
   return safeProgressText(value).replace(/[^A-Za-z0-9_.:-]+/g, " ").trim();
 }
 
-function progressFromMessage(message: SDKMessage): {
+function planTextFromToolArgs(args: unknown): string | null {
+  if (!args || typeof args !== "object") return null;
+  const plan = (args as { plan?: unknown }).plan;
+  return typeof plan === "string" && plan.trim() ? plan.trim() : null;
+}
+
+export function progressFromMessage(message: SDKMessage): {
   kind: RunProgressKind;
   message: string;
 } | undefined {
   if (message.type === "thinking" && message.text.trim()) {
-    // Do not expose raw hidden chain-of-thought. The gateway receives a safe
-    // phase marker while the model is analyzing the task.
-    return { kind: "thinking", message: "Analyzing the task…" };
+    // Never expose hidden chain-of-thought. User-facing plans are emitted by
+    // createPlan below; thinking remains a coarse status only.
+    return { kind: "thinking", message: "The model is thinking." };
   }
   if (message.type === "assistant") {
-    return { kind: "responding", message: "Preparing the response…" };
+    const text = assistantTextFromMessage(message);
+    return text.trim()
+      ? { kind: "responding", message: safeProgressText(text) }
+      : undefined;
   }
   if (message.type === "tool_call") {
+    const plan = message.name === "createPlan" ? planTextFromToolArgs(message.args) : null;
+    if (plan) {
+      return { kind: "working", message: plan.slice(0, MAX_PROGRESS_MESSAGE_CHARS) };
+    }
     const name = safeToolName(message.name) || "tool";
     return {
       kind: "tool",
@@ -234,7 +247,7 @@ function progressFromMessage(message: SDKMessage): {
     };
   }
   if (message.type === "task" && message.text?.trim()) {
-    return { kind: "working", message: `Working: ${safeProgressText(message.text)}` };
+    return { kind: "working", message: safeProgressText(message.text) };
   }
   if (message.type === "status" && message.message?.trim()) {
     return { kind: "working", message: safeProgressText(message.message) };

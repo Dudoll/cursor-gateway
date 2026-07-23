@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from common import atomic_write_json, load_config, read_json, runtime_dir
-from gateway_checkpoint import checkpoint_dir
+from gateway_checkpoint import checkpoint_restore_dir, checkpoint_work_dir, publish_status_path
 from leader import is_leader
 from orchestrator import alert
 
@@ -37,8 +37,12 @@ def checkpoint_status(
     config: dict[str, Any], *, now: float | None = None
 ) -> dict[str, Any]:
     current_time = time.time() if now is None else now
-    root = checkpoint_dir(config)
-    manifest = read_json(root / "manifest.json")
+    if str((config.get("gateway_checkpoint") or {}).get("transport") or "filesystem") == "rclone":
+        root = checkpoint_work_dir(config)
+        manifest = read_json(publish_status_path(config))
+    else:
+        root = checkpoint_restore_dir(config)
+        manifest = read_json(root / "manifest.json")
     threshold = max(
         60, int((config.get("gateway_checkpoint") or {}).get("max_age_seconds") or 600)
     )
