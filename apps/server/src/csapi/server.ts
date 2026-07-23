@@ -741,11 +741,15 @@ export function createCsapi(deps: CsapiDeps) {
       try {
         const streamId = openaiCompletionId();
         let progressRoleSent = false;
-        let streamedResponseText = "";
         const onProgress = (progress: CsapiProgressUpdate) => {
           if (reply.raw.writableEnded || reply.raw.destroyed) return;
+          // Cursor SDK assistant events are observational drafts, not a
+          // guaranteed append-only prefix of run.wait().result. Emitting them
+          // as OpenAI content deltas is irreversible: when Cursor later
+          // replaces a draft with a polished final answer, clients concatenate
+          // both versions and persist a duplicated assistant turn.
           if (progress.kind === "responding") {
-            streamedResponseText += progress.message;
+            return;
           }
           writeFrame(
             reply,
@@ -766,18 +770,13 @@ export function createCsapi(deps: CsapiDeps) {
           responseModel,
           onProgress
         );
-        // Cursor runner progress is sent as response deltas. Do not replay the
-        // already delivered prefix in the terminal aggregate; if a runner or
-        // old deployment did not provide a coherent prefix, keep the complete
-        // terminal result authoritative instead of silently truncating it.
-        const terminalText = streamedResponseText && result.text.startsWith(streamedResponseText)
-          ? result.text.slice(streamedResponseText.length)
-          : result.text;
+        // Only the terminal aggregate is authoritative assistant content.
+        // Non-response progress still streams above as reasoning_content.
         const frames = buildOpenAiStreamFrames({
           id: streamId,
           includeRole: !progressRoleSent,
           model: responseModel,
-          text: terminalText
+          text: result.text
         });
         for (const frame of frames) writeFrame(reply, frame);
         writeFrame(reply, OPENAI_STREAM_DONE);
