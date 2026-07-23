@@ -16,7 +16,7 @@ process.env.RUNNER_E2EE_STATE_FILE = join(root, "runner-state.dat");
 process.env.RUNNER_E2EE_MASTER_KEY_FILE = "";
 delete process.env.RUNNER_E2EE_MASTER_KEY;
 
-const { progressFromMessage } = await import("../src/cursorAgent.js");
+const { progressFromMessage, responseProgressDelta } = await import("../src/cursorAgent.js");
 
 const base = {
   agent_id: "agent-test",
@@ -65,5 +65,24 @@ test("assistant stream publishes user-visible response text", () => {
   assert.deepEqual(progress, {
     kind: "responding",
     message: "Visible progress"
+  });
+});
+
+test("assistant progress accepts cumulative and chunk-shaped SDK events", () => {
+  assert.deepEqual(responseProgressDelta("", "Hello"), {
+    delta: "Hello",
+    accumulated: "Hello"
+  });
+  assert.deepEqual(responseProgressDelta("Hello", "Hello world"), {
+    delta: " world",
+    accumulated: "Hello world"
+  });
+  assert.deepEqual(responseProgressDelta("Hello", " world"), {
+    delta: " world",
+    accumulated: "Hello world"
+  });
+  assert.deepEqual(responseProgressDelta("Hello world", "Hello"), {
+    delta: "",
+    accumulated: "Hello world"
   });
 });

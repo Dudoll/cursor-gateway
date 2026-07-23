@@ -104,6 +104,8 @@ function buildPrompt(job: RunnerJob, includeHistory: boolean) {
       : "";
 
   const writePolicy = buildWritePolicy(job);
+  const fastPathGuidance =
+    "For a short factual or conversational request, answer directly without terminal, web, file, or other tool calls unless the request requires fresh or workspace data.";
   const historyBlock =
     includeHistory && job.history.length > 0
       ? `Previous conversation turns:\n${job.history
@@ -117,6 +119,7 @@ function buildPrompt(job: RunnerJob, includeHistory: boolean) {
   return [
     `Workspace: ${job.workspace.path}`,
     `Policy: ${writePolicy}`,
+    fastPathGuidance,
     identityBlock,
     memoryBlock,
     historyBlock,
@@ -154,6 +157,28 @@ function assistantTextFromMessage(
     )
     .map((block) => block.text)
     .join("");
+}
+
+/**
+ * Normalize Cursor SDK assistant events to append-only response deltas.
+ * Depending on SDK version, an assistant event may contain either the next
+ * chunk or the complete text accumulated so far. Handling both shapes here
+ * lets the legacy CSAPI stream without duplicating text or losing chunks.
+ */
+export function responseProgressDelta(previous: string, next: string): {
+  delta: string;
+  accumulated: string;
+} {
+  if (!next) return { delta: "", accumulated: previous };
+  if (!previous) return { delta: next, accumulated: next };
+  if (next.startsWith(previous)) {
+    return { delta: next.slice(previous.length), accumulated: next };
+  }
+  if (previous.startsWith(next)) {
+    return { delta: "", accumulated: previous };
+  }
+  // SDK emitted an independent chunk rather than a cumulative snapshot.
+  return { delta: next, accumulated: previous + next };
 }
 
 async function lastAssistantFromConversation(run: {

@@ -203,7 +203,9 @@ class FakeBackend implements CsapiBackend {
     if (status === "finished") {
       return {
         status,
-        response: `echo:${run.prompt}`,
+        response: run.prompt.includes("STREAM_PROGRESS")
+          ? "partial-final"
+          : `echo:${run.prompt}`,
         error: null,
         progress: null,
         progressKind: null,
@@ -240,8 +242,8 @@ class FakeBackend implements CsapiBackend {
       status,
       response: null,
       error: null,
-      progress: "working",
-      progressKind: "working",
+      progress: run.prompt.includes("STREAM_PROGRESS") ? "partial" : "working",
+      progressKind: run.prompt.includes("STREAM_PROGRESS") ? "responding" : "working",
       inputTokens: null,
       outputTokens: null,
       ...lifecycle
@@ -640,6 +642,30 @@ test("OpenAI streaming emits chunks and [DONE]", async () => {
   assert.match(payload, /reasoning_content/);
   assert.match(payload, /hey/);
   assert.match(payload, /data: \[DONE\]/);
+  await closeApp(app);
+});
+
+test("OpenAI streaming forwards response progress without duplicating the terminal text", async () => {
+  const { app } = buildApp({ finishDelayMs: 30 });
+  const res = await app.inject({
+    method: "POST",
+    url: "/v1/chat/completions",
+    headers: { authorization: `Bearer ${KEY}` },
+    payload: {
+      model: "auto",
+      stream: true,
+      messages: [{ role: "user", content: "STREAM_PROGRESS" }]
+    }
+  });
+  const content = res.payload
+    .split("\n")
+    .filter((line) => line.startsWith("data: ") && line !== "data: [DONE]")
+    .map((line) => JSON.parse(line.slice(6)) as Record<string, unknown>)
+    .flatMap((frame) => (frame.choices as Array<Record<string, unknown>> | undefined) ?? [])
+    .map((choice) => (choice.delta as { content?: string } | undefined)?.content ?? "")
+    .join("");
+  assert.equal(content, "partial-final");
+  assert.equal((content.match(/partial/g) ?? []).length, 1);
   await closeApp(app);
 });
 

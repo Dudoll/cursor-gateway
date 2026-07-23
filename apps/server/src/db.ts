@@ -21,6 +21,7 @@ import {
   isCsapiTimeoutCancelReason,
   type CsapiCancelReason
 } from "./csapi/runTimeouts.js";
+import { notifyPlaintextJobQueued, notifyRunUpdated } from "./runWaiter.js";
 
 export const pool = new Pool({
   connectionString: config.databaseUrl,
@@ -365,6 +366,11 @@ export async function migrate() {
     alter table social_publications add column if not exists hashtags jsonb not null default '[]'::jsonb;
 
     create index if not exists runs_status_created_idx on runs(status, created_at);
+    -- Claim scans only live plaintext work. Keeping a partial queue index avoids
+    -- sorting terminal/E2EE/report history on every runner wake-up.
+    create index if not exists runs_plaintext_queue_idx
+      on runs(queued_at, created_at)
+      where status = 'queued' and content_mode = 'plaintext' and deleted_at is null;
     drop index if exists runs_user_idempotency_unique;
     create unique index if not exists runs_user_idempotency_active_unique
       on runs(user_id, idempotency_key)
@@ -1075,7 +1081,6 @@ export async function createRun(input: {
   );
   const run = mapRun(result.rows[0]);
   if (run.status === "queued") {
-    const { notifyPlaintextJobQueued } = await import("./runWaiter.js");
     notifyPlaintextJobQueued();
   }
   return run;
@@ -1287,7 +1292,11 @@ export async function finishRun(input: {
       input.leaseId
     ]
   );
-  if (result.rows[0]) return mapRun(result.rows[0]);
+  if (result.rows[0]) {
+    const run = mapRun(result.rows[0]);
+    notifyRunUpdated(input.runId);
+    return run;
+  }
 
   // If the first HTTP response was lost after commit, let the same attempt
   // replay the exact terminal result. A different attempt has a different
@@ -1343,7 +1352,9 @@ export async function updateRunProgress(input: {
     `,
     [input.runId, input.message, input.kind, input.runnerId, input.leaseId]
   );
-  return (result.rowCount ?? 0) > 0;
+  const updated = (result.rowCount ?? 0) > 0;
+  if (updated) notifyRunUpdated(input.runId);
+  return updated;
 }
 
 export async function approveRun(runId: string, userId: string) {
@@ -1362,7 +1373,9 @@ export async function approveRun(runId: string, userId: string) {
     `,
     [runId, userId]
   );
-  return result.rows[0] ? mapRun(result.rows[0]) : undefined;
+  if (!result.rows[0]) return undefined;
+  notifyPlaintextJobQueued();
+  return mapRun(result.rows[0]);
 }
 
 export async function getRunForUser(runId: string, userId: string) {
@@ -1931,7 +1944,9 @@ export async function cancelRun(
     `,
     [runId, userId, reason, timeoutMs ?? null]
   );
-  return result.rows[0] ? mapRun(result.rows[0]) : undefined;
+  if (!result.rows[0]) return undefined;
+  notifyRunUpdated(runId);
+  return mapRun(result.rows[0]);
 }
 
 export type CsapiTimeoutSweep = {

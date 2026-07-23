@@ -481,13 +481,15 @@ export function buildOpenAiProgressFrame(input: {
   id: string;
   model: string;
   text: string;
+  kind?: "working" | "thinking" | "tool" | "responding";
   includeRole?: boolean;
   created?: number;
 }): SseFrame {
   const created = input.created ?? Math.floor(Date.now() / 1000);
+  const field = input.kind === "responding" ? "content" : "reasoning_content";
   const delta = input.includeRole === false
-    ? { reasoning_content: input.text }
-    : { role: "assistant", reasoning_content: input.text };
+    ? { [field]: input.text }
+    : { role: "assistant", [field]: input.text };
   return {
     data: {
       id: input.id,

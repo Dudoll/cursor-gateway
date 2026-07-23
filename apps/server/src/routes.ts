@@ -71,6 +71,10 @@ import {
 } from "./auth.js";
 import { config, isAllowedSecureOrigin } from "./config.js";
 import { verifyRunnerEnvelopeSignature } from "./e2eeRunnerSignature.js";
+import {
+  getPlaintextQueueVersion,
+  waitForPlaintextJob
+} from "./runWaiter.js";
 
 const runnerLeaseIdentitySchema = z
   .object({
@@ -450,12 +454,21 @@ async function claimJobForWithLongPoll(
 ) {
   const deadline = Date.now() + config.runnerLongPollMs;
   for (;;) {
+    const observedQueueVersion = getPlaintextQueueVersion();
     const job = await claimJobFor(executor, runnerId);
     if (job) return job;
     const remaining = deadline - Date.now();
     if (remaining <= 0 || isClientGone(request)) return undefined;
-    const { waitForPlaintextJob } = await import("./runWaiter.js");
-    const outcome = await waitForPlaintextJob(Math.min(remaining, 1000), request.signal);
+    // The waiter is notified transactionally when a run is enqueued. Keep the
+    // HTTP request asleep for the full long-poll window so idle runners do not
+    // turn a 25s long-poll into a 1s PostgreSQL polling loop.
+    // The version check closes the query → waiter-registration race without
+    // adding a periodic database poll.
+    const outcome = await waitForPlaintextJob(
+      remaining,
+      request.signal,
+      observedQueueVersion
+    );
     if (outcome === "aborted") return undefined;
   }
 }
@@ -2360,7 +2373,7 @@ export async function registerRoutes(app: FastifyInstance) {
         const { waitForE2eeJob } = await import("./runWaiter.js");
         const outcome = await waitForE2eeJob(
           body.runnerId,
-          Math.min(remaining, 1000),
+          Math.min(remaining, 1_000),
           request.signal
         );
         if (outcome === "aborted") return reply.code(204).send();
@@ -2532,7 +2545,7 @@ export async function registerRoutes(app: FastifyInstance) {
         const { waitForPairing } = await import("./runWaiter.js");
         const outcome = await waitForPairing(
           body.runnerId,
-          Math.min(remaining, 1000),
+          Math.min(remaining, 1_000),
           request.signal
         );
         if (outcome === "aborted") return reply.code(204).send();

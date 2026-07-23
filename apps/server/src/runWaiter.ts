@@ -4,25 +4,32 @@
  */
 
 type Waiter = {
-  resolve: () => void;
+  resolve: (outcome: "notified" | "timeout" | "aborted") => void;
   timer: ReturnType<typeof setTimeout>;
 };
 
 const plaintextWaiters = new Set<Waiter>();
+let plaintextQueueVersion = 0;
 const e2eeWaitersByRunner = new Map<string, Set<Waiter>>();
 const pairingWaitersByRunner = new Map<string, Set<Waiter>>();
+const runWaitersById = new Map<string, Set<Waiter>>();
 
 function wakeSet(set: Set<Waiter> | undefined) {
   if (!set || set.size === 0) return;
   for (const waiter of [...set]) {
     clearTimeout(waiter.timer);
     set.delete(waiter);
-    waiter.resolve();
+    waiter.resolve("notified");
   }
 }
 
 export function notifyPlaintextJobQueued() {
+  plaintextQueueVersion += 1;
   wakeSet(plaintextWaiters);
+}
+
+export function getPlaintextQueueVersion() {
+  return plaintextQueueVersion;
 }
 
 export function notifyE2eeJobQueued(runnerId: string) {
@@ -33,35 +40,55 @@ export function notifyPairingQueued(runnerId: string) {
   wakeSet(pairingWaitersByRunner.get(runnerId));
 }
 
+/** Wake CSAPI callers when a run's progress or terminal state changes. */
+export function notifyRunUpdated(runId: string) {
+  wakeSet(runWaitersById.get(runId));
+}
+
 async function waitOn(
   set: Set<Waiter>,
   timeoutMs: number,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  ready?: () => boolean
 ): Promise<"timeout" | "notified" | "aborted"> {
   if (signal?.aborted) return "aborted";
   return await new Promise((resolve) => {
     const waiter: Waiter = {
-      resolve: () => {
-        set.delete(waiter);
-        resolve("notified");
-      },
-      timer: setTimeout(() => {
-        set.delete(waiter);
-        resolve("timeout");
-      }, Math.max(0, timeoutMs))
+      resolve: () => undefined,
+      timer: undefined as unknown as ReturnType<typeof setTimeout>
     };
-    set.add(waiter);
-    const onAbort = () => {
+    let settled = false;
+    const onAbort = () => finish("aborted");
+    const finish = (outcome: "notified" | "timeout" | "aborted") => {
+      if (settled) return;
+      settled = true;
       clearTimeout(waiter.timer);
       set.delete(waiter);
-      resolve("aborted");
+      signal?.removeEventListener("abort", onAbort);
+      resolve(outcome);
     };
+    waiter.resolve = finish;
+    waiter.timer = setTimeout(() => finish("timeout"), Math.max(0, timeoutMs));
+    set.add(waiter);
     signal?.addEventListener("abort", onAbort, { once: true });
+    if (signal?.aborted) finish("aborted");
+    else if (ready?.()) finish("notified");
   });
 }
 
-export async function waitForPlaintextJob(timeoutMs: number, signal?: AbortSignal) {
-  return waitOn(plaintextWaiters, timeoutMs, signal);
+export async function waitForPlaintextJob(
+  timeoutMs: number,
+  signal?: AbortSignal,
+  observedQueueVersion?: number
+) {
+  return waitOn(
+    plaintextWaiters,
+    timeoutMs,
+    signal,
+    observedQueueVersion === undefined
+      ? undefined
+      : () => plaintextQueueVersion !== observedQueueVersion
+  );
 }
 
 export async function waitForE2eeJob(
@@ -88,4 +115,19 @@ export async function waitForPairing(
     pairingWaitersByRunner.set(runnerId, set);
   }
   return waitOn(set, timeoutMs, signal);
+}
+
+export async function waitForRunUpdate(
+  runId: string,
+  timeoutMs: number,
+  signal?: AbortSignal
+) {
+  let set = runWaitersById.get(runId);
+  if (!set) {
+    set = new Set();
+    runWaitersById.set(runId, set);
+  }
+  const outcome = await waitOn(set, timeoutMs, signal);
+  if (set.size === 0) runWaitersById.delete(runId);
+  return outcome;
 }
