@@ -235,6 +235,10 @@ install -D -m 0644 \
 install -D -m 0644 \
   integrations/hermes/systemd/hermes-gateway-telegram2.service.d/zz-resource-limits.conf \
   "$HOME/.config/systemd/user/hermes-gateway-telegram2.service.d/zz-resource-limits.conf"
+# Default telegram2 home is ~/.hermes/profiles/telegram2.
+# On hermes-ha hosts where the live home is local_trees, install the corrected
+# drop-in instead (Requires/After, no BindsTo):
+#   integrations/hermes/systemd/hermes-gateway-telegram2.service.d/zz-strict-route.hermes-ha.conf
 install -D -m 0644 \
   integrations/hermes/systemd/hermes-gateway-telegram2.service.d/zz-strict-route.conf \
   "$HOME/.config/systemd/user/hermes-gateway-telegram2.service.d/zz-strict-route.conf"
