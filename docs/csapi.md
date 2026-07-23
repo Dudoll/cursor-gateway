@@ -106,7 +106,7 @@ Base URL: `https://csapi.joelzt.org`
 | `CSAPI_DEFAULT_MODEL` | `auto` | 请求模型未知时回退的模型。注意：`auto` 由 Local Runner 领取；若线上只有 Hermes，会自动改写为第一个 `hermes:*`，也可直接设为 `hermes:default` |
 | `CSAPI_DEFAULT_WORKSPACE_ID` | 空 | 默认 workspace；留空则自动取第一个可用 workspace |
 | `CSAPI_MAX_CONCURRENCY_PER_KEY` | `6` | 每 key 并发上限；超限 429 |
-| `CSAPI_CALLER_WAIT_TIMEOUT_MS` | `300000` | 调用方等待预算；到期不取消健康 run；旧 `CSAPI_RUN_TIMEOUT_MS` 仅作兼容别名 |
+| `CSAPI_CALLER_WAIT_TIMEOUT_MS` | `1800000` | 调用方等待预算；有效值至少为 queue + absolute + 30s，避免 Hermes 长流先收到 caller timeout；旧 `CSAPI_RUN_TIMEOUT_MS` 仅作兼容别名 |
 | `CSAPI_QUEUE_TIMEOUT_MS` | `30000` | run 当前排队周期（含中断后重排）的上限 |
 | `CSAPI_IDLE_TIMEOUT_MS` | `120000` | `running` run 距最后 lease/progress 的无活动上限 |
 | `CSAPI_ABSOLUTE_TIMEOUT_MS` | `1740000` | 从首次 `startedAt` 起约 29 分钟的绝对执行上限 |

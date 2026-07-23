@@ -28,6 +28,7 @@ export interface MockCsapiServerOptions {
   cancelReason?: string;
   claimAttempts?: number;
   duplicateIdempotencyRun?: boolean;
+  longCompletesDirectly?: boolean;
 }
 
 interface PendingGate {
@@ -361,7 +362,11 @@ export class MockCsapiServer {
     const attempt = (this.requestCountByKey.get(idempotencyKey) ?? 0) + 1;
     this.requestCountByKey.set(idempotencyKey, attempt);
 
-    if (scenario === "long-active-reattach" && attempt === 1) {
+    if (
+      scenario === "long-active-reattach" &&
+      attempt === 1 &&
+      this.options.longCompletesDirectly !== true
+    ) {
       writeJson(response, 504, {
         error: {
           code: "CSAPI_CALLER_WAIT_TIMEOUT",

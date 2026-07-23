@@ -63,6 +63,12 @@ empty. The provider profile’s `fallback_models` tuple is only an offline model
 catalog fallback and contains the same pinned model; it is not provider
 failover.
 
+Each protected profile also sets `providers.cursor-gateway.request_timeout_seconds`
+to `1860`. Its systemd drop-in pins both `HERMES_API_TIMEOUT` and
+`HERMES_STREAM_READ_TIMEOUT` to the same finite 31 minute budget. This exceeds
+the Gateway's 30 minute queue/caller envelope while SSE heartbeats keep the
+active socket observable.
+
 ## Manual preflight
 
 ```bash

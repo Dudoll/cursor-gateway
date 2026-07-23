@@ -72,7 +72,9 @@ class CursorGatewayProviderTests(unittest.TestCase):
         )
         return {
             "CURSOR_GATEWAY_CSAPI_KEY": "test-only-key",
+            "HERMES_API_TIMEOUT": "1860",
             "HERMES_HOME": home,
+            "HERMES_STREAM_READ_TIMEOUT": "1860",
             "HERMES_STRICT_ROUTE_ACTIVE_PROFILE": profile,
             "HERMES_STRICT_ROUTE_ENABLED": "1",
             "HERMES_STRICT_ROUTE_HOME": home,
@@ -86,6 +88,22 @@ class CursorGatewayProviderTests(unittest.TestCase):
         self.assertEqual(profile.base_url, module.STRICT_BASE_URL)
         self.assertEqual(profile.default_aux_model, module.STRICT_MODEL)
         self.assertEqual(profile.fallback_models, (module.STRICT_MODEL,))
+
+    def test_shipped_profiles_pin_finite_long_call_budgets(self):
+        root = Path(__file__).resolve().parents[3]
+        for name in (
+            "config.main.strict.example.yaml",
+            "config.telegram2.strict.example.yaml",
+        ):
+            text = (Path(__file__).with_name(name)).read_text(encoding="utf-8")
+            self.assertIn("request_timeout_seconds: 1860", text)
+        for relative in (
+            "integrations/hermes/systemd/hermes-gateway.service.d/zz-strict-route.conf",
+            "integrations/hermes/systemd/hermes-gateway-telegram2.service.d/zz-strict-route.conf",
+        ):
+            text = (root / relative).read_text(encoding="utf-8")
+            self.assertIn("Environment=HERMES_API_TIMEOUT=1860", text)
+            self.assertIn("Environment=HERMES_STREAM_READ_TIMEOUT=1860", text)
 
     def test_headers_are_stable_for_retry_and_change_for_new_turn(self):
         module, profile = load_profile_module()
@@ -240,6 +258,28 @@ class CursorGatewayProviderTests(unittest.TestCase):
                 rendered = str(caught.exception)
                 self.assertIn(code, rendered)
                 self.assertIn('"profile": "telegram2"', rendered)
+
+    def test_short_request_budget_fails_closed_without_logging_values(self):
+        module, profile = load_profile_module()
+        secret_marker = "never-log-timeout-marker"
+        with mock.patch.dict(
+            os.environ,
+            {
+                **self.strict_env("telegram2"),
+                "HERMES_API_TIMEOUT": "300",
+                "HERMES_STREAM_READ_TIMEOUT": secret_marker,
+            },
+            clear=False,
+        ):
+            with self.assertRaises(module.StrictRouteViolation) as caught:
+                profile.build_api_kwargs_extras(
+                    model=module.STRICT_MODEL,
+                    base_url=module.STRICT_BASE_URL,
+                )
+        rendered = str(caught.exception)
+        self.assertIn("HSG_REQUEST_TIMEOUT_BUDGET_DRIFT", rendered)
+        self.assertNotIn("300", rendered)
+        self.assertNotIn(secret_marker, rendered)
 
     def test_target_offline_is_an_explicit_request_failure(self):
         module, profile = load_profile_module()

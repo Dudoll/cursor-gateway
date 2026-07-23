@@ -1,9 +1,13 @@
 import type { RunStatus } from "@cursor-gateway/shared";
 
-export const CSAPI_DEFAULT_CALLER_WAIT_TIMEOUT_MS = 300_000;
 export const CSAPI_DEFAULT_QUEUE_TIMEOUT_MS = 30_000;
 export const CSAPI_DEFAULT_IDLE_TIMEOUT_MS = 120_000;
 export const CSAPI_DEFAULT_ABSOLUTE_TIMEOUT_MS = 29 * 60_000;
+export const CSAPI_CALLER_WAIT_SAFETY_BUFFER_MS = 30_000;
+export const CSAPI_DEFAULT_CALLER_WAIT_TIMEOUT_MS =
+  CSAPI_DEFAULT_QUEUE_TIMEOUT_MS +
+  CSAPI_DEFAULT_ABSOLUTE_TIMEOUT_MS +
+  CSAPI_CALLER_WAIT_SAFETY_BUFFER_MS;
 
 export type CsapiTimeoutCancelReason =
   | "queue_timeout"
@@ -27,6 +31,34 @@ export interface CsapiRunTiming {
   queuedAt: string;
   startedAt: string | null;
   lastActivityAt: string | null;
+}
+
+export function minimumCsapiCallerWaitTimeoutMs(
+  timeouts: Pick<CsapiRunTimeouts, "queueTimeoutMs" | "absoluteTimeoutMs">
+): number {
+  return (
+    timeouts.queueTimeoutMs +
+    timeouts.absoluteTimeoutMs +
+    CSAPI_CALLER_WAIT_SAFETY_BUFFER_MS
+  );
+}
+
+/**
+ * A synchronous CSAPI caller is also the lifecycle watchdog. Its wait budget
+ * must cover the maximum queue stint plus the run's absolute lifetime so it
+ * cannot detach before returning the real terminal result. Explicitly shorter
+ * legacy values are raised to this finite floor; queue/idle/absolute guards
+ * still bound the run itself.
+ */
+export function resolveCsapiCallerWaitTimeoutMs(input: {
+  requestedMs: number | undefined;
+  queueTimeoutMs: number;
+  absoluteTimeoutMs: number;
+}): number {
+  return Math.max(
+    input.requestedMs ?? 0,
+    minimumCsapiCallerWaitTimeoutMs(input)
+  );
 }
 
 export interface CsapiTimeoutDecision {

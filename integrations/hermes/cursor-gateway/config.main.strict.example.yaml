@@ -6,6 +6,11 @@ model:
   base_url: http://127.0.0.1:18080/v1
   api_mode: chat_completions
 
+providers:
+  cursor-gateway:
+    # Must exceed Gateway's 30 minute caller/lifecycle envelope.
+    request_timeout_seconds: 1860
+
 # The legacy singular fallback_model key must be absent.
 fallback_providers: []
 

@@ -555,6 +555,34 @@ test("caller 504 detaches, reattaches one active run, and proves over 300 second
   }
 });
 
+test("long request can complete directly after 300 seconds without caller detachment", async () => {
+  const server = new MockCsapiServer({ longCompletesDirectly: true });
+  const baseUrl = await server.start();
+  const wallStarted = performance.now();
+  try {
+    const config = configFor("long", baseUrl, server.apiKey);
+    const scenario = await runLongScenario(config, dependencies(config));
+    assert.equal(scenario.passed, true);
+    assert.equal(scenario.metrics.firstAttemptDetached, false);
+    assert.equal(scenario.metrics.reattachAttempts, 0);
+    assert.equal(scenario.metrics.activeBeforeRetry, false);
+    assert.equal(scenario.metrics.observedRuns, 1);
+    assert.ok(Number(scenario.metrics.executionDurationMs) > 300_000);
+    assert.ok(Number(scenario.metrics.activitySpanMs) > 300_000);
+    const requests = server.requests.filter(
+      (request) => request.scenario === "long-active-reattach"
+    );
+    assert.equal(requests.length, 1);
+    assert.equal(server.createCountByKey.get(requests[0]!.idempotencyKey), 1);
+    assert.ok(
+      performance.now() - wallStarted < 2_000,
+      "fake-clock direct completion test must not wait 300 seconds"
+    );
+  } finally {
+    await server.close();
+  }
+});
+
 test("observation mode stops at its configured bound", async () => {
   const server = new MockCsapiServer();
   const baseUrl = await server.start();

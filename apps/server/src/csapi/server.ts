@@ -70,6 +70,9 @@ export interface CsapiDeps {
   /** Injectable monotonic wall clock and sleeper for fake-clock tests. */
   now?: () => number;
   sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
+  /** Injectable interval scheduler for deterministic SSE heartbeat tests. */
+  scheduleHeartbeat?: (callback: () => void, intervalMs: number) => unknown;
+  cancelHeartbeat?: (handle: unknown) => void;
 }
 
 class CsapiError extends Error {
@@ -148,6 +151,14 @@ export function createCsapi(deps: CsapiDeps) {
   const heartbeatIntervalMs = deps.heartbeatIntervalMs ?? 10_000;
   const now = deps.now ?? Date.now;
   const wait = deps.sleep ?? sleep;
+  const scheduleHeartbeat =
+    deps.scheduleHeartbeat ??
+    ((callback: () => void, intervalMs: number) =>
+      setInterval(callback, intervalMs));
+  const cancelHeartbeat =
+    deps.cancelHeartbeat ??
+    ((handle: unknown) =>
+      clearInterval(handle as ReturnType<typeof setInterval>));
   const serializer = new SessionSerializer();
   const limiter = new KeyConcurrencyLimiter(config.maxConcurrencyPerKey);
   // sessionKey (namespaced by API key) -> conversationId
@@ -553,14 +564,14 @@ export function createCsapi(deps: CsapiDeps) {
     onProgress?: (progress: CsapiProgressUpdate) => void
   ): Promise<CompletedRun> {
     writeHeartbeat(reply, wire, model);
-    const heartbeat = setInterval(
+    const heartbeat = scheduleHeartbeat(
       () => writeHeartbeat(reply, wire, model),
       heartbeatIntervalMs
     );
     try {
       return await execute(input, onProgress);
     } finally {
-      clearInterval(heartbeat);
+      cancelHeartbeat(heartbeat);
     }
   }
 

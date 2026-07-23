@@ -2,9 +2,9 @@ import { z } from "zod";
 import { readFileSync } from "node:fs";
 import {
   CSAPI_DEFAULT_ABSOLUTE_TIMEOUT_MS,
-  CSAPI_DEFAULT_CALLER_WAIT_TIMEOUT_MS,
   CSAPI_DEFAULT_IDLE_TIMEOUT_MS,
-  CSAPI_DEFAULT_QUEUE_TIMEOUT_MS
+  CSAPI_DEFAULT_QUEUE_TIMEOUT_MS,
+  resolveCsapiCallerWaitTimeoutMs
 } from "./csapi/runTimeouts.js";
 
 const booleanEnv = (defaultValue: boolean) =>
@@ -199,10 +199,13 @@ export const config = {
     defaultModel: parsed.CSAPI_DEFAULT_MODEL.trim() || "auto",
     defaultWorkspaceId: parsed.CSAPI_DEFAULT_WORKSPACE_ID.trim(),
     maxConcurrencyPerKey: parsed.CSAPI_MAX_CONCURRENCY_PER_KEY,
-    callerWaitTimeoutMs:
-      parsed.CSAPI_CALLER_WAIT_TIMEOUT_MS ??
-      parsed.CSAPI_RUN_TIMEOUT_MS ??
-      CSAPI_DEFAULT_CALLER_WAIT_TIMEOUT_MS,
+    callerWaitTimeoutMs: resolveCsapiCallerWaitTimeoutMs({
+      requestedMs:
+        parsed.CSAPI_CALLER_WAIT_TIMEOUT_MS ??
+        parsed.CSAPI_RUN_TIMEOUT_MS,
+      queueTimeoutMs: parsed.CSAPI_QUEUE_TIMEOUT_MS,
+      absoluteTimeoutMs: parsed.CSAPI_ABSOLUTE_TIMEOUT_MS
+    }),
     queueTimeoutMs: parsed.CSAPI_QUEUE_TIMEOUT_MS,
     idleTimeoutMs: parsed.CSAPI_IDLE_TIMEOUT_MS,
     absoluteTimeoutMs: parsed.CSAPI_ABSOLUTE_TIMEOUT_MS,

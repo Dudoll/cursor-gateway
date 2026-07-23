@@ -136,12 +136,13 @@ PATH="$HOME/.node22/bin:$PATH" npm run accept -- \
   --json-out "./acceptance.json"
 ```
 
-### 超过 300 秒的活动任务与重新附着
+### 超过 300 秒的活动任务与幂等附着
 
 `long` 要求 `CSAPI_VALIDATION_LONG_PROMPT` 描述一个预计超过 300 秒、持续提交
-进度/lease 的合成任务。`CSAPI_CALLER_WAIT_TIMEOUT` 被视为“调用方已脱离”，
-不是任务失败；工具随后用同一幂等键重新附着并查询最终状态。只有
-queue/idle/absolute timeout、502、取消或最终非 completed 才失败。
+进度/lease 的合成任务。首个长流应直接等待到 completed；为兼容旧部署，
+`CSAPI_CALLER_WAIT_TIMEOUT` 仍被视为“调用方已脱离”而非任务失败，工具会用
+同一幂等键重新附着并证明仍只有一个 run。queue/idle/absolute timeout、502、
+取消或最终非 completed 都会失败。
 
 ```bash
 PATH="$HOME/.node22/bin:$PATH" npm run long -- \
