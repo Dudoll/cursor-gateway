@@ -70,6 +70,12 @@ export interface CsapiDeps {
   /** Injectable monotonic wall clock and sleeper for fake-clock tests. */
   now?: () => number;
   sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
+  /** Injectable run-update waiter; production uses the in-process notifier. */
+  waitForRunUpdate?: (
+    runId: string,
+    timeoutMs: number,
+    signal?: AbortSignal
+  ) => Promise<"timeout" | "notified" | "aborted">;
   /** Injectable interval scheduler for deterministic SSE heartbeat tests. */
   scheduleHeartbeat?: (callback: () => void, intervalMs: number) => unknown;
   cancelHeartbeat?: (handle: unknown) => void;
@@ -151,6 +157,9 @@ export function createCsapi(deps: CsapiDeps) {
   const heartbeatIntervalMs = deps.heartbeatIntervalMs ?? 10_000;
   const now = deps.now ?? Date.now;
   const wait = deps.sleep ?? sleep;
+  // Production injects the in-process notifier. Keeping this opt-in preserves
+  // the deterministic polling seam used by fake backends and fake clocks.
+  const waitForUpdate = deps.waitForRunUpdate;
   const scheduleHeartbeat =
     deps.scheduleHeartbeat ??
     ((callback: () => void, intervalMs: number) =>
@@ -305,8 +314,7 @@ export function createCsapi(deps: CsapiDeps) {
         if (
           onProgress &&
           progressMessage &&
-          progressKind &&
-          progressKind !== "responding"
+          progressKind
         ) {
           const fingerprint = `${progressKind}:${progressMessage}`;
           if (fingerprint !== lastProgressFingerprint) {
@@ -373,7 +381,17 @@ export function createCsapi(deps: CsapiDeps) {
             snapshot.model
           );
         }
-        await wait(pollIntervalMs, signal);
+        const remaining = Math.max(1, callerDeadline - now());
+        if (waitForUpdate) {
+          const outcome = await waitForUpdate(
+            runId,
+            Math.min(remaining, 1_000),
+            signal
+          );
+          if (outcome === "aborted") throw new AbortedError();
+        } else {
+          await wait(pollIntervalMs, signal);
+        }
       }
     } catch (error) {
       // On client abort (top-of-loop check or an interrupted sleep), best-effort
@@ -723,14 +741,19 @@ export function createCsapi(deps: CsapiDeps) {
       try {
         const streamId = openaiCompletionId();
         let progressRoleSent = false;
+        let streamedResponseText = "";
         const onProgress = (progress: CsapiProgressUpdate) => {
           if (reply.raw.writableEnded || reply.raw.destroyed) return;
+          if (progress.kind === "responding") {
+            streamedResponseText += progress.message;
+          }
           writeFrame(
             reply,
             buildOpenAiProgressFrame({
               id: streamId,
               model: responseModel,
               text: progress.message,
+              kind: progress.kind,
               includeRole: !progressRoleSent
             })
           );
@@ -743,11 +766,18 @@ export function createCsapi(deps: CsapiDeps) {
           responseModel,
           onProgress
         );
+        // Cursor runner progress is sent as response deltas. Do not replay the
+        // already delivered prefix in the terminal aggregate; if a runner or
+        // old deployment did not provide a coherent prefix, keep the complete
+        // terminal result authoritative instead of silently truncating it.
+        const terminalText = streamedResponseText && result.text.startsWith(streamedResponseText)
+          ? result.text.slice(streamedResponseText.length)
+          : result.text;
         const frames = buildOpenAiStreamFrames({
           id: streamId,
           includeRole: !progressRoleSent,
           model: responseModel,
-          text: result.text
+          text: terminalText
         });
         for (const frame of frames) writeFrame(reply, frame);
         writeFrame(reply, OPENAI_STREAM_DONE);

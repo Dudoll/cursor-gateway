@@ -12,6 +12,7 @@ import { registerTelegram } from "./telegram.js";
 import { createDbBackend } from "./csapi/backend.js";
 import { isCsapiPath, registerCsapi } from "./csapi/server.js";
 import { loadCgSecureConfig, registerCsapiSecure } from "./csapi/secure.js";
+import { waitForRunUpdate } from "./runWaiter.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -100,6 +101,7 @@ async function main() {
     const backend = await createDbBackend();
     const csapiDeps = {
       backend,
+      waitForRunUpdate,
       config: {
         enabled: config.csapi.enabled,
         apiKeys: config.csapi.apiKeys,

@@ -16,7 +16,7 @@ import {
   runnerJobSchema
 } from "@cursor-gateway/shared";
 import { config } from "./config.js";
-import { listCursorModels, runCursorJob } from "./cursorAgent.js";
+import { listCursorModels, responseProgressDelta, runCursorJob } from "./cursorAgent.js";
 import { E2eeJobProcessor } from "./e2eeProcessor.js";
 import { RunnerE2eeState } from "./e2eeState.js";
 import { toLocalPath } from "./pathTranslation.js";
@@ -38,6 +38,11 @@ const HEARTBEAT_INTERVAL_MS = 60_000;
 const MAX_CONSECUTIVE_HEARTBEAT_FAILURES = 5;
 const ERROR_BACKOFF_MS = Math.min(config.pollIntervalMs * 5, 15_000);
 const PROGRESS_THROTTLE_MS = 1_000;
+const RESPONSE_PROGRESS_THROTTLE_MS = 250;
+// Long-poll normally keeps this path asleep. If an older gateway returns 204
+// immediately, cap the fallback cadence so a misconfigured runner cannot
+// turn into a high-rate claim loop.
+const NO_JOB_SLEEP_MS = Math.min(Math.max(config.pollIntervalMs, 250), 500);
 const RESULT_SUBMIT_ATTEMPTS = 5;
 const LEASE_RENEW_INTERVAL_MS = 5 * 60_000;
 
@@ -358,7 +363,38 @@ async function runLegacyJob(
   console.log(`Worker ${workerId} running legacy job ${job.runId} with model ${job.model}`);
   let lastProgressAt = 0;
   let lastProgress = "";
+  let lastResponseText = "";
+  let pendingResponse = "";
+  let lastResponseAt = 0;
+
+  const flushResponse = async () => {
+    if (!pendingResponse) return;
+    const message = pendingResponse;
+    pendingResponse = "";
+    lastResponseAt = Date.now();
+    try {
+      await submitProgress({
+        runId: job.runId,
+        kind: "responding",
+        message
+      });
+    } catch {
+      console.warn(`Failed to report legacy response progress for ${job.runId}`);
+    }
+  };
+
   const reportProgress = async (progress: Omit<RunnerJobProgress, "runId">) => {
+    if (progress.kind === "responding") {
+      const delta = responseProgressDelta(lastResponseText, progress.message);
+      lastResponseText = delta.accumulated;
+      if (!delta.delta) return;
+      pendingResponse += delta.delta;
+      if (!lastResponseAt || Date.now() - lastResponseAt >= RESPONSE_PROGRESS_THROTTLE_MS) {
+        await flushResponse();
+      }
+      return;
+    }
+
     const message = progress.message.slice(-200_000);
     const fingerprint = `${progress.kind}:${message}`;
     const now = Date.now();
@@ -373,6 +409,9 @@ async function runLegacyJob(
   };
   await reportProgress({ kind: "working", message: "Starting the model..." });
   const result = await runCursorJob(job, reportProgress);
+  // Flush a final partial response before the terminal aggregate is persisted.
+  // The CSAPI stream will subtract this prefix from the final response.
+  await flushResponse();
   await submitResultWithRetry(result);
   console.log(`Worker ${workerId} completed legacy run ${job.runId} with ${result.status}`);
 }
@@ -451,14 +490,17 @@ async function jobLoop(
       }
 
       // Long-poll already waited server-side; only back off on errors.
-      // Tiny sleep avoids a hot loop if the server has long-poll disabled (0ms).
-      await sleep(50);
+      // Fallback sleep only applies when the gateway returned immediately.
+      await sleep(NO_JOB_SLEEP_MS);
     } catch (error) {
       const code =
         error instanceof Error && /^e2ee_[a-z0-9_]+$/.test(error.message)
           ? error.message
           : "runner_job_failed";
-      console.error(`Worker ${workerId} job failure: ${code}`);
+      const reason = error instanceof Error ? error.message.slice(0, 240) : "unknown";
+      console.error(
+        `Worker ${workerId} job failure: ${code}; backoff_ms=${ERROR_BACKOFF_MS}; reason=${reason}`
+      );
       await sleep(ERROR_BACKOFF_MS);
     }
   }
