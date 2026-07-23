@@ -55,7 +55,8 @@ hermes-ha accept-p0 --node band > p0-band-evidence.json
 
 - dmit：`role_holder=vps-dmit`；所有配置的 stack units 为 `active`。
 - band：`role_holder=vps-dmit`；所有 stack units 为 `inactive`；
-  `hermes-ha-evaluate.timer` enabled。
+  `hermes-ha-evaluate.timer` 与
+  `hermes-ha-gateway-version-sync.timer` enabled。
 - 两机的 gateway/state checkpoint timers 均 enabled；服务使用 `--if-leader`，
   standby 上无副作用，接管后无需重配 timer 即开始发布 checkpoint。
 - 两机全部 `shared_dirs` symlink 指向相同 iCloud shared root。

@@ -215,7 +215,12 @@ def run_acceptance(config: dict[str, Any], expected_node: str, *, full_hash: boo
         "hermes-ha-state-checkpoint.timer",
     ]
     if expected_node == "band":
-        timers.append("hermes-ha-evaluate.timer")
+        timers.extend(
+            [
+                "hermes-ha-evaluate.timer",
+                "hermes-ha-gateway-version-sync.timer",
+            ]
+        )
     for timer in timers:
         results.append(check(systemd_enabled(timer), f"timer.{timer}", "enabled required"))
     results.extend(verify_layout(config))

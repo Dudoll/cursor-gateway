@@ -111,11 +111,11 @@ if os.path.isfile(dst):
     for key in ("local_trees", "shared_dirs", "shared_files"):
         if key in example:
             data[key] = example[key]
-    for key in ("local_only", "secrets", "stack_units", "probe", "gateway_checkpoint", "state_checkpoint", "dns", "hosts", "alert"):
+    for key in ("local_only", "secrets", "stack_units", "probe", "gateway_checkpoint", "gateway_version_sync", "state_checkpoint", "dns", "hosts", "alert"):
         if key not in data and key in example:
             data[key] = example[key]
     # Add newly introduced nested defaults without replacing host-specific values.
-    for key in ("probe", "gateway_checkpoint", "state_checkpoint", "dns"):
+    for key in ("probe", "gateway_checkpoint", "gateway_version_sync", "state_checkpoint", "dns"):
         if isinstance(example.get(key), dict):
             current = data.setdefault(key, {})
             if isinstance(current, dict):
@@ -140,8 +140,10 @@ done
 systemctl --user daemon-reload
 if [[ "$NODE_ID" == "vps-dmit" ]]; then
   systemctl --user disable --now hermes-ha-evaluate.timer 2>/dev/null || true
+  systemctl --user disable --now hermes-ha-gateway-version-sync.timer 2>/dev/null || true
 else
   systemctl --user enable --now hermes-ha-evaluate.timer
+  systemctl --user enable --now hermes-ha-gateway-version-sync.timer
 fi
 systemctl --user enable --now \
   hermes-ha-gateway-checkpoint.timer \

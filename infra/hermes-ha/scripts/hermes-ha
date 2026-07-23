@@ -31,6 +31,7 @@ Usage: hermes-ha <command> [args]
   migrate ensure-layout|sync|cutover|link-home|wait-sync
   sync-agent-code <peer>   # SSH rsync hermes-agent (not via iCloud)
   gateway-checkpoint create|latest|restore
+  gateway-version-sync sync|status
   checkpoint-watchdog      # fail when gateway backup age exceeds SLO
   state-checkpoint create|restore|wire
   accept-p0 --node dmit|band [--skip-state-hash]
@@ -82,6 +83,10 @@ case "$cmd" in
   gateway-checkpoint)
     sub="${1:-}"; shift || true
     exec python3 "$AGENT/gateway_checkpoint.py" --config "$CONFIG" "$sub" "$@"
+    ;;
+  gateway-version-sync)
+    sub="${1:-}"; shift || true
+    exec python3 "$AGENT/gateway_version_sync.py" --config "$CONFIG" "$sub" "$@"
     ;;
   checkpoint-watchdog)
     exec python3 "$AGENT/checkpoint_watchdog.py" --config "$CONFIG" "$@"
