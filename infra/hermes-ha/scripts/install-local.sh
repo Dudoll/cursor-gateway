@@ -94,7 +94,7 @@ os.chmod(temporary, 0o644)
 os.replace(temporary, path)
 PY
 
-chmod +x "$DEST/scripts/hermes-ha" "$DEST/scripts/"*.sh "$DEST/hooks/"*.sh 2>/dev/null || true
+chmod +x "$DEST/scripts/hermes-ha" "$DEST/scripts/"*.sh "$DEST/scripts/"*.py "$DEST/hooks/"*.sh 2>/dev/null || true
 ln -sfn "$DEST/scripts/hermes-ha" "$HOME/.local/bin/hermes-ha"
 
 CFG="$HOME/.config/hermes-ha/config.json"
@@ -148,7 +148,8 @@ fi
 systemctl --user enable --now \
   hermes-ha-gateway-checkpoint.timer \
   hermes-ha-checkpoint-watchdog.timer \
-  hermes-ha-state-checkpoint.timer
+  hermes-ha-state-checkpoint.timer \
+  hermes-ha-host-load.timer
 
 echo "Installed to $DEST"
 echo "CLI: $HOME/.local/bin/hermes-ha"
