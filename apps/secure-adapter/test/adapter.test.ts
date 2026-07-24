@@ -262,6 +262,33 @@ test("streaming exchange yields ordered ciphertext frames", async () => {
   }
 });
 
+test("concurrent streams are serialized on one strictly ordered session", async () => {
+  const h = await startSecureServer();
+  try {
+    const cfg = makeAdapterConfig(h);
+    const client = new SecureClient(cfg, new StateStore(cfg.statePath));
+    await client.init();
+    const consume = async (label: string) => {
+      let text = "";
+      for await (const frame of client.exchangeStream({
+        wire: "openai",
+        body: { model: "auto", stream: true, messages: [{ role: "user", content: label }] },
+        sessionKey: null,
+        idempotencyKey: crypto.randomUUID()
+      })) {
+        if (frame.frameType === "delta") text += String(frame.data.text ?? "");
+      }
+      return text;
+    };
+
+    const [first, second] = await Promise.all([consume("first"), consume("second")]);
+    assert.match(first, /echo:.*first/);
+    assert.match(second, /echo:.*second/);
+  } finally {
+    await h.close();
+  }
+});
+
 test("facade end-to-end: CLI-style HTTP request through the loopback facade", async () => {
   const h = await startSecureServer();
   const cfg = makeAdapterConfig(h);

@@ -120,12 +120,29 @@ export class SecureClient {
   private serverKeys!: CgServerKeysResponse;
   private device!: RuntimeDevice;
   private session: Session | null = null;
+  private exchangeTail: Promise<void> = Promise.resolve();
 
   constructor(
     private readonly cfg: AdapterConfig,
     private readonly store: StateStore,
     private readonly fetchImpl: FetchLike = fetch
   ) {}
+
+  /**
+   * A cg-mitm session uses one strictly ordered sequence in each direction.
+   * Serialize complete exchanges so concurrent callers (for example a CLI's
+   * title request and primary completion) cannot receive s2c frames out of
+   * order and invalidate each other.
+   */
+  private async acquireExchange(): Promise<() => void> {
+    const previous = this.exchangeTail;
+    let release!: () => void;
+    this.exchangeTail = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await previous;
+    return release;
+  }
 
   /** Startup: pin+verify server-keys, then load or enroll the device. */
   async init(): Promise<void> {
@@ -353,13 +370,18 @@ export class SecureClient {
 
   // -- non-streaming exchange -> standard Anthropic/OpenAI response body ------
   async exchange(req: ExchangeRequest): Promise<Record<string, unknown>> {
+    const release = await this.acquireExchange();
     try {
-      return await this.exchangeOnce(req);
-    } catch (error) {
-      if (error instanceof AdapterError && (await this.recover(error.reason))) {
-        return this.exchangeOnce(req);
+      try {
+        return await this.exchangeOnce(req);
+      } catch (error) {
+        if (error instanceof AdapterError && (await this.recover(error.reason))) {
+          return this.exchangeOnce(req);
+        }
+        throw error;
       }
-      throw error;
+    } finally {
+      release();
     }
   }
 
@@ -388,32 +410,37 @@ export class SecureClient {
 
   // -- streaming exchange -> decrypted cg frames ------------------------------
   async *exchangeStream(req: ExchangeRequest): AsyncGenerator<StreamFrame> {
-    let attempt = await this.openStream(req);
-    if (attempt.retryReason && (await this.recover(attempt.retryReason))) {
-      attempt = await this.openStream(req);
-    }
-    if (attempt.retryReason) {
-      throw new AdapterError(mapReasonStatus(attempt.retryReason), attempt.retryReason);
-    }
-    const { session, body } = attempt;
-    for await (const evt of readSse(body!)) {
-      if (evt.comment) continue;
-      if (!evt.data) continue;
-      const wireFrame = cgSseWireFrameSchema.parse(JSON.parse(evt.data));
-      this.checkS2c(session!, wireFrame.sequence);
-      const inner = cgSseFrameInnerSchema.parse(
-        await decryptJson(
-          session!.sessionRoot,
-          S2C_PURPOSE,
-          buildS2cAad({
-            sessionId: session!.sessionId,
-            sequence: wireFrame.sequence,
-            frameType: wireFrame.frameType
-          }),
-          wireFrame.payload
-        )
-      );
-      yield { frameType: inner.frameType, sequence: inner.sequence, data: inner.data };
+    const release = await this.acquireExchange();
+    try {
+      let attempt = await this.openStream(req);
+      if (attempt.retryReason && (await this.recover(attempt.retryReason))) {
+        attempt = await this.openStream(req);
+      }
+      if (attempt.retryReason) {
+        throw new AdapterError(mapReasonStatus(attempt.retryReason), attempt.retryReason);
+      }
+      const { session, body } = attempt;
+      for await (const evt of readSse(body!)) {
+        if (evt.comment) continue;
+        if (!evt.data) continue;
+        const wireFrame = cgSseWireFrameSchema.parse(JSON.parse(evt.data));
+        this.checkS2c(session!, wireFrame.sequence);
+        const inner = cgSseFrameInnerSchema.parse(
+          await decryptJson(
+            session!.sessionRoot,
+            S2C_PURPOSE,
+            buildS2cAad({
+              sessionId: session!.sessionId,
+              sequence: wireFrame.sequence,
+              frameType: wireFrame.frameType
+            }),
+            wireFrame.payload
+          )
+        );
+        yield { frameType: inner.frameType, sequence: inner.sequence, data: inner.data };
+      }
+    } finally {
+      release();
     }
   }
 
